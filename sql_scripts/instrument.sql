@@ -1,0 +1,1 @@
+insert into instrument ("name") values ('IOL-Master 500'),('IOL-Master 700'),('AL-scan'),('MYAH or Aladdin'),('Myopia Master'),('Lenstar Myopia'),('ARGOS'),('HBM-1');
