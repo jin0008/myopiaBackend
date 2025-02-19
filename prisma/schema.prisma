@@ -1,0 +1,153 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model country {
+  id                      String                    @id(map: "country_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                    String                    @unique(map: "country_unique")
+  code                    String                    @unique(map: "country_unique_1") @db.VarChar(2)
+  healthcare_professional healthcare_professional[]
+  hospital                hospital[]
+}
+
+model ethnicity {
+  id                      String                    @id(map: "ethnicity_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ethnicity               String                    @db.VarChar(25)
+  healthcare_professional healthcare_professional[]
+  patient                 patient[]
+}
+
+model healthcare_professional {
+  name                  String
+  country_id            String      @db.Uuid
+  approved              Boolean     @default(false)
+  hospital_id           String      @db.Uuid
+  user_id               String      @id(map: "healthcare_professional_pk") @db.Uuid
+  default_ethnicity_id  String?     @db.Uuid
+  default_instrument_id String?     @db.Uuid
+  country               country     @relation(fields: [country_id], references: [id], onDelete: Cascade, map: "healthcare_professional_country_fk")
+  default_ethnicity     ethnicity?  @relation(fields: [default_ethnicity_id], references: [id], onDelete: Cascade, map: "healthcare_professional_ethnicity_fk")
+  hospital              hospital    @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "healthcare_professional_hospital_fk")
+  default_instrument    instrument? @relation(fields: [default_instrument_id], references: [id], onDelete: Cascade, map: "healthcare_professional_instrument_fk")
+  user                  user        @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "healthcare_professional_user_fk")
+}
+
+model hospital {
+  id                      String                    @id(map: "hospital_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                    String                    @unique(map: "hospital_unique")
+  country_id              String                    @db.Uuid
+  healthcare_professional healthcare_professional[]
+  country                 country                   @relation(fields: [country_id], references: [id], map: "hospital_country_fk")
+  patient                 patient[]
+}
+
+model instrument {
+  id                      String                    @id(map: "instrument_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                    String                    @unique(map: "instrument_unique") @db.VarChar(20)
+  healthcare_professional healthcare_professional[]
+  measurement             measurement[]
+}
+
+model measurement {
+  id            String     @id(map: "measurement_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patient_id    String     @db.Uuid
+  date          DateTime?  @db.Date
+  instrument_id String     @db.Uuid
+  eye           od_os
+  creator_id    String     @db.Uuid
+  instrument    instrument @relation(fields: [instrument_id], references: [id], onDelete: SetNull, map: "measurement_instrument_fk")
+  patient       patient    @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "measurement_patient_fk")
+  user          user       @relation(fields: [creator_id], references: [id], onDelete: SetNull, map: "measurement_user_fk")
+}
+
+model normal_user {
+  user_id String @id(map: "normal_user_pk") @db.Uuid
+  user    user   @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "normal_user_user_fk")
+}
+
+model password_auth {
+  user_id  String @id(map: "password_auth_pk") @db.Uuid
+  username String @unique(map: "password_auth_unique") @db.VarChar
+  hash     String @db.VarChar
+  user     user   @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "password_auth_user_fk")
+}
+
+model patient {
+  id                  String              @id(map: "patient_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  hospital_id         String              @db.Uuid
+  registration_number String
+  date_of_birth       DateTime            @db.Date
+  sex                 sex
+  ethnicity_id        String              @db.Uuid
+  creator_id          String              @db.Uuid
+  email               String?
+  measurement         measurement[]
+  ethnicity           ethnicity           @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
+  hospital            hospital            @relation(fields: [hospital_id], references: [id], map: "patient_hospital_fk")
+  creator             user                @relation(fields: [creator_id], references: [id], onDelete: SetNull, map: "patient_user_fk")
+  patient_treatment   patient_treatment[]
+  user_patient        user_patient[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model patient_treatment {
+  id           String    @id(map: "patients_treatments_pk") @db.Uuid
+  patient_id   String    @db.Uuid
+  treatment_id String    @db.Uuid
+  start_date   DateTime  @db.Date
+  end_date     DateTime? @db.Date
+  created_at   DateTime  @default(now()) @db.Timestamp(6)
+  patient      patient   @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_treatment_patient_fk")
+  treatment    treatment @relation(fields: [treatment_id], references: [id], onDelete: Cascade, map: "patient_treatment_treatment_fk")
+}
+
+model session {
+  id          String   @id(map: "session_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  session_key String   @unique(map: "session_unique")
+  user_id     String   @db.Uuid
+  valid_until DateTime @db.Timestamp(6)
+  user        user     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "session_user_fk")
+}
+
+model treatment {
+  id                String              @id(map: "treatment_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name              String              @unique(map: "treatment_unique") @db.VarChar(30)
+  description       String?
+  patient_treatment patient_treatment[]
+}
+
+model user {
+  id                      String                   @id(map: "user_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  created_at              DateTime                 @default(now()) @db.Timestamp(6)
+  healthcare_professional healthcare_professional?
+  measurement             measurement[]
+  normal_user             normal_user?
+  password_auth           password_auth?
+  patient                 patient[]
+  session                 session[]
+  user_patient            user_patient[]
+}
+
+model user_patient {
+  user_id    String  @db.Uuid
+  patient_id String  @db.Uuid
+  patient    patient @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "user_patient_patient_fk")
+  user       user    @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "user_patient_user_fk")
+
+  @@unique([user_id, patient_id], map: "user_patient_unique")
+}
+
+enum od_os {
+  od
+  os
+}
+
+enum sex {
+  male
+  female
+}
