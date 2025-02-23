@@ -2,7 +2,6 @@ import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
 import { loginRequired } from "../lib/middlewares";
-import exp from "constants";
 
 const router = express.Router();
 router.use(loginRequired);

@@ -54,3 +54,17 @@ function clearSession(userId: string) {
     },
   });
 }
+
+export function refreshSession(session_id: string) {
+  const valid_until = new Date(Date.now() + sessionLengthMillis);
+  return prisma.session.update({
+    where: {
+      id: session_id,
+    },
+    data: {
+      valid_until: valid_until,
+    },
+  });
+}
+
+export const WrongArgumentsMessage = { message: "wrong arguments" };

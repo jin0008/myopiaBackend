@@ -2,23 +2,14 @@ import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
 
-import { getAuthSession } from "../lib/util";
-import { loginRequired } from "../lib/middlewares";
+import { getAuthSession, WrongArgumentsMessage } from "../lib/util";
+import {
+  approvedProfessionalRequired,
+  loginRequired,
+} from "../lib/middlewares";
 
 const router = express.Router();
 router.use(loginRequired);
-
-//TODO:auth
-router.get("/:userId", async (req, res) => {
-  const data = await prisma.healthcare_professional.findUnique({
-    where: {
-      user_id: req.params.userId,
-    },
-  });
-
-  if (data == null) res.sendStatus(404);
-  else res.json(data);
-});
 
 const existingHospitalType = zod.object({
   id: zod.string(),
@@ -45,7 +36,7 @@ router.post("/", async (req, res) => {
   try {
     data = postType.parse(body);
   } catch {
-    res.sendStatus(400);
+    res.status(400).json(WrongArgumentsMessage);
     return;
   }
 
@@ -112,7 +103,7 @@ const putType = zod.object({
   default_instrument_id: zod.string().nullable().optional(),
 });
 
-router.put("/", async (req, res, next) => {
+router.put("/", approvedProfessionalRequired, async (req, res) => {
   const authSession = await getAuthSession(req);
 
   const userId = authSession?.user_id;

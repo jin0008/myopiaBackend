@@ -8,6 +8,9 @@ import healthcareProfessionalRoutes from "./routes/healthcare_professional";
 import measurementRoutes from "./routes/measurement";
 import patientRoutes from "./routes/patient";
 import userRoutes from "./routes/user";
+import hospitalRoutes from "./routes/hospital";
+import staticRoutes from "./routes/static";
+import growthDataRoutes from "./routes/growth_data";
 
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Prisma } from "@prisma/client";
@@ -32,6 +35,9 @@ app.use("/healthcare_professional", healthcareProfessionalRoutes);
 app.use("/measurement", measurementRoutes);
 app.use("/patient", patientRoutes);
 app.use("/user", userRoutes);
+app.use("/hospital", hospitalRoutes);
+app.use("/growth_Data", growthDataRoutes);
+app.use("/static", staticRoutes);
 
 const prismaErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
   if (err instanceof PrismaClientKnownRequestError) {

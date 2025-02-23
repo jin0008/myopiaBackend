@@ -1,12 +1,13 @@
 import { RequestHandler } from "express";
 import prisma from "./prisma";
-import { getAuthSession } from "./util";
+import { getAuthSession, refreshSession } from "./util";
 
 export const loginRequired: RequestHandler = async (req, res, next) => {
   const authSession = await getAuthSession(req);
   if (authSession == null) {
     res.sendStatus(401);
   } else {
+    refreshSession(authSession.id);
     req.authSession = authSession;
     next();
   }

@@ -7,6 +7,7 @@ import {
 } from "../lib/middlewares";
 import { sex } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { getAuthSession, WrongArgumentsMessage } from "../lib/util";
 
 const router = express.Router();
 router.use(loginRequired);
@@ -27,7 +28,34 @@ router.get("/:patientId", async (req, res) => {
   const data = await prisma.patient.findFirst({
     where: {
       id: req.params.patientId,
-      hospital_id: req.healthcare_professional.hospital_id,
+      OR: [
+        {
+          hospital: {
+            healthcare_professional: {
+              some: {
+                user: {
+                  id: req.authSession.user_id,
+                },
+              },
+            },
+          },
+        },
+        {
+          user_patient: {
+            some: {
+              user: {
+                id: req.authSession.user_id,
+              },
+            },
+          },
+        },
+      ],
+    },
+    include: {
+      hospital: true,
+      ethnicity: true,
+      measurement: true,
+      patient_treatment: true,
     },
   });
   if (data == null) {
@@ -45,10 +73,17 @@ const postPatientSchema = zod.object({
   email: zod.string().email().optional(),
 });
 router.post("/", approvedProfessionalRequired, async (req, res) => {
-  const data = postPatientSchema.parse(req.body);
+  let data;
+  try {
+    data = postPatientSchema.parse(req.body);
+  } catch {
+    res.status(400).json(WrongArgumentsMessage);
+    return;
+  }
   await prisma.patient.create({
     data: {
       ...data,
+      date_of_birth: new Date(data.date_of_birth),
       hospital_id: req.healthcare_professional.hospital_id,
       creator_id: req.authSession?.user_id,
     },

@@ -1,9 +1,10 @@
 import express from "express";
 import bcrypt from "bcrypt";
-import crypto from "crypto";
 import prisma from "../lib/prisma";
 
 import { generateSession, getAuthSession } from "../lib/util";
+import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { loginRequired } from "../lib/middlewares";
 
 const router = express.Router();
 
@@ -32,7 +33,7 @@ router.post("/passwordLogin", async (req, res) => {
   });
 
   if (auth == null) {
-    res.sendStatus(401);
+    res.status(401).json({ message: "Invalid username or password" });
     return;
   }
 
@@ -41,8 +42,30 @@ router.post("/passwordLogin", async (req, res) => {
       generateSession(auth.user.id)
         .then((session) => res.json(session))
         .catch(() => res.sendStatus(500));
-    else res.sendStatus(401);
+    else res.status(401).json({ message: "Invalid username or password" });
   });
+});
+
+router.get("/logout", loginRequired, async (req, res) => {
+  await prisma.session.delete({
+    where: {  
+      id: req.authSession.id,
+    },
+  });
+  res.sendStatus(200);
+});
+
+router.get("/user", loginRequired, async (req, res) => {
+  const data = await prisma.user.findUnique({
+    where: {
+      id: req.authSession.user_id,
+    },
+    select: {
+      healthcare_professional: true,
+      normal_user: true,
+    },
+  });
+  res.json(data);
 });
 
 router.post("/user/passwordAuth", async (req, res) => {
@@ -55,27 +78,38 @@ router.post("/user/passwordAuth", async (req, res) => {
     !username ||
     !password
   ) {
-    res.sendStatus(400);
+    res.status(400).json({ message: "Invalid username or password" });
     return;
   }
 
   const hash = await bcrypt.hash(password, 12);
 
-  await prisma.user.create({
-    data: {
-      password_auth: {
-        create: {
-          username: username,
-          hash: hash,
+  await prisma.user
+    .create({
+      data: {
+        password_auth: {
+          create: {
+            username: username,
+            hash: hash,
+          },
         },
       },
-    },
-  });
-
-  res.sendStatus(200);
+    })
+    .then(() => res.sendStatus(201))
+    .catch((err) => {
+      if (
+        err instanceof PrismaClientKnownRequestError &&
+        err.code === "P2002"
+      ) {
+        res.status(400).json({ message: "Username already exists" });
+      } else {
+        res.sendStatus(500);
+      }
+    });
 });
 
-router.put("/user/:userId/passwordAuth", async (req, res) => {
+//TODO
+router.put("/user/:userId/passwordAuth", loginRequired, async (req, res) => {
   const authSession = await getAuthSession(req);
   if (authSession == null) {
     res.sendStatus(401);

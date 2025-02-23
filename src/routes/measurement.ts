@@ -5,66 +5,17 @@ import {
   approvedProfessionalRequired,
   loginRequired,
 } from "../lib/middlewares";
-import { od_os } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 
 const router = express.Router();
 router.use(loginRequired);
 
-router.get("/", approvedProfessionalRequired, async (req, res) => {
-  const data = await prisma.hospital.findUnique({
-    where: {
-      id: req.healthcare_professional.hospital_id,
-    },
-    select: {
-      patient: {
-        include: {
-          measurement: {
-            include: {
-              instrument: true,
-            },
-          },
-        },
-      },
-    },
-  });
-  res.json(data?.patient);
-});
-
-router.get("/:measurementId", async (req, res) => {
-  const data = await prisma.measurement.findFirst({
-    where: {
-      id: req.params.measurementId,
-      patient: {
-        OR: [
-          {
-            hospital_id: req.healthcare_professional.hospital_id,
-          },
-          {
-            user_patient: {
-              some: {
-                user: {
-                  id: req.authSession?.user_id,
-                },
-              },
-            },
-          },
-        ],
-      },
-    },
-  });
-  if (data == null) {
-    res.sendStatus(404);
-    return;
-  }
-  res.json(data);
-});
-
 const postBodyType = zod.object({
   patient_id: zod.string().uuid(),
   date: zod.string().date(),
   instrument_id: zod.string().uuid(),
-  eye: zod.nativeEnum(od_os),
+  od: zod.number().gte(15).lte(35),
+  os: zod.number().gte(15).lte(35),
 });
 router.post("/", approvedProfessionalRequired, async (req, res) => {
   let data;
@@ -98,10 +49,11 @@ router.post("/", approvedProfessionalRequired, async (req, res) => {
     await prisma.measurement.create({
       data: {
         patient_id: data.patient_id,
-        date: data.date,
+        date: new Date(data.date),
         instrument_id: data.instrument_id,
-        eye: data.eye,
-        creator_id: req.authSession?.user_id,
+        od: data.od,
+        os: data.os,
+        creator_id: req.authSession.user_id,
       },
     });
     res.sendStatus(200);

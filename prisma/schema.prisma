@@ -56,10 +56,11 @@ model instrument {
 model measurement {
   id            String     @id(map: "measurement_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   patient_id    String     @db.Uuid
-  date          DateTime?  @db.Date
+  date          DateTime   @db.Date
   instrument_id String     @db.Uuid
-  eye           od_os
   creator_id    String     @db.Uuid
+  od            Float?     @db.Real
+  os            Float?     @db.Real
   instrument    instrument @relation(fields: [instrument_id], references: [id], onDelete: SetNull, map: "measurement_instrument_fk")
   patient       patient    @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "measurement_patient_fk")
   user          user       @relation(fields: [creator_id], references: [id], onDelete: SetNull, map: "measurement_user_fk")
@@ -142,9 +143,12 @@ model user_patient {
   @@unique([user_id, patient_id], map: "user_patient_unique")
 }
 
-enum od_os {
-  od
-  os
+model growth_data {
+  age        Int
+  percentile Int
+  value      Float @db.Real
+
+  @@unique([percentile, age], map: "growth_data_unique")
 }
 
 enum sex {
