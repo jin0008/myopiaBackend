@@ -1,1 +1,11 @@
-insert into instrument ("name") values ('IOL-Master 500'),('IOL-Master 700'),('AL-scan'),('MYAH or Aladdin'),('Myopia Master'),('Lenstar Myopia'),('ARGOS'),('HBM-1');
+INSERT INTO public.ethnicity (name) VALUES
+	 ('non-Finnish European'),
+	 ('Finnish European'),
+	 ('African/African American'),
+	 ('Admixed American'),
+	 ('Ashkenazi Jewish'),
+	 ('East Asian'),
+	 ('Middle Eastern'),
+	 ('Amish'),
+	 ('South Asian'),
+	 ('Others');
