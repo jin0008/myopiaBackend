@@ -7,7 +7,7 @@ import {
 } from "../lib/middlewares";
 import { sex } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
-import { getAuthSession, WrongArgumentsMessage } from "../lib/util";
+import { WrongArgumentsMessage } from "../lib/util";
 
 const router = express.Router();
 router.use(loginRequired);

@@ -2,6 +2,7 @@ import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
 import { loginRequired } from "../lib/middlewares";
+import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 
 const router = express.Router();
 router.use(loginRequired);
@@ -37,28 +38,39 @@ router.post("/patient", async (req, res) => {
     where: {
       hospital_id: data.hospital_id,
       registration_number: data.registration_number,
-      date_of_birth: data.date_of_birth,
+      date_of_birth: new Date(data.date_of_birth),
     },
   });
 
   if (patient == null) {
-    res.sendStatus(400);
+    res.sendStatus(404);
     return;
   }
 
-  await prisma.user_patient.create({
-    data: {
-      user_id: req.authSession?.user_id,
-      patient_id: patient.id,
-    },
-  });
+  await prisma.user_patient
+    .create({
+      data: {
+        user_id: req.authSession.user_id,
+        patient_id: patient.id,
+      },
+    })
+    .catch((err) => {
+      if (
+        err instanceof PrismaClientKnownRequestError &&
+        err.code === "P2002"
+      ) {
+        res.status(400).json({ message: "Already registered" });
+      } else {
+        res.sendStatus(500);
+      }
+    });
   res.sendStatus(201);
 });
 
 router.delete("/patient/:patientId", async (req, res) => {
   await prisma.user_patient.deleteMany({
     where: {
-      user_id: req.authSession?.user_id,
+      user_id: req.authSession.user_id,
       patient_id: req.params.patientId,
     },
   });

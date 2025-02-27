@@ -1,3 +1,5 @@
+import "dotenv/config";
+
 import express, { ErrorRequestHandler } from "express";
 import bodyParser from "body-parser";
 import cookieParser from "cookie-parser";
@@ -9,6 +11,7 @@ import measurementRoutes from "./routes/measurement";
 import patientRoutes from "./routes/patient";
 import userRoutes from "./routes/user";
 import hospitalRoutes from "./routes/hospital";
+import patientTreatmentRoutes from "./routes/patient_treatment";
 import staticRoutes from "./routes/static";
 import growthDataRoutes from "./routes/growth_data";
 
@@ -36,6 +39,7 @@ app.use("/measurement", measurementRoutes);
 app.use("/patient", patientRoutes);
 app.use("/user", userRoutes);
 app.use("/hospital", hospitalRoutes);
+app.use("/patient_treatment", patientTreatmentRoutes);
 app.use("/growth_Data", growthDataRoutes);
 app.use("/static", staticRoutes);
 

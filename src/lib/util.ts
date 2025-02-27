@@ -2,7 +2,7 @@ import prisma from "./prisma";
 import crypto from "crypto";
 import express from "express";
 
-const sessionLengthMillis = 1000 * 60 * 60 * 3;
+const sessionLengthMillis = 1000 * 60 * 60; // 1 hour
 
 export function getAuthSession(req: express.Request) {
   const authorization = req.get("Authorization");
@@ -47,7 +47,7 @@ export function generateSession(userId: string) {
   });
 }
 
-function clearSession(userId: string) {
+export function clearSession(userId: string) {
   return prisma.session.deleteMany({
     where: {
       user_id: userId,

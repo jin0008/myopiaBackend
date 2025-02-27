@@ -18,11 +18,28 @@ export const approvedProfessionalRequired: RequestHandler = async (
   res,
   next
 ) => {
-  const healthcare_professional =
+  const approved_healthcare_professional =
     await prisma.healthcare_professional.findUnique({
       where: {
         user_id: req.authSession.user_id,
         approved: true,
+      },
+    });
+
+  if (approved_healthcare_professional == null) {
+    res.sendStatus(403);
+  } else {
+    req.healthcare_professional = approved_healthcare_professional;
+    next();
+  }
+};
+
+export const hospitalAdminRequired: RequestHandler = async (req, res, next) => {
+  const healthcare_professional =
+    await prisma.healthcare_professional.findUnique({
+      where: {
+        user_id: req.authSession.user_id,
+        is_admin: true,
       },
     });
 

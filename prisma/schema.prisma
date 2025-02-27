@@ -17,7 +17,7 @@ model country {
 
 model ethnicity {
   id                      String                    @id(map: "ethnicity_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  ethnicity               String                    @db.VarChar(25)
+  name                    String                    @db.VarChar(25)
   healthcare_professional healthcare_professional[]
   patient                 patient[]
 }
@@ -30,6 +30,7 @@ model healthcare_professional {
   user_id               String      @id(map: "healthcare_professional_pk") @db.Uuid
   default_ethnicity_id  String?     @db.Uuid
   default_instrument_id String?     @db.Uuid
+  is_admin              Boolean     @default(false)
   country               country     @relation(fields: [country_id], references: [id], onDelete: Cascade, map: "healthcare_professional_country_fk")
   default_ethnicity     ethnicity?  @relation(fields: [default_ethnicity_id], references: [id], onDelete: Cascade, map: "healthcare_professional_ethnicity_fk")
   hospital              hospital    @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "healthcare_professional_hospital_fk")
@@ -41,6 +42,7 @@ model hospital {
   id                      String                    @id(map: "hospital_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name                    String                    @unique(map: "hospital_unique")
   country_id              String                    @db.Uuid
+  code                    String                    @unique(map: "hospital_unique_1") @db.VarChar
   healthcare_professional healthcare_professional[]
   country                 country                   @relation(fields: [country_id], references: [id], map: "hospital_country_fk")
   patient                 patient[]
@@ -85,19 +87,19 @@ model patient {
   date_of_birth       DateTime            @db.Date
   sex                 sex
   ethnicity_id        String              @db.Uuid
-  creator_id          String              @db.Uuid
+  creator_id          String?             @db.Uuid
   email               String?
   measurement         measurement[]
   ethnicity           ethnicity           @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
-  hospital            hospital            @relation(fields: [hospital_id], references: [id], map: "patient_hospital_fk")
-  creator             user                @relation(fields: [creator_id], references: [id], onDelete: SetNull, map: "patient_user_fk")
+  hospital            hospital            @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "patient_hospital_fk")
+  creator             user?               @relation(fields: [creator_id], references: [id], map: "patient_user_fk")
   patient_treatment   patient_treatment[]
   user_patient        user_patient[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model patient_treatment {
-  id           String    @id(map: "patients_treatments_pk") @db.Uuid
+  id           String    @id(map: "patients_treatments_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   patient_id   String    @db.Uuid
   treatment_id String    @db.Uuid
   start_date   DateTime  @db.Date
@@ -125,6 +127,7 @@ model treatment {
 model user {
   id                      String                   @id(map: "user_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   created_at              DateTime                 @default(now()) @db.Timestamp(6)
+  google_auth             google_auth?
   healthcare_professional healthcare_professional?
   measurement             measurement[]
   normal_user             normal_user?
@@ -146,9 +149,17 @@ model user_patient {
 model growth_data {
   age        Int
   percentile Int
-  value      Float @db.Real
+  value      Float  @db.Real
+  sex        sex
+  ethnicity  String @db.VarChar
 
-  @@unique([percentile, age], map: "growth_data_unique")
+  @@unique([age, percentile, sex, ethnicity], map: "growth_data_unique")
+}
+
+model google_auth {
+  user_id         String @id(map: "google_auth_pk") @db.Uuid
+  google_identity String @unique(map: "google_auth_unique")
+  user            user   @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "google_auth_user_fk")
 }
 
 enum sex {

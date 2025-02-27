@@ -12,12 +12,13 @@ const router = express.Router();
 router.use(loginRequired);
 
 const existingHospitalType = zod.object({
-  id: zod.string(),
+  id: zod.string().uuid(),
 });
 
 const newHospitalType = zod.object({
   name: zod.string().nonempty(),
   country_id: zod.string().uuid(),
+  code: zod.string().nonempty().max(10),
 });
 
 const postType = zod.object({
@@ -53,8 +54,10 @@ router.post("/", async (req, res) => {
       },
     });
     res.sendStatus(201);
+    return;
   }
 
+  //User that creates the hospital is the admin of the hospital
   const newHospital = newHospitalType.safeParse(data.hospital);
   if (newHospital.success) {
     await prisma.healthcare_professional.create({
@@ -74,8 +77,11 @@ router.post("/", async (req, res) => {
           create: {
             name: newHospital.data.name,
             country_id: newHospital.data.country_id,
+            code: newHospital.data.code,
           },
         },
+        approved: true,
+        is_admin: true,
         default_ethnicity:
           data.default_ethnicity_id == null
             ? undefined
@@ -98,12 +104,12 @@ router.post("/", async (req, res) => {
   }
 });
 
-const putType = zod.object({
+const patchType = zod.object({
   default_ethnicity_id: zod.string().nullable().optional(),
   default_instrument_id: zod.string().nullable().optional(),
 });
 
-router.put("/", approvedProfessionalRequired, async (req, res) => {
+router.patch("/", approvedProfessionalRequired, async (req, res) => {
   const authSession = await getAuthSession(req);
 
   const userId = authSession?.user_id;
@@ -117,7 +123,7 @@ router.put("/", approvedProfessionalRequired, async (req, res) => {
 
   let data;
   try {
-    data = putType.parse(body);
+    data = patchType.parse(body);
   } catch {
     res.sendStatus(400);
     return;
@@ -131,6 +137,73 @@ router.put("/", approvedProfessionalRequired, async (req, res) => {
   });
 
   res.sendStatus(200);
+});
+
+const patchHospitalType = zod.union([existingHospitalType, newHospitalType]);
+
+router.patch("/hospital", approvedProfessionalRequired, async (req, res) => {
+  const data = patchHospitalType.safeParse(req.body);
+  if (!data.success) {
+    res.status(400).json(WrongArgumentsMessage);
+    return;
+  }
+  const hospitalData = data.data;
+
+  //Can't change hospital if the user is the only admin
+  if (req.healthcare_professional.is_admin) {
+    const adminCount = await prisma.healthcare_professional.count({
+      where: {
+        hospital_id: req.healthcare_professional.hospital_id,
+        is_admin: true,
+      },
+    });
+    if (adminCount === 1) {
+      res.status(403).json({
+        message: "Can't change hospital if you are the only admin",
+      });
+      return;
+    }
+  }
+
+  const existingHospital = existingHospitalType.safeParse(hospitalData);
+  if (existingHospital.success) {
+    await prisma.healthcare_professional.update({
+      where: {
+        user_id: req.authSession.user_id,
+      },
+      data: {
+        hospital: {
+          connect: {
+            id: existingHospital.data.id,
+          },
+        },
+        approved: false,
+      },
+    });
+    res.sendStatus(200);
+    return;
+  }
+
+  const newHospital = newHospitalType.safeParse(hospitalData);
+  if (newHospital.success) {
+    await prisma.healthcare_professional.update({
+      where: {
+        user_id: req.authSession.user_id,
+      },
+      data: {
+        hospital: {
+          create: {
+            name: newHospital.data.name,
+            country_id: newHospital.data.country_id,
+            code: newHospital.data.code,
+          },
+        },
+        approved: true,
+        is_admin: true,
+      },
+    });
+    res.sendStatus(200);
+  }
 });
 
 export default router;

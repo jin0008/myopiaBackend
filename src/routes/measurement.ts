@@ -60,19 +60,26 @@ router.post("/", approvedProfessionalRequired, async (req, res) => {
   }
 });
 
-router.delete("/:measurementId", async (req, res, next) => {
-  prisma.measurement
-    .delete({
-      where: {
-        id: req.params.measurementId,
-      },
-    })
-    .then(() => res.sendStatus(200))
-    .catch((err) => {
-      if (err instanceof PrismaClientKnownRequestError && err.code === "P2025")
-        res.sendStatus(404);
-      else next(err);
-    });
-});
+router.delete(
+  "/:measurementId",
+  approvedProfessionalRequired,
+  async (req, res, next) => {
+    prisma.measurement
+      .delete({
+        where: {
+          id: req.params.measurementId,
+        },
+      })
+      .then(() => res.sendStatus(200))
+      .catch((err) => {
+        if (
+          err instanceof PrismaClientKnownRequestError &&
+          err.code === "P2025"
+        )
+          res.sendStatus(404);
+        else next(err);
+      });
+  }
+);
 
 export default router;
