@@ -18,7 +18,7 @@ const existingHospitalType = zod.object({
 const newHospitalType = zod.object({
   name: zod.string().nonempty(),
   country_id: zod.string().uuid(),
-  code: zod.string().nonempty().max(10),
+  code: zod.string().regex(/^[a-zA-Z0-9]{1,10}$/),
 });
 
 const postType = zod.object({
@@ -148,22 +148,6 @@ router.patch("/hospital", approvedProfessionalRequired, async (req, res) => {
     return;
   }
   const hospitalData = data.data;
-
-  //Can't change hospital if the user is the only admin
-  if (req.healthcare_professional.is_admin) {
-    const adminCount = await prisma.healthcare_professional.count({
-      where: {
-        hospital_id: req.healthcare_professional.hospital_id,
-        is_admin: true,
-      },
-    });
-    if (adminCount === 1) {
-      res.status(403).json({
-        message: "Can't change hospital if you are the only admin",
-      });
-      return;
-    }
-  }
 
   const existingHospital = existingHospitalType.safeParse(hospitalData);
   if (existingHospital.success) {

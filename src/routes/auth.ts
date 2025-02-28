@@ -418,4 +418,14 @@ router.delete("/passwordAuth", loginRequired, async (req, res) => {
     .then(() => res.sendStatus(200));
 });
 
+router.delete("/user", loginRequired, async (req, res) => {
+  await prisma.user
+    .delete({
+      where: {
+        id: req.authSession.user_id,
+      },
+    })
+    .then(() => res.sendStatus(200));
+});
+
 export default router;
