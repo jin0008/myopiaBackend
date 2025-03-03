@@ -122,6 +122,7 @@ router.get("/user", loginRequired, async (req, res) => {
         },
       },
       id: true,
+      is_site_admin: true,
     },
   });
   res.json(data);
