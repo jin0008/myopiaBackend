@@ -50,3 +50,17 @@ export const hospitalAdminRequired: RequestHandler = async (req, res, next) => {
     next();
   }
 };
+
+export const siteAdminRequired: RequestHandler = async (req, res, next) => {
+  const user = await prisma.user.findUnique({
+    where: {
+      id: req.authSession.user_id,
+    },
+  });
+
+  if (user == null || user.is_site_admin == false) {
+    res.sendStatus(403);
+  } else {
+    next();
+  }
+};

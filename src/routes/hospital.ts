@@ -1,9 +1,9 @@
 import express from "express";
 import prisma from "../lib/prisma";
 import {
-  approvedProfessionalRequired,
   hospitalAdminRequired,
   loginRequired,
+  siteAdminRequired,
 } from "../lib/middlewares";
 import zod from "zod";
 
@@ -22,42 +22,50 @@ router.get("/", async (req, res) => {
     .then((result) => res.json(result));
 });
 
+function getHospitalMembers(hospitalId: string) {
+  return prisma.healthcare_professional.findMany({
+    where: {
+      hospital_id: hospitalId,
+    },
+    select: {
+      user_id: true,
+      name: true,
+      approved: true,
+      is_admin: true,
+    },
+    orderBy: [
+      {
+        approved: "asc",
+      },
+      {
+        is_admin: "desc",
+      },
+      {
+        name: "asc",
+      },
+    ],
+  });
+}
+
+router.get(
+  "/:hostpital_id/healthcare_professional",
+  loginRequired,
+  siteAdminRequired,
+  async (req, res) => {
+    await getHospitalMembers(req.params.hostpital_id).then((result) =>
+      res.json(result)
+    );
+  }
+);
+
 router.get(
   "/healthcare_professional",
   loginRequired,
   hospitalAdminRequired,
   async (req, res) => {
-    const isAdmin = req.healthcare_professional.is_admin;
-
-    if (!isAdmin) {
-      res.sendStatus(403);
-      return;
-    }
-
-    await prisma.healthcare_professional
-      .findMany({
-        where: {
-          hospital_id: req.healthcare_professional.hospital_id,
-        },
-        select: {
-          user_id: true,
-          name: true,
-          approved: true,
-          is_admin: true,
-        },
-        orderBy: [
-          {
-            approved: "asc",
-          },
-          {
-            is_admin: "desc",
-          },
-          {
-            name: "asc",
-          },
-        ],
-      })
-      .then((result) => res.json(result));
+    await getHospitalMembers(req.healthcare_professional.hospital_id).then(
+      (result) => res.json(result)
+    );
   }
 );
 
@@ -97,7 +105,7 @@ router.delete(
   }
 );
 
-const memberPatchType = zod.object({
+export const hospitalMemberPatchType = zod.object({
   approved: zod.literal(true).optional(),
   is_admin: zod.literal(true).optional(),
 });
@@ -111,7 +119,7 @@ router.patch(
 
     let data;
     try {
-      data = memberPatchType.parse(body);
+      data = hospitalMemberPatchType.parse(body);
     } catch {
       res.sendStatus(400);
       return;

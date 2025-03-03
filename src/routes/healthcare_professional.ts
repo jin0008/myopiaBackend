@@ -6,7 +6,9 @@ import { getAuthSession, WrongArgumentsMessage } from "../lib/util";
 import {
   approvedProfessionalRequired,
   loginRequired,
+  siteAdminRequired,
 } from "../lib/middlewares";
+import { hospitalMemberPatchType } from "./hospital";
 
 const router = express.Router();
 router.use(loginRequired);
@@ -189,5 +191,46 @@ router.patch("/hospital", approvedProfessionalRequired, async (req, res) => {
     res.sendStatus(200);
   }
 });
+
+router.patch(
+  "/:healthcare_professional_id",
+  loginRequired,
+  siteAdminRequired,
+  async (req, res) => {
+    const body = req.body;
+
+    let data;
+    try {
+      data = hospitalMemberPatchType.parse(body);
+    } catch {
+      res.sendStatus(400);
+      return;
+    }
+
+    await prisma.healthcare_professional
+      .update({
+        where: {
+          user_id: req.params.healthcare_professional_id,
+        },
+        data: data,
+      })
+      .then(() => res.sendStatus(200));
+  }
+);
+
+router.delete(
+  "/:healthcare_professional_id",
+  loginRequired,
+  siteAdminRequired,
+  async (req, res) => {
+    await prisma.healthcare_professional
+      .delete({
+        where: {
+          user_id: req.params.healthcare_professional_id,
+        },
+      })
+      .then(() => res.sendStatus(200));
+  }
+);
 
 export default router;

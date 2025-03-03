@@ -127,6 +127,7 @@ model treatment {
 model user {
   id                      String                   @id(map: "user_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   created_at              DateTime                 @default(now()) @db.Timestamp(6)
+  is_site_admin           Boolean                  @default(false)
   google_auth             google_auth?
   healthcare_professional healthcare_professional?
   measurement             measurement[]
