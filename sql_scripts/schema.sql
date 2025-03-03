@@ -2,11 +2,69 @@
 -- PostgreSQL database cluster dump
 --
 
--- Started on 2025-02-27 16:09:52 KST
+-- Started on 2025-03-04 01:21:58 KST
 
 SET default_transaction_read_only = off;
 
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
 
+--
+-- Roles
+--
+
+CREATE ROLE postgres;
+ALTER ROLE postgres WITH SUPERUSER INHERIT CREATEROLE CREATEDB LOGIN REPLICATION BYPASSRLS;
+
+--
+-- User Configurations
+--
+
+
+
+
+
+
+
+
+--
+-- Databases
+--
+
+--
+-- Database "template1" dump
+--
+
+\connect template1
+
+--
+-- PostgreSQL database dump
+--
+
+-- Dumped from database version 17.4 (Debian 17.4-1.pgdg120+2)
+-- Dumped by pg_dump version 17.4 (Ubuntu 17.4-1.pgdg24.04+2)
+
+-- Started on 2025-03-04 01:22:00 KST
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET transaction_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+-- Completed on 2025-03-04 01:22:15 KST
+
+--
+-- PostgreSQL database dump complete
+--
+
+--
 -- Database "app" dump
 --
 
@@ -14,10 +72,10 @@ SET default_transaction_read_only = off;
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 17.3 (Debian 17.3-1.pgdg120+1)
+-- Dumped from database version 17.4 (Debian 17.4-1.pgdg120+2)
 -- Dumped by pg_dump version 17.4 (Ubuntu 17.4-1.pgdg24.04+2)
 
--- Started on 2025-02-27 16:09:52 KST
+-- Started on 2025-03-04 01:22:15 KST
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -32,12 +90,11 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
--- TOC entry 3507 (class 1262 OID 16491)
+-- TOC entry 3506 (class 1262 OID 16621)
 -- Name: app; Type: DATABASE; Schema: -; Owner: postgres
 --
-DROP DATABASE app;
 
-CREATE DATABASE app ENCODING = 'UTF8';
+CREATE DATABASE app WITH TEMPLATE = template0 ENCODING = 'UTF8' LOCALE_PROVIDER = libc LOCALE = 'C.UTF-8';
 
 
 ALTER DATABASE app OWNER TO postgres;
@@ -57,7 +114,7 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
--- TOC entry 876 (class 1247 OID 16532)
+-- TOC entry 861 (class 1247 OID 16623)
 -- Name: sex; Type: TYPE; Schema: public; Owner: postgres
 --
 
@@ -74,7 +131,7 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
--- TOC entry 217 (class 1259 OID 16492)
+-- TOC entry 217 (class 1259 OID 16627)
 -- Name: country; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -88,7 +145,7 @@ CREATE TABLE public.country (
 ALTER TABLE public.country OWNER TO postgres;
 
 --
--- TOC entry 218 (class 1259 OID 16495)
+-- TOC entry 218 (class 1259 OID 16633)
 -- Name: ethnicity; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -101,7 +158,7 @@ CREATE TABLE public.ethnicity (
 ALTER TABLE public.ethnicity OWNER TO postgres;
 
 --
--- TOC entry 232 (class 1259 OID 73732)
+-- TOC entry 219 (class 1259 OID 16637)
 -- Name: google_auth; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -114,7 +171,7 @@ CREATE TABLE public.google_auth (
 ALTER TABLE public.google_auth OWNER TO postgres;
 
 --
--- TOC entry 231 (class 1259 OID 40964)
+-- TOC entry 220 (class 1259 OID 16642)
 -- Name: growth_data; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -130,7 +187,7 @@ CREATE TABLE public.growth_data (
 ALTER TABLE public.growth_data OWNER TO postgres;
 
 --
--- TOC entry 224 (class 1259 OID 16601)
+-- TOC entry 221 (class 1259 OID 16647)
 -- Name: healthcare_professional; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -149,7 +206,7 @@ CREATE TABLE public.healthcare_professional (
 ALTER TABLE public.healthcare_professional OWNER TO postgres;
 
 --
--- TOC entry 219 (class 1259 OID 16498)
+-- TOC entry 222 (class 1259 OID 16654)
 -- Name: hospital; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -164,7 +221,7 @@ CREATE TABLE public.hospital (
 ALTER TABLE public.hospital OWNER TO postgres;
 
 --
--- TOC entry 222 (class 1259 OID 16560)
+-- TOC entry 223 (class 1259 OID 16660)
 -- Name: instrument; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -177,7 +234,7 @@ CREATE TABLE public.instrument (
 ALTER TABLE public.instrument OWNER TO postgres;
 
 --
--- TOC entry 223 (class 1259 OID 16568)
+-- TOC entry 224 (class 1259 OID 16664)
 -- Name: measurement; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -195,7 +252,7 @@ CREATE TABLE public.measurement (
 ALTER TABLE public.measurement OWNER TO postgres;
 
 --
--- TOC entry 227 (class 1259 OID 16664)
+-- TOC entry 225 (class 1259 OID 16668)
 -- Name: normal_user; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -207,7 +264,7 @@ CREATE TABLE public.normal_user (
 ALTER TABLE public.normal_user OWNER TO postgres;
 
 --
--- TOC entry 225 (class 1259 OID 16632)
+-- TOC entry 226 (class 1259 OID 16671)
 -- Name: password_auth; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -221,7 +278,7 @@ CREATE TABLE public.password_auth (
 ALTER TABLE public.password_auth OWNER TO postgres;
 
 --
--- TOC entry 221 (class 1259 OID 16522)
+-- TOC entry 227 (class 1259 OID 16676)
 -- Name: patient; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -240,7 +297,7 @@ CREATE TABLE public.patient (
 ALTER TABLE public.patient OWNER TO postgres;
 
 --
--- TOC entry 229 (class 1259 OID 16685)
+-- TOC entry 228 (class 1259 OID 16682)
 -- Name: patient_treatment; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -258,7 +315,7 @@ CREATE TABLE public.patient_treatment (
 ALTER TABLE public.patient_treatment OWNER TO postgres;
 
 --
--- TOC entry 226 (class 1259 OID 16649)
+-- TOC entry 229 (class 1259 OID 16688)
 -- Name: session; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -273,7 +330,7 @@ CREATE TABLE public.session (
 ALTER TABLE public.session OWNER TO postgres;
 
 --
--- TOC entry 228 (class 1259 OID 16675)
+-- TOC entry 230 (class 1259 OID 16694)
 -- Name: treatment; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -287,20 +344,21 @@ CREATE TABLE public.treatment (
 ALTER TABLE public.treatment OWNER TO postgres;
 
 --
--- TOC entry 220 (class 1259 OID 16504)
+-- TOC entry 231 (class 1259 OID 16700)
 -- Name: user; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public."user" (
     id uuid DEFAULT gen_random_uuid() NOT NULL,
-    created_at timestamp without time zone DEFAULT now() NOT NULL
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    is_site_admin boolean DEFAULT false NOT NULL
 );
 
 
 ALTER TABLE public."user" OWNER TO postgres;
 
 --
--- TOC entry 230 (class 1259 OID 32772)
+-- TOC entry 232 (class 1259 OID 16705)
 -- Name: user_patient; Type: TABLE; Schema: public; Owner: postgres
 --
 
@@ -313,7 +371,7 @@ CREATE TABLE public.user_patient (
 ALTER TABLE public.user_patient OWNER TO postgres;
 
 --
--- TOC entry 3288 (class 2606 OID 16508)
+-- TOC entry 3287 (class 2606 OID 16709)
 -- Name: country country_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -322,7 +380,7 @@ ALTER TABLE ONLY public.country
 
 
 --
--- TOC entry 3290 (class 2606 OID 16629)
+-- TOC entry 3289 (class 2606 OID 16711)
 -- Name: country country_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -331,7 +389,7 @@ ALTER TABLE ONLY public.country
 
 
 --
--- TOC entry 3292 (class 2606 OID 16631)
+-- TOC entry 3291 (class 2606 OID 16713)
 -- Name: country country_unique_1; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -340,7 +398,7 @@ ALTER TABLE ONLY public.country
 
 
 --
--- TOC entry 3294 (class 2606 OID 16510)
+-- TOC entry 3293 (class 2606 OID 16715)
 -- Name: ethnicity ethnicity_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -349,7 +407,7 @@ ALTER TABLE ONLY public.ethnicity
 
 
 --
--- TOC entry 3334 (class 2606 OID 73736)
+-- TOC entry 3295 (class 2606 OID 16717)
 -- Name: google_auth google_auth_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -358,7 +416,7 @@ ALTER TABLE ONLY public.google_auth
 
 
 --
--- TOC entry 3336 (class 2606 OID 73745)
+-- TOC entry 3297 (class 2606 OID 16719)
 -- Name: google_auth google_auth_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -367,7 +425,7 @@ ALTER TABLE ONLY public.google_auth
 
 
 --
--- TOC entry 3332 (class 2606 OID 81928)
+-- TOC entry 3299 (class 2606 OID 16721)
 -- Name: growth_data growth_data_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -376,7 +434,7 @@ ALTER TABLE ONLY public.growth_data
 
 
 --
--- TOC entry 3312 (class 2606 OID 24581)
+-- TOC entry 3301 (class 2606 OID 16723)
 -- Name: healthcare_professional healthcare_professional_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -385,7 +443,7 @@ ALTER TABLE ONLY public.healthcare_professional
 
 
 --
--- TOC entry 3296 (class 2606 OID 16512)
+-- TOC entry 3303 (class 2606 OID 16725)
 -- Name: hospital hospital_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -394,7 +452,7 @@ ALTER TABLE ONLY public.hospital
 
 
 --
--- TOC entry 3298 (class 2606 OID 16514)
+-- TOC entry 3305 (class 2606 OID 16727)
 -- Name: hospital hospital_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -403,7 +461,7 @@ ALTER TABLE ONLY public.hospital
 
 
 --
--- TOC entry 3300 (class 2606 OID 57369)
+-- TOC entry 3307 (class 2606 OID 16729)
 -- Name: hospital hospital_unique_1; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -412,7 +470,7 @@ ALTER TABLE ONLY public.hospital
 
 
 --
--- TOC entry 3306 (class 2606 OID 16564)
+-- TOC entry 3309 (class 2606 OID 16731)
 -- Name: instrument instrument_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -421,7 +479,7 @@ ALTER TABLE ONLY public.instrument
 
 
 --
--- TOC entry 3308 (class 2606 OID 16567)
+-- TOC entry 3311 (class 2606 OID 16733)
 -- Name: instrument instrument_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -430,7 +488,7 @@ ALTER TABLE ONLY public.instrument
 
 
 --
--- TOC entry 3310 (class 2606 OID 16573)
+-- TOC entry 3313 (class 2606 OID 16735)
 -- Name: measurement measurement_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -439,7 +497,7 @@ ALTER TABLE ONLY public.measurement
 
 
 --
--- TOC entry 3322 (class 2606 OID 16668)
+-- TOC entry 3315 (class 2606 OID 16737)
 -- Name: normal_user normal_user_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -448,7 +506,7 @@ ALTER TABLE ONLY public.normal_user
 
 
 --
--- TOC entry 3314 (class 2606 OID 16643)
+-- TOC entry 3317 (class 2606 OID 16739)
 -- Name: password_auth password_auth_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -457,7 +515,7 @@ ALTER TABLE ONLY public.password_auth
 
 
 --
--- TOC entry 3316 (class 2606 OID 16641)
+-- TOC entry 3319 (class 2606 OID 16741)
 -- Name: password_auth password_auth_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -466,7 +524,7 @@ ALTER TABLE ONLY public.password_auth
 
 
 --
--- TOC entry 3304 (class 2606 OID 16526)
+-- TOC entry 3321 (class 2606 OID 16743)
 -- Name: patient patient_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -475,7 +533,7 @@ ALTER TABLE ONLY public.patient
 
 
 --
--- TOC entry 3328 (class 2606 OID 16689)
+-- TOC entry 3323 (class 2606 OID 16745)
 -- Name: patient_treatment patients_treatments_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -484,7 +542,7 @@ ALTER TABLE ONLY public.patient_treatment
 
 
 --
--- TOC entry 3318 (class 2606 OID 16654)
+-- TOC entry 3325 (class 2606 OID 16747)
 -- Name: session session_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -493,7 +551,7 @@ ALTER TABLE ONLY public.session
 
 
 --
--- TOC entry 3320 (class 2606 OID 16658)
+-- TOC entry 3327 (class 2606 OID 16749)
 -- Name: session session_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -502,7 +560,7 @@ ALTER TABLE ONLY public.session
 
 
 --
--- TOC entry 3324 (class 2606 OID 16680)
+-- TOC entry 3329 (class 2606 OID 16751)
 -- Name: treatment treatment_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -511,7 +569,7 @@ ALTER TABLE ONLY public.treatment
 
 
 --
--- TOC entry 3326 (class 2606 OID 16682)
+-- TOC entry 3331 (class 2606 OID 16753)
 -- Name: treatment treatment_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -520,7 +578,7 @@ ALTER TABLE ONLY public.treatment
 
 
 --
--- TOC entry 3330 (class 2606 OID 32786)
+-- TOC entry 3335 (class 2606 OID 16755)
 -- Name: user_patient user_patient_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -529,7 +587,7 @@ ALTER TABLE ONLY public.user_patient
 
 
 --
--- TOC entry 3302 (class 2606 OID 16521)
+-- TOC entry 3333 (class 2606 OID 16757)
 -- Name: user user_pk; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -538,7 +596,7 @@ ALTER TABLE ONLY public."user"
 
 
 --
--- TOC entry 3356 (class 2606 OID 73737)
+-- TOC entry 3336 (class 2606 OID 16758)
 -- Name: google_auth google_auth_user_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -547,7 +605,7 @@ ALTER TABLE ONLY public.google_auth
 
 
 --
--- TOC entry 3344 (class 2606 OID 16616)
+-- TOC entry 3337 (class 2606 OID 16763)
 -- Name: healthcare_professional healthcare_professional_country_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -556,7 +614,7 @@ ALTER TABLE ONLY public.healthcare_professional
 
 
 --
--- TOC entry 3345 (class 2606 OID 16702)
+-- TOC entry 3338 (class 2606 OID 16768)
 -- Name: healthcare_professional healthcare_professional_ethnicity_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -565,7 +623,7 @@ ALTER TABLE ONLY public.healthcare_professional
 
 
 --
--- TOC entry 3346 (class 2606 OID 16611)
+-- TOC entry 3339 (class 2606 OID 16773)
 -- Name: healthcare_professional healthcare_professional_hospital_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -574,7 +632,7 @@ ALTER TABLE ONLY public.healthcare_professional
 
 
 --
--- TOC entry 3347 (class 2606 OID 16707)
+-- TOC entry 3340 (class 2606 OID 16778)
 -- Name: healthcare_professional healthcare_professional_instrument_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -583,7 +641,7 @@ ALTER TABLE ONLY public.healthcare_professional
 
 
 --
--- TOC entry 3348 (class 2606 OID 16621)
+-- TOC entry 3341 (class 2606 OID 16783)
 -- Name: healthcare_professional healthcare_professional_user_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -592,7 +650,7 @@ ALTER TABLE ONLY public.healthcare_professional
 
 
 --
--- TOC entry 3337 (class 2606 OID 16515)
+-- TOC entry 3342 (class 2606 OID 16788)
 -- Name: hospital hospital_country_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -601,7 +659,7 @@ ALTER TABLE ONLY public.hospital
 
 
 --
--- TOC entry 3341 (class 2606 OID 16596)
+-- TOC entry 3343 (class 2606 OID 16793)
 -- Name: measurement measurement_instrument_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -610,7 +668,7 @@ ALTER TABLE ONLY public.measurement
 
 
 --
--- TOC entry 3342 (class 2606 OID 16574)
+-- TOC entry 3344 (class 2606 OID 16798)
 -- Name: measurement measurement_patient_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -619,7 +677,7 @@ ALTER TABLE ONLY public.measurement
 
 
 --
--- TOC entry 3343 (class 2606 OID 16591)
+-- TOC entry 3345 (class 2606 OID 16803)
 -- Name: measurement measurement_user_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -628,7 +686,7 @@ ALTER TABLE ONLY public.measurement
 
 
 --
--- TOC entry 3351 (class 2606 OID 16669)
+-- TOC entry 3346 (class 2606 OID 16808)
 -- Name: normal_user normal_user_user_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -637,7 +695,7 @@ ALTER TABLE ONLY public.normal_user
 
 
 --
--- TOC entry 3349 (class 2606 OID 16644)
+-- TOC entry 3347 (class 2606 OID 16813)
 -- Name: password_auth password_auth_user_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -646,7 +704,7 @@ ALTER TABLE ONLY public.password_auth
 
 
 --
--- TOC entry 3338 (class 2606 OID 16545)
+-- TOC entry 3348 (class 2606 OID 16818)
 -- Name: patient patient_ethnicity_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -655,7 +713,7 @@ ALTER TABLE ONLY public.patient
 
 
 --
--- TOC entry 3339 (class 2606 OID 57363)
+-- TOC entry 3349 (class 2606 OID 16823)
 -- Name: patient patient_hospital_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -664,7 +722,7 @@ ALTER TABLE ONLY public.patient
 
 
 --
--- TOC entry 3352 (class 2606 OID 16692)
+-- TOC entry 3351 (class 2606 OID 16828)
 -- Name: patient_treatment patient_treatment_patient_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -673,7 +731,7 @@ ALTER TABLE ONLY public.patient_treatment
 
 
 --
--- TOC entry 3353 (class 2606 OID 16697)
+-- TOC entry 3352 (class 2606 OID 16833)
 -- Name: patient_treatment patient_treatment_treatment_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -682,7 +740,7 @@ ALTER TABLE ONLY public.patient_treatment
 
 
 --
--- TOC entry 3340 (class 2606 OID 16555)
+-- TOC entry 3350 (class 2606 OID 16838)
 -- Name: patient patient_user_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -691,7 +749,7 @@ ALTER TABLE ONLY public.patient
 
 
 --
--- TOC entry 3350 (class 2606 OID 16659)
+-- TOC entry 3353 (class 2606 OID 16843)
 -- Name: session session_user_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -700,7 +758,7 @@ ALTER TABLE ONLY public.session
 
 
 --
--- TOC entry 3354 (class 2606 OID 32780)
+-- TOC entry 3354 (class 2606 OID 16848)
 -- Name: user_patient user_patient_patient_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -709,7 +767,7 @@ ALTER TABLE ONLY public.user_patient
 
 
 --
--- TOC entry 3355 (class 2606 OID 32775)
+-- TOC entry 3355 (class 2606 OID 16853)
 -- Name: user_patient user_patient_user_fk; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -717,13 +775,13 @@ ALTER TABLE ONLY public.user_patient
     ADD CONSTRAINT user_patient_user_fk FOREIGN KEY (user_id) REFERENCES public."user"(id) ON UPDATE CASCADE ON DELETE CASCADE;
 
 
--- Completed on 2025-02-27 16:09:53 KST
+-- Completed on 2025-03-04 01:22:31 KST
 
 --
 -- PostgreSQL database dump complete
 --
 
--- Completed on 2025-02-27 16:09:53 KST
+-- Completed on 2025-03-04 01:22:31 KST
 
 --
 -- PostgreSQL database cluster dump complete
