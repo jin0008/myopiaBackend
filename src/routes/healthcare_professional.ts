@@ -192,6 +192,10 @@ router.patch("/hospital", approvedProfessionalRequired, async (req, res) => {
   }
 });
 
+const hospitalMemberPatchTypeAdmin = zod.object({
+  approved: zod.boolean().optional(),
+  is_admin: zod.boolean().optional(),
+});
 router.patch(
   "/:healthcare_professional_id",
   loginRequired,
@@ -201,7 +205,7 @@ router.patch(
 
     let data;
     try {
-      data = hospitalMemberPatchType.parse(body);
+      data = hospitalMemberPatchTypeAdmin.parse(body);
     } catch {
       res.sendStatus(400);
       return;
