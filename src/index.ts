@@ -14,6 +14,7 @@ import hospitalRoutes from "./routes/hospital";
 import patientTreatmentRoutes from "./routes/patient_treatment";
 import staticRoutes from "./routes/static";
 import growthDataRoutes from "./routes/growth_data";
+import patientKRoutes from "./routes/patient_k";
 
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Prisma } from "@prisma/client";
@@ -36,6 +37,7 @@ app.use(cors());
 app.use("/auth", authRoutes);
 app.use("/healthcare_professional", healthcareProfessionalRoutes);
 app.use("/measurement", measurementRoutes);
+app.use("/patient_k", patientKRoutes);
 app.use("/patient", patientRoutes);
 app.use("/user", userRoutes);
 app.use("/hospital", hospitalRoutes);

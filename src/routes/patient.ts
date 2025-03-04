@@ -56,6 +56,7 @@ router.get("/:patientId", async (req, res) => {
       ethnicity: true,
       measurement: true,
       patient_treatment: true,
+      patient_k: true,
     },
   });
   if (data == null) {

@@ -93,6 +93,7 @@ model patient {
   ethnicity           ethnicity           @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
   hospital            hospital            @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "patient_hospital_fk")
   creator             user?               @relation(fields: [creator_id], references: [id], map: "patient_user_fk")
+  patient_k           patient_k[]
   patient_treatment   patient_treatment[]
   user_patient        user_patient[]
 }
@@ -163,7 +164,22 @@ model google_auth {
   user            user   @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "google_auth_user_fk")
 }
 
+model patient_k {
+  patient_id String  @db.Uuid
+  k_type     ktype
+  od         Float?  @db.Real
+  os         Float?  @db.Real
+  patient    patient @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_k_patient_fk")
+
+  @@unique([patient_id, k_type], map: "patient_k_unique")
+}
+
 enum sex {
   male
   female
+}
+
+enum ktype {
+  K1
+  K2
 }
