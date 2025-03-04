@@ -27,6 +27,7 @@ const postType = zod.object({
   name: zod.string().nonempty(),
   country_id: zod.string().uuid(),
   hospital: zod.union([existingHospitalType, newHospitalType]),
+  role: zod.string(),
   default_ethnicity_id: zod.string().uuid().nullable().optional(),
   default_instrument_id: zod.string().uuid().nullable().optional(),
 });
@@ -51,6 +52,7 @@ router.post("/", async (req, res) => {
         name: data.name,
         country_id: data.country_id,
         hospital_id: existingHospital.data.id,
+        role: data.role,
         default_ethnicity_id: data.default_ethnicity_id,
         default_instrument_id: data.default_instrument_id,
       },
@@ -84,6 +86,7 @@ router.post("/", async (req, res) => {
         },
         approved: true,
         is_admin: true,
+        role: data.role,
         default_ethnicity:
           data.default_ethnicity_id == null
             ? undefined
@@ -109,6 +112,7 @@ router.post("/", async (req, res) => {
 const patchType = zod.object({
   default_ethnicity_id: zod.string().nullable().optional(),
   default_instrument_id: zod.string().nullable().optional(),
+  role: zod.string().optional(),
 });
 
 router.patch("/", approvedProfessionalRequired, async (req, res) => {

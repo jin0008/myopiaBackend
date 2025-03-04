@@ -31,6 +31,7 @@ model healthcare_professional {
   default_ethnicity_id  String?     @db.Uuid
   default_instrument_id String?     @db.Uuid
   is_admin              Boolean     @default(false)
+  role                  String      @db.VarChar
   country               country     @relation(fields: [country_id], references: [id], onDelete: Cascade, map: "healthcare_professional_country_fk")
   default_ethnicity     ethnicity?  @relation(fields: [default_ethnicity_id], references: [id], onDelete: Cascade, map: "healthcare_professional_ethnicity_fk")
   hospital              hospital    @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "healthcare_professional_hospital_fk")
