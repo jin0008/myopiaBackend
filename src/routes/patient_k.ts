@@ -13,8 +13,8 @@ router.use(loginRequired);
 const putBodyType = zod.object({
   patient_id: zod.string().uuid(),
   k_type: zod.nativeEnum(ktype),
-  od: zod.number(),
-  os: zod.number(),
+  od: zod.number().nullable(),
+  os: zod.number().nullable(),
 });
 router.put("/", approvedProfessionalRequired, async (req, res) => {
   let data;
