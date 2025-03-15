@@ -136,6 +136,11 @@ CREATE TYPE public.sex AS ENUM (
     'female'
 );
 
+CREATE TABLE public.visitor_stats (
+    date DATE PRIMARY KEY DEFAULT CURRENT_DATE,
+    daily_visitors INT DEFAULT 1,
+    total_visitors INT DEFAULT 1
+);
 
 ALTER TYPE public.sex OWNER TO postgres;
 
