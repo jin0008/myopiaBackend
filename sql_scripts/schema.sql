@@ -221,7 +221,9 @@ CREATE TABLE public.healthcare_professional (
     role character varying NOT NULL
 );
 
-
+ALTER TABLE public.patient
+ADD CONSTRAINT unique_hospital_registration
+UNIQUE (hospital_id, registration_number);
 ALTER TABLE public.healthcare_professional OWNER TO postgres;
 
 --
