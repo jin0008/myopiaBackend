@@ -45,7 +45,7 @@ app.use("/hospital", hospitalRoutes);
 app.use("/patient_treatment", patientTreatmentRoutes);
 app.use("/growth_Data", growthDataRoutes);
 app.use("/static", staticRoutes);
-app.use("/api", visitorRoutes);
+app.use("/visitor", visitorRoutes);
 
 const prismaErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
   if (err instanceof PrismaClientKnownRequestError) {
