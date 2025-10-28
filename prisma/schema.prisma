@@ -184,3 +184,15 @@ enum ktype {
   K1
   K2
 }
+
+model PageView {
+  id        BigInt   @id @default(autoincrement())
+  path      String   @default("/")
+  ipHash    String?  @map("ip_hash")
+  userAgent String?  @map("user_agent")
+  visitedAt DateTime @default(now()) @map("visited_at")
+
+  @@map("page_views")
+  @@index([visitedAt])
+  @@index([path])
+}
