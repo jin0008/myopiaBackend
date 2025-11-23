@@ -15,7 +15,6 @@ import patientTreatmentRoutes from "./routes/patient_treatment";
 import staticRoutes from "./routes/static";
 import growthDataRoutes from "./routes/growth_data";
 import patientKRoutes from "./routes/patient_k";
-import visitorRoutes from "./routes/track";
 
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Prisma } from "@prisma/client";
@@ -45,7 +44,6 @@ app.use("/hospital", hospitalRoutes);
 app.use("/patient_treatment", patientTreatmentRoutes);
 app.use("/growth_Data", growthDataRoutes);
 app.use("/static", staticRoutes);
-app.use("/api", visitorRoutes);
 
 const prismaErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
   if (err instanceof PrismaClientKnownRequestError) {
