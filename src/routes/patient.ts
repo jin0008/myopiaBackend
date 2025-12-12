@@ -84,7 +84,11 @@ router.post("/", approvedProfessionalRequired, async (req, res) => {
 
   const existingPatient = await prisma.patient.findFirst({
     where: {
-      registration_number: data.registration_number,
+      // Fix: Trim and Case-Insensitive check
+      registration_number: {
+        equals: data.registration_number.trim(),
+        mode: "insensitive",
+      },
       hospital_id: req.healthcare_professional.hospital_id,
     },
   });
