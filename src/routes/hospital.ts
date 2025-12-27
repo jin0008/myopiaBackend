@@ -17,9 +17,26 @@ router.get("/", async (req, res) => {
         name: true,
         code: true,
         country: true,
+        _count: {
+          select: {
+            patient: true,
+          },
+        },
+      },
+      orderBy: {
+        patient: {
+          _count: "desc",
+        },
       },
     })
-    .then((result) => res.json(result));
+    .then((result) =>
+      res.json(
+        result.map((h) => ({
+          ...h,
+          patientCount: h._count.patient,
+        }))
+      )
+    );
 });
 
 function getHospitalMembers(hospitalId: string) {
