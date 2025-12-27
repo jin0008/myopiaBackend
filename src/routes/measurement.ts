@@ -5,7 +5,7 @@ import {
   approvedProfessionalRequired,
   loginRequired,
 } from "../lib/middlewares";
-import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { Prisma } from "@prisma/client";
 
 const router = express.Router();
 router.use(loginRequired);
@@ -71,9 +71,9 @@ router.delete(
         },
       })
       .then(() => res.sendStatus(200))
-      .catch((err) => {
+      .catch((err: any) => {
         if (
-          err instanceof PrismaClientKnownRequestError &&
+          err instanceof Prisma.PrismaClientKnownRequestError &&
           err.code === "P2025"
         )
           res.sendStatus(404);

@@ -17,7 +17,7 @@ import growthDataRoutes from "./routes/growth_data";
 import patientKRoutes from "./routes/patient_k";
 import newsRoutes from "./routes/news";
 
-import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+
 import { Prisma } from "@prisma/client";
 
 const app = express();
@@ -48,7 +48,7 @@ app.use("/static", staticRoutes);
 app.use("/news", newsRoutes);
 
 const prismaErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
-  if (err instanceof PrismaClientKnownRequestError) {
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
     if (["P2002", "P2004", "P2006", "P2007"].includes(err.code)) {
       console.log(err.message);
       res.sendStatus(400);

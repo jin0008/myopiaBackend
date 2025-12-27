@@ -12,7 +12,7 @@ router.get("/ethnicity_list", async (req, res) => {
     },
     distinct: ["ethnicity"],
   });
-  res.status(200).json(data.map((d) => d.ethnicity));
+  res.status(200).json(data.map((d: any) => d.ethnicity));
 });
 
 router.get("/", async (req, res) => {

@@ -3,7 +3,7 @@ import bcrypt from "bcrypt";
 import prisma from "../lib/prisma";
 
 import { generateSession, getAuthSession } from "../lib/util";
-import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { Prisma } from "@prisma/client";
 import { loginRequired } from "../lib/middlewares";
 
 import { OAuth2Client } from "google-auth-library";
@@ -158,9 +158,9 @@ router.post("/user/passwordAuth", async (req, res) => {
       },
     })
     .then(() => res.sendStatus(201))
-    .catch((err) => {
+    .catch((err: any) => {
       if (
-        err instanceof PrismaClientKnownRequestError &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === "P2002"
       ) {
         res.status(400).json({ message: "Username already exists" });
@@ -189,7 +189,7 @@ router.post("/passwordAuth", loginRequired, async (req, res) => {
         user_id: req.authSession.user_id,
       },
     })
-    .then((count) => count > 0);
+    .then((count: number) => count > 0);
 
   if (passwordAuthExists) {
     res.status(400).json({ message: "Password auth already exists" });
@@ -209,9 +209,9 @@ router.post("/passwordAuth", loginRequired, async (req, res) => {
       },
     })
     .then(() => res.sendStatus(201))
-    .catch((err) => {
+    .catch((err: any) => {
       if (
-        err instanceof PrismaClientKnownRequestError &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === "P2002"
       ) {
         res.status(400).json({ message: "Username already exists" });
@@ -301,9 +301,9 @@ router.post("/user/googleAuth", async (req, res) => {
         },
       },
     })
-    .catch((err) => {
+    .catch((err: any) => {
       if (
-        err instanceof PrismaClientKnownRequestError &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === "P2002"
       ) {
         res.status(400).json({
@@ -340,7 +340,7 @@ router.post("/googleAuth", loginRequired, async (req, res) => {
         user_id: req.authSession.user_id,
       },
     })
-    .then((count) => count > 0);
+    .then((count: number) => count > 0);
 
   if (googleAuthExists) {
     res.status(400).json({ message: "Google auth already exists" });
@@ -358,9 +358,9 @@ router.post("/googleAuth", loginRequired, async (req, res) => {
         google_identity: payload.sub,
       },
     })
-    .catch((err) => {
+    .catch((err: any) => {
       if (
-        err instanceof PrismaClientKnownRequestError &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === "P2002"
       ) {
         res.status(400).json({
@@ -380,7 +380,7 @@ router.delete("/googleAuth", loginRequired, async (req, res) => {
         user_id: req.authSession.user_id,
       },
     })
-    .then((count) => count > 0);
+    .then((count: number) => count > 0);
   if (!passwordAuthExists) {
     res
       .status(400)
@@ -403,7 +403,7 @@ router.delete("/passwordAuth", loginRequired, async (req, res) => {
         user_id: req.authSession.user_id,
       },
     })
-    .then((count) => count > 0);
+    .then((count: number) => count > 0);
   if (!googleAuthExists) {
     res
       .status(400)
@@ -489,7 +489,7 @@ router.post("/dev_login", async (req, res) => {
   // 4. Generate Session
   generateSession(user.id)
     .then((session) => res.json(session))
-    .catch((e) => {
+    .catch((e: any) => {
       console.error(e);
       res.sendStatus(500);
     });

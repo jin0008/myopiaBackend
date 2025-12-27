@@ -6,7 +6,7 @@ import {
   loginRequired,
 } from "../lib/middlewares";
 import { sex } from "@prisma/client";
-import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { Prisma } from "@prisma/client";
 import { WrongArgumentsMessage } from "../lib/util";
 
 const router = express.Router();
@@ -121,7 +121,7 @@ router.delete(
         },
       })
       .catch((e) => {
-        if (e instanceof PrismaClientKnownRequestError && e.code === "P2025") {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2025") {
           res.sendStatus(404);
           return;
         }

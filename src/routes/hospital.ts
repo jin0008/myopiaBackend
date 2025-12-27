@@ -29,9 +29,9 @@ router.get("/", async (req, res) => {
         },
       },
     })
-    .then((result) =>
+    .then((result: any[]) =>
       res.json(
-        result.map((h) => ({
+        result.map((h: any) => ({
           ...h,
           patientCount: h._count.patient,
         }))
@@ -69,7 +69,7 @@ router.get(
   loginRequired,
   siteAdminRequired,
   async (req, res) => {
-    await getHospitalMembers(req.params.hostpital_id).then((result) =>
+    await getHospitalMembers(req.params.hostpital_id).then((result: any[]) =>
       res.json(result)
     );
   }
@@ -81,7 +81,7 @@ router.get(
   hospitalAdminRequired,
   async (req, res) => {
     await getHospitalMembers(req.healthcare_professional.hospital_id).then(
-      (result) => res.json(result)
+      (result: any[]) => res.json(result)
     );
   }
 );

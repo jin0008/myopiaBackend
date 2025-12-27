@@ -2,7 +2,7 @@ import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
 import { loginRequired } from "../lib/middlewares";
-import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { Prisma } from "@prisma/client";
 
 const router = express.Router();
 router.use(loginRequired);
@@ -54,9 +54,9 @@ router.post("/patient", async (req, res) => {
         patient_id: patient.id,
       },
     })
-    .catch((err) => {
+    .catch((err: any) => {
       if (
-        err instanceof PrismaClientKnownRequestError &&
+        err instanceof Prisma.PrismaClientKnownRequestError &&
         err.code === "P2002"
       ) {
         res.status(400).json({ message: "Already registered" });
