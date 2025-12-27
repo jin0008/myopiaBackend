@@ -28,11 +28,13 @@ router.get("/", async (req, res) => {
   // Explicitly fetch counts for each hospital
   const results = await Promise.all(
     hospitals.map(async (h: any) => {
-      const count = await prisma.patient.count({
-        where: {
-          hospital_id: h.id,
-        },
-      });
+      // User requested direct SQL command approach
+      const countResult: any[] = await prisma.$queryRaw`
+        SELECT COUNT(*) as count FROM "patient" WHERE "hospital_id" = ${h.id}::uuid
+      `;
+      // Convert BigInt to number if necessary (Prisma returns BigInt for count)
+      const count = Number(countResult[0]?.count || 0);
+
       return {
         ...h,
         patientCount: count,
