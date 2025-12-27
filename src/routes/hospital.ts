@@ -9,34 +9,43 @@ import zod from "zod";
 
 const router = express.Router();
 
+// Fixed: Use explicit count query instead of relation count to ensure stability across versions
 router.get("/", async (req, res) => {
-  await prisma.hospital
-    .findMany({
-      select: {
-        id: true,
-        name: true,
-        code: true,
-        country: true,
-        _count: {
-          select: {
-            patient: true,
-          },
+  const hospitals = await prisma.hospital.findMany({
+    select: {
+      id: true,
+      name: true,
+      code: true,
+      country: true,
+    },
+    // Removing orderBy on relation count as we will do manual sort if needed, 
+    // or just sort by name for now to be safe.
+    orderBy: {
+      name: "asc",
+    },
+  });
+
+  // Explicitly fetch counts for each hospital
+  const results = await Promise.all(
+    hospitals.map(async (h: any) => {
+      const count = await prisma.patient.count({
+        where: {
+          hospital_id: h.id,
         },
-      },
-      orderBy: {
-        patient: {
-          _count: "desc",
-        },
-      },
+      });
+      return {
+        ...h,
+        patientCount: count,
+      };
     })
-    .then((result: any[]) =>
-      res.json(
-        result.map((h: any) => ({
-          ...h,
-          patientCount: h._count.patient,
-        }))
-      )
-    );
+  );
+
+  // Re-implement sorting by patient count if desired, or skip. 
+  // User wanted "monitoring", implies count is important.
+  // let's sort descending by count.
+  results.sort((a, b) => b.patientCount - a.patientCount);
+
+  res.json(results);
 });
 
 function getHospitalMembers(hospitalId: string) {
