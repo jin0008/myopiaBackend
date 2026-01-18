@@ -429,4 +429,70 @@ router.delete("/user", loginRequired, async (req, res) => {
     .then(() => res.sendStatus(200));
 });
 
+router.post("/dev_login", async (req, res) => {
+  // 1. Ensure Default Country exists
+  let country = await prisma.country.findFirst({ where: { code: "US" } });
+  if (!country) {
+    country = await prisma.country.create({
+      data: { name: "United States", code: "US" },
+    });
+  }
+
+  // 2. Ensure Default Hospital exists
+  let hospital = await prisma.hospital.findFirst({ where: { name: "Dev Hospital" } });
+  if (!hospital) {
+    hospital = await prisma.hospital.create({
+      data: {
+        name: "Dev Hospital",
+        code: "DEV001",
+        country_id: country.id,
+      },
+    });
+  }
+
+  // 3. Find or Create Dev User
+  // Check password_auth for 'devuser'
+  let auth = await prisma.password_auth.findUnique({
+    where: { username: "devuser" },
+    include: { user: true },
+  });
+
+  let user;
+
+  if (!auth) {
+    // Create everything
+    const hash = await bcrypt.hash("devpassword", 10);
+    user = await prisma.user.create({
+      data: {
+        password_auth: {
+          create: {
+            username: "devuser",
+            hash: hash,
+          },
+        },
+        healthcare_professional: {
+          create: {
+            name: "Dev Doctor",
+            role: "Ophthalmologist",
+            country_id: country.id,
+            hospital_id: hospital.id,
+            approved: true, // Auto approve
+            is_admin: true,
+          },
+        },
+      },
+    });
+  } else {
+    user = auth.user;
+  }
+
+  // 4. Generate Session
+  generateSession(user.id)
+    .then((session) => res.json(session))
+    .catch((e) => {
+      console.error(e);
+      res.sendStatus(500);
+    });
+});
+
 export default router;

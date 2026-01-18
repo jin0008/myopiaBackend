@@ -81,6 +81,23 @@ router.post("/", approvedProfessionalRequired, async (req, res) => {
     res.status(400).json(WrongArgumentsMessage);
     return;
   }
+
+  const existingPatient = await prisma.patient.findFirst({
+    where: {
+      // Fix: Trim and Case-Insensitive check
+      registration_number: {
+        equals: data.registration_number.trim(),
+        mode: "insensitive",
+      },
+      hospital_id: req.healthcare_professional.hospital_id,
+    },
+  });
+
+  if (existingPatient) {
+    res.status(409).json({ message: "Patient with this registration number already exists." });
+    return;
+  }
+
   await prisma.patient.create({
     data: {
       ...data,
