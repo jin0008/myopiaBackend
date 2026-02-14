@@ -218,7 +218,7 @@ router.patch(
     await prisma.healthcare_professional
       .update({
         where: {
-          user_id: req.params.healthcare_professional_id,
+          user_id: req.params.healthcare_professional_id as string,
         },
         data: data,
       })
@@ -234,7 +234,7 @@ router.delete(
     await prisma.healthcare_professional
       .delete({
         where: {
-          user_id: req.params.healthcare_professional_id,
+          user_id: req.params.healthcare_professional_id as string,
         },
       })
       .then(() => res.sendStatus(200));

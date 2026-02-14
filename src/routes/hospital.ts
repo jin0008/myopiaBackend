@@ -10,16 +10,42 @@ import zod from "zod";
 const router = express.Router();
 
 router.get("/", async (req, res) => {
-  await prisma.hospital
-    .findMany({
+  const [hospitals, patientCounts] = await Promise.all([
+    prisma.hospital.findMany({
       select: {
         id: true,
         name: true,
         code: true,
-        country: true,
+        country: {
+          select: {
+            id: true,
+            name: true,
+            code: true,
+          },
+        },
       },
-    })
-    .then((result) => res.json(result));
+      orderBy: {
+        name: "asc",
+      },
+    }),
+    prisma.patient.groupBy({
+      by: ["hospital_id"],
+      _count: {
+        _all: true,
+      },
+    }),
+  ]);
+
+  const patientCountMap = new Map(
+    patientCounts.map((entry) => [entry.hospital_id, entry._count._all])
+  );
+
+  const payload = hospitals.map((hospital) => ({
+    ...hospital,
+    patientCount: patientCountMap.get(hospital.id) ?? 0,
+  }));
+
+  res.json(payload);
 });
 
 function getHospitalMembers(hospitalId: string) {
@@ -52,7 +78,7 @@ router.get(
   loginRequired,
   siteAdminRequired,
   async (req, res) => {
-    await getHospitalMembers(req.params.hostpital_id).then((result) =>
+    await getHospitalMembers(req.params.hostpital_id as string).then((result) =>
       res.json(result)
     );
   }
@@ -76,7 +102,7 @@ router.delete(
   async (req, res) => {
     const target = await prisma.healthcare_professional.findUnique({
       where: {
-        user_id: req.params.id,
+        user_id: req.params.id as string,
       },
     });
     if (target == null) {
@@ -98,7 +124,7 @@ router.delete(
     await prisma.healthcare_professional
       .delete({
         where: {
-          user_id: req.params.id,
+          user_id: req.params.id as string,
         },
       })
       .then(() => res.sendStatus(200));
@@ -128,7 +154,7 @@ router.patch(
     await prisma.healthcare_professional
       .update({
         where: {
-          user_id: req.params.id,
+          user_id: req.params.id as string,
         },
         data: data,
       })

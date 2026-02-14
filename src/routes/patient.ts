@@ -27,7 +27,7 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
 router.get("/:patientId", async (req, res) => {
   const data = await prisma.patient.findFirst({
     where: {
-      id: req.params.patientId,
+      id: req.params.patientId as string,
       OR: [
         {
           hospital: {
@@ -116,7 +116,7 @@ router.delete(
     await prisma.patient
       .delete({
         where: {
-          id: req.params.patientId,
+          id: req.params.patientId as string,
           hospital_id: req.healthcare_professional.hospital_id,
         },
       })

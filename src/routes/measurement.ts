@@ -67,7 +67,7 @@ router.delete(
     prisma.measurement
       .delete({
         where: {
-          id: req.params.measurementId,
+          id: req.params.measurementId as string,
         },
       })
       .then(() => res.sendStatus(200))
