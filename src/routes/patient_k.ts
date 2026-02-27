@@ -1,14 +1,10 @@
 import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
-import {
-  approvedProfessionalRequired,
-  loginRequired,
-} from "../lib/middlewares";
+import { approvedProfessionalRequired } from "../lib/middlewares";
 import { ktype } from "@prisma/client";
 
 const router = express.Router();
-router.use(loginRequired);
 
 const putBodyType = zod.object({
   patient_id: zod.string().uuid(),
@@ -40,7 +36,7 @@ router.put("/", approvedProfessionalRequired, async (req, res) => {
     })
     .then((result) => result?.id);
 
-  const auth_hospital_id = req.healthcare_professional.hospital_id;
+  const auth_hospital_id = req.healthcare_professional!.hospital_id;
 
   if (patient_hospital_id !== auth_hospital_id) {
     res.sendStatus(403);

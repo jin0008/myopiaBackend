@@ -23,20 +23,21 @@ model ethnicity {
 }
 
 model healthcare_professional {
-  name                  String
-  country_id            String      @db.Uuid
-  approved              Boolean     @default(false)
-  hospital_id           String      @db.Uuid
-  user_id               String      @id(map: "healthcare_professional_pk") @db.Uuid
-  default_ethnicity_id  String?     @db.Uuid
-  default_instrument_id String?     @db.Uuid
-  is_admin              Boolean     @default(false)
-  role                  String      @db.VarChar
-  country               country     @relation(fields: [country_id], references: [id], onDelete: Cascade, map: "healthcare_professional_country_fk")
-  default_ethnicity     ethnicity?  @relation(fields: [default_ethnicity_id], references: [id], onDelete: Cascade, map: "healthcare_professional_ethnicity_fk")
-  hospital              hospital    @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "healthcare_professional_hospital_fk")
-  default_instrument    instrument? @relation(fields: [default_instrument_id], references: [id], onDelete: Cascade, map: "healthcare_professional_instrument_fk")
-  user                  user        @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "healthcare_professional_user_fk")
+  name                     String
+  country_id               String                     @db.Uuid
+  approved                 Boolean                    @default(false)
+  hospital_id              String                     @db.Uuid
+  user_id                  String                     @id(map: "healthcare_professional_pk") @db.Uuid
+  default_ethnicity_id     String?                    @db.Uuid
+  default_instrument_id    String?                    @db.Uuid
+  is_admin                 Boolean                    @default(false)
+  role                     String                     @db.VarChar
+  country                  country                    @relation(fields: [country_id], references: [id], onDelete: Cascade, map: "healthcare_professional_country_fk")
+  default_ethnicity        ethnicity?                 @relation(fields: [default_ethnicity_id], references: [id], onDelete: Cascade, map: "healthcare_professional_ethnicity_fk")
+  hospital                 hospital                   @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "healthcare_professional_hospital_fk")
+  default_instrument       instrument?                @relation(fields: [default_instrument_id], references: [id], onDelete: Cascade, map: "healthcare_professional_instrument_fk")
+  user                     user                       @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "healthcare_professional_user_fk")
+  pending_patient_deletion pending_patient_deletion[]
 }
 
 model hospital {
@@ -82,21 +83,25 @@ model password_auth {
 }
 
 model patient {
-  id                  String              @id(map: "patient_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  hospital_id         String              @db.Uuid
-  registration_number String
-  date_of_birth       DateTime            @db.Date
-  sex                 sex
-  ethnicity_id        String              @db.Uuid
-  creator_id          String?             @db.Uuid
-  email               String?
-  measurement         measurement[]
-  ethnicity           ethnicity           @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
-  hospital            hospital            @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "patient_hospital_fk")
-  creator             user?               @relation(fields: [creator_id], references: [id], map: "patient_user_fk")
-  patient_k           patient_k[]
-  patient_treatment   patient_treatment[]
-  user_patient        user_patient[]
+  id                            String                    @id(map: "patient_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  hospital_id                   String                    @db.Uuid
+  registration_number           String?
+  date_of_birth                 DateTime?                 @db.Date
+  sex                           sex
+  ethnicity_id                  String                    @db.Uuid
+  creator_id                    String?                   @db.Uuid
+  email                         String?
+  created_at                    DateTime                  @default(now()) @db.Timestamp(6)
+  encrypted_registration_number Bytes?
+  encrypted_date_of_birth       Bytes?
+  measurement                   measurement[]
+  ethnicity                     ethnicity                 @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
+  hospital                      hospital                  @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "patient_hospital_fk")
+  creator                       user?                     @relation(fields: [creator_id], references: [id], map: "patient_user_fk")
+  patient_k                     patient_k[]
+  patient_treatment             patient_treatment[]
+  pending_patient_deletion      pending_patient_deletion?
+  user_patient                  user_patient[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -173,6 +178,14 @@ model patient_k {
   patient    patient @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_k_patient_fk")
 
   @@unique([patient_id, k_type], map: "patient_k_unique")
+}
+
+model pending_patient_deletion {
+  patient_id              String                  @id(map: "pending_patient_deletion_pk") @db.Uuid
+  requested_by            String                  @db.Uuid
+  request_date            DateTime                @default(now()) @db.Timestamp(6)
+  healthcare_professional healthcare_professional @relation(fields: [requested_by], references: [user_id], onDelete: Cascade, map: "pending_patient_deletion_healthcare_professional_fk")
+  patient                 patient                 @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "pending_patient_deletion_patient_fk")
 }
 
 enum sex {

@@ -1,14 +1,10 @@
 import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
-import {
-  approvedProfessionalRequired,
-  loginRequired,
-} from "../lib/middlewares";
+import { approvedProfessionalRequired } from "../lib/middlewares";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 
 const router = express.Router();
-router.use(loginRequired);
 
 const postBodyType = zod.object({
   patient_id: zod.string().uuid(),
@@ -41,7 +37,7 @@ router.post("/", approvedProfessionalRequired, async (req, res) => {
     })
     .then((result) => result?.id);
 
-  const auth_hospital_id = req.healthcare_professional.hospital_id;
+  const auth_hospital_id = req.healthcare_professional!.hospital_id;
 
   if (patient_hospital_id !== auth_hospital_id) {
     res.sendStatus(403);
@@ -53,7 +49,7 @@ router.post("/", approvedProfessionalRequired, async (req, res) => {
         instrument_id: data.instrument_id,
         od: data.od,
         os: data.os,
-        creator_id: req.authSession.user_id,
+        creator_id: req.authSession!.user_id,
       },
     });
     res.sendStatus(200);
@@ -79,7 +75,7 @@ router.delete(
           res.sendStatus(404);
         else next(err);
       });
-  }
+  },
 );
 
 export default router;

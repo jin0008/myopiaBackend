@@ -2,7 +2,7 @@ import prisma from "./prisma";
 import crypto from "crypto";
 import express from "express";
 
-const sessionLengthMillis = 1000 * 60 * 60; // 1 hour
+const sessionLengthMillis = 1000 * 60 * 60 * 24; // 1 day
 
 export function getAuthSession(req: express.Request) {
   const authorization = req.get("Authorization");

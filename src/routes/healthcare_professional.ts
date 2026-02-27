@@ -2,16 +2,14 @@ import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
 
-import { getAuthSession, WrongArgumentsMessage } from "../lib/util";
+import { WrongArgumentsMessage } from "../lib/util";
 import {
   approvedProfessionalRequired,
   loginRequired,
   siteAdminRequired,
 } from "../lib/middlewares";
-import { hospitalMemberPatchType } from "./hospital";
 
 const router = express.Router();
-router.use(loginRequired);
 
 const existingHospitalType = zod.object({
   id: zod.string().uuid(),
@@ -32,7 +30,7 @@ const postType = zod.object({
   default_instrument_id: zod.string().uuid().nullable().optional(),
 });
 
-router.post("/", async (req, res) => {
+router.post("/", loginRequired, async (req, res) => {
   const body = req.body;
 
   let data;
@@ -48,7 +46,7 @@ router.post("/", async (req, res) => {
   if (existingHospital.success) {
     await prisma.healthcare_professional.create({
       data: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
         name: data.name,
         country_id: data.country_id,
         hospital_id: existingHospital.data.id,
@@ -68,7 +66,7 @@ router.post("/", async (req, res) => {
       data: {
         user: {
           connect: {
-            id: req.authSession.user_id,
+            id: req.authSession!.user_id,
           },
         },
         name: data.name,
@@ -116,15 +114,6 @@ const patchType = zod.object({
 });
 
 router.patch("/", approvedProfessionalRequired, async (req, res) => {
-  const authSession = await getAuthSession(req);
-
-  const userId = authSession?.user_id;
-
-  if (userId == null) {
-    res.sendStatus(401);
-    return;
-  }
-
   const body = req.body;
 
   let data;
@@ -137,7 +126,7 @@ router.patch("/", approvedProfessionalRequired, async (req, res) => {
 
   await prisma.healthcare_professional.update({
     where: {
-      user_id: userId,
+      user_id: req.authSession!.user_id,
     },
     data: data,
   });
@@ -159,7 +148,7 @@ router.patch("/hospital", approvedProfessionalRequired, async (req, res) => {
   if (existingHospital.success) {
     await prisma.healthcare_professional.update({
       where: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
       },
       data: {
         hospital: {
@@ -178,7 +167,7 @@ router.patch("/hospital", approvedProfessionalRequired, async (req, res) => {
   if (newHospital.success) {
     await prisma.healthcare_professional.update({
       where: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
       },
       data: {
         hospital: {
@@ -202,7 +191,6 @@ const hospitalMemberPatchTypeAdmin = zod.object({
 });
 router.patch(
   "/:healthcare_professional_id",
-  loginRequired,
   siteAdminRequired,
   async (req, res) => {
     const body = req.body;
@@ -218,12 +206,12 @@ router.patch(
     await prisma.healthcare_professional
       .update({
         where: {
-          user_id: req.params.healthcare_professional_id as string,
+          user_id: String(req.params.healthcare_professional_id),
         },
         data: data,
       })
       .then(() => res.sendStatus(200));
-  }
+  },
 );
 
 router.delete(
@@ -234,11 +222,11 @@ router.delete(
     await prisma.healthcare_professional
       .delete({
         where: {
-          user_id: req.params.healthcare_professional_id as string,
+          user_id: String(req.params.healthcare_professional_id),
         },
       })
       .then(() => res.sendStatus(200));
-  }
+  },
 );
 
 export default router;

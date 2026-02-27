@@ -2,8 +2,8 @@ import express from "express";
 import prisma from "../lib/prisma";
 import {
   hospitalAdminRequired,
-  loginRequired,
   siteAdminRequired,
+  validateRequestBody,
 } from "../lib/middlewares";
 import zod from "zod";
 
@@ -37,7 +37,7 @@ router.get("/", async (req, res) => {
   ]);
 
   const patientCountMap = new Map(
-    patientCounts.map((entry) => [entry.hospital_id, entry._count._all])
+    patientCounts.map((entry) => [entry.hospital_id, entry._count._all]),
   );
 
   const payload = hospitals.map((hospital) => ({
@@ -75,41 +75,39 @@ function getHospitalMembers(hospitalId: string) {
 
 router.get(
   "/:hostpital_id/healthcare_professional",
-  loginRequired,
   siteAdminRequired,
   async (req, res) => {
     await getHospitalMembers(req.params.hostpital_id as string).then((result) =>
-      res.json(result)
+      res.json(result),
     );
-  }
+  },
 );
 
 router.get(
   "/healthcare_professional",
-  loginRequired,
   hospitalAdminRequired,
   async (req, res) => {
-    await getHospitalMembers(req.healthcare_professional.hospital_id).then(
-      (result) => res.json(result)
+    await getHospitalMembers(req.healthcare_professional!.hospital_id).then(
+      (result) => res.json(result),
     );
-  }
+  },
 );
 
 router.delete(
   "/healthcare_professional/:id",
-  loginRequired,
   hospitalAdminRequired,
   async (req, res) => {
+    const targetId = String(req.params.id);
     const target = await prisma.healthcare_professional.findUnique({
       where: {
-        user_id: req.params.id as string,
+        user_id: targetId,
       },
     });
     if (target == null) {
       res.sendStatus(404);
       return;
     }
-    if (target.hospital_id !== req.healthcare_professional.hospital_id) {
+    if (target.hospital_id !== req.healthcare_professional!.hospital_id) {
       res.status(403).json({
         message: "Cannot kick a member from another hospital",
       });
@@ -124,11 +122,11 @@ router.delete(
     await prisma.healthcare_professional
       .delete({
         where: {
-          user_id: req.params.id as string,
+          user_id: targetId,
         },
       })
       .then(() => res.sendStatus(200));
-  }
+  },
 );
 
 export const hospitalMemberPatchType = zod.object({
@@ -138,28 +136,36 @@ export const hospitalMemberPatchType = zod.object({
 
 router.patch(
   "/healthcare_professional/:id",
-  loginRequired,
   hospitalAdminRequired,
+  validateRequestBody(hospitalMemberPatchType),
   async (req, res) => {
-    const body = req.body;
-
-    let data;
-    try {
-      data = hospitalMemberPatchType.parse(body);
-    } catch {
-      res.sendStatus(400);
+    const targetId = String(req.params.id);
+    const target = await prisma.healthcare_professional.findUnique({
+      where: {
+        user_id: targetId,
+      },
+    });
+    if (target == null) {
+      res.sendStatus(404);
+      return;
+    }
+    if (target.hospital_id !== req.healthcare_professional!.hospital_id) {
+      res.status(403).json({
+        message: "Cannot edit a member from another hospital",
+      });
       return;
     }
 
+    const data = req.body;
     await prisma.healthcare_professional
       .update({
         where: {
-          user_id: req.params.id as string,
+          user_id: targetId,
         },
-        data: data,
+        data,
       })
       .then(() => res.sendStatus(200));
-  }
+  },
 );
 
 export default router;

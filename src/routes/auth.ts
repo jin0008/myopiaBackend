@@ -4,7 +4,7 @@ import prisma from "../lib/prisma";
 
 import { generateSession, getAuthSession } from "../lib/util";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
-import { loginRequired } from "../lib/middlewares";
+import { loginRequired, validateRequestBody } from "../lib/middlewares";
 
 import { OAuth2Client } from "google-auth-library";
 
@@ -92,7 +92,7 @@ router.post("/googleLogin", async (req, res) => {
 router.get("/logout", loginRequired, async (req, res) => {
   await prisma.session.delete({
     where: {
-      id: req.authSession.id,
+      id: req.authSession!.id,
     },
   });
   res.sendStatus(200);
@@ -101,7 +101,7 @@ router.get("/logout", loginRequired, async (req, res) => {
 router.get("/user", loginRequired, async (req, res) => {
   const data = await prisma.user.findUnique({
     where: {
-      id: req.authSession.user_id,
+      id: req.authSession!.user_id,
     },
     select: {
       healthcare_professional: {
@@ -129,97 +129,96 @@ router.get("/user", loginRequired, async (req, res) => {
 });
 
 const passwordAuthType = zod.object({
-  username: zod.string().nonempty(),
+  username: zod
+    .string()
+    .nonempty()
+    .regex(/^[a-zA-Z0-9]+$/),
   password: zod.string().nonempty(),
 });
 
-router.post("/user/passwordAuth", async (req, res) => {
-  let data;
-  try {
-    data = passwordAuthType.parse(req.body);
-  } catch {
-    res.status(400).json({ message: "Invalid username or password" });
-    return;
-  }
+router.post(
+  "/user/passwordAuth",
+  validateRequestBody(passwordAuthType),
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof passwordAuthType>;
 
-  const { username, password } = data;
+    const { username, password } = data;
 
-  const hash = await bcrypt.hash(password, 12);
+    const hash = await bcrypt.hash(password, 12);
 
-  await prisma.user
-    .create({
-      data: {
-        password_auth: {
-          create: {
-            username: username,
-            hash: hash,
+    await prisma.user
+      .create({
+        data: {
+          password_auth: {
+            create: {
+              username: username,
+              hash: hash,
+            },
           },
         },
-      },
-    })
-    .then(() => res.sendStatus(201))
-    .catch((err) => {
-      if (
-        err instanceof PrismaClientKnownRequestError &&
-        err.code === "P2002"
-      ) {
-        res.status(400).json({ message: "Username already exists" });
-      } else {
-        res.sendStatus(500);
-      }
-    });
-});
+      })
+      .then(() => res.sendStatus(201))
+      .catch((err) => {
+        if (
+          err instanceof PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          res.status(400).json({ message: "Username already exists" });
+        } else {
+          res.sendStatus(500);
+        }
+      });
+  },
+);
 
-router.post("/passwordAuth", loginRequired, async (req, res) => {
-  let data;
+router.post(
+  "/passwordAuth",
+  loginRequired,
+  validateRequestBody(passwordAuthType),
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof passwordAuthType>;
 
-  try {
-    data = passwordAuthType.parse(req.body);
-  } catch {
-    res.sendStatus(400);
-    return;
-  }
+    const { username, password } = data;
+    const hash = await bcrypt.hash(password, 12);
 
-  const { username, password } = data;
-  const hash = await bcrypt.hash(password, 12);
-
-  const passwordAuthExists = await prisma.password_auth
-    .count({
-      where: {
-        user_id: req.authSession.user_id,
-      },
-    })
-    .then((count) => count > 0);
-
-  if (passwordAuthExists) {
-    res.status(400).json({ message: "Password auth already exists" });
-    return;
-  }
-
-  prisma.password_auth
-    .create({
-      data: {
-        user: {
-          connect: {
-            id: req.authSession.user_id,
-          },
+    const passwordAuthExists = await prisma.password_auth
+      .count({
+        where: {
+          user_id: req.authSession!.user_id,
         },
-        username: username,
-        hash: hash,
-      },
-    })
-    .then(() => res.sendStatus(201))
-    .catch((err) => {
-      if (
-        err instanceof PrismaClientKnownRequestError &&
-        err.code === "P2002"
-      ) {
-        res.status(400).json({ message: "Username already exists" });
-      } else {
-        res.sendStatus(500);
-      }
-    });
-});
+      })
+      .then((count) => count > 0);
+
+    if (passwordAuthExists) {
+      res.status(400).json({ message: "Password auth already exists" });
+      return;
+    }
+
+    await prisma.password_auth
+      .create({
+        data: {
+          user: {
+            connect: {
+              id: req.authSession!.user_id,
+            },
+          },
+          username: username,
+          hash: hash,
+        },
+      })
+      .then(() => res.sendStatus(201))
+      .catch((err) => {
+        if (
+          err instanceof PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          res.status(400).json({ message: "Username already exists" });
+        } else {
+          res.sendStatus(500);
+        }
+      });
+  },
+);
 
 const passwordAuthPatchType = zod.object({
   newPassword: zod.string(),
@@ -337,7 +336,7 @@ router.post("/googleAuth", loginRequired, async (req, res) => {
   const googleAuthExists = await prisma.google_auth
     .count({
       where: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
       },
     })
     .then((count) => count > 0);
@@ -352,7 +351,7 @@ router.post("/googleAuth", loginRequired, async (req, res) => {
       data: {
         user: {
           connect: {
-            id: req.authSession.user_id,
+            id: req.authSession!.user_id,
           },
         },
         google_identity: payload.sub,
@@ -377,7 +376,7 @@ router.delete("/googleAuth", loginRequired, async (req, res) => {
   const passwordAuthExists = await prisma.password_auth
     .count({
       where: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
       },
     })
     .then((count) => count > 0);
@@ -390,7 +389,7 @@ router.delete("/googleAuth", loginRequired, async (req, res) => {
   await prisma.google_auth
     .delete({
       where: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
       },
     })
     .then(() => res.sendStatus(200));
@@ -400,7 +399,7 @@ router.delete("/passwordAuth", loginRequired, async (req, res) => {
   const googleAuthExists = await prisma.google_auth
     .count({
       where: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
       },
     })
     .then((count) => count > 0);
@@ -413,7 +412,7 @@ router.delete("/passwordAuth", loginRequired, async (req, res) => {
   await prisma.password_auth
     .delete({
       where: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
       },
     })
     .then(() => res.sendStatus(200));
@@ -423,7 +422,7 @@ router.delete("/user", loginRequired, async (req, res) => {
   await prisma.user
     .delete({
       where: {
-        id: req.authSession.user_id,
+        id: req.authSession!.user_id,
       },
     })
     .then(() => res.sendStatus(200));
@@ -439,7 +438,9 @@ router.post("/dev_login", async (req, res) => {
   }
 
   // 2. Ensure Default Hospital exists
-  let hospital = await prisma.hospital.findFirst({ where: { name: "Dev Hospital" } });
+  let hospital = await prisma.hospital.findFirst({
+    where: { name: "Dev Hospital" },
+  });
   if (!hospital) {
     hospital = await prisma.hospital.create({
       data: {

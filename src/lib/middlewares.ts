@@ -1,27 +1,47 @@
 import { RequestHandler } from "express";
 import prisma from "./prisma";
-import { getAuthSession, refreshSession } from "./util";
+import { WrongArgumentsMessage, getAuthSession, refreshSession } from "./util";
+import { ZodType } from "zod";
+import express from "express";
+
+export function validateRequestBody(schema: ZodType) {
+  return (
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    schema
+      .parseAsync(req.body, {})
+      .then((result) => {
+        req.body = result;
+        next();
+      })
+      .catch(() => {
+        res.status(400).json(WrongArgumentsMessage);
+      });
+  };
+}
 
 export const loginRequired: RequestHandler = async (req, res, next) => {
   const authSession = await getAuthSession(req);
   if (authSession == null) {
     res.sendStatus(401);
-  } else {
-    refreshSession(authSession.id);
-    req.authSession = authSession;
-    next();
+    return;
   }
+  refreshSession(authSession.id);
+  req.authSession = authSession;
+  next();
 };
 
-export const approvedProfessionalRequired: RequestHandler = async (
-  req,
-  res,
-  next
-) => {
+export const approvedProfessionalRequired = express.Router();
+
+approvedProfessionalRequired.use(loginRequired);
+
+approvedProfessionalRequired.use(async (req, res, next) => {
   const approved_healthcare_professional =
     await prisma.healthcare_professional.findUnique({
       where: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
         approved: true,
       },
     });
@@ -32,13 +52,17 @@ export const approvedProfessionalRequired: RequestHandler = async (
     req.healthcare_professional = approved_healthcare_professional;
     next();
   }
-};
+});
 
-export const hospitalAdminRequired: RequestHandler = async (req, res, next) => {
+export const hospitalAdminRequired = express.Router();
+
+hospitalAdminRequired.use(loginRequired);
+
+hospitalAdminRequired.use(async (req, res, next) => {
   const healthcare_professional =
     await prisma.healthcare_professional.findUnique({
       where: {
-        user_id: req.authSession.user_id,
+        user_id: req.authSession!.user_id,
         is_admin: true,
       },
     });
@@ -49,12 +73,16 @@ export const hospitalAdminRequired: RequestHandler = async (req, res, next) => {
     req.healthcare_professional = healthcare_professional;
     next();
   }
-};
+});
 
-export const siteAdminRequired: RequestHandler = async (req, res, next) => {
+export const siteAdminRequired = express.Router();
+
+siteAdminRequired.use(loginRequired);
+
+siteAdminRequired.use(async (req, res, next) => {
   const user = await prisma.user.findUnique({
     where: {
-      id: req.authSession.user_id,
+      id: req.authSession!.user_id,
     },
   });
 
@@ -63,4 +91,4 @@ export const siteAdminRequired: RequestHandler = async (req, res, next) => {
   } else {
     next();
   }
-};
+});

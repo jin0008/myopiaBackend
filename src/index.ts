@@ -19,14 +19,15 @@ import newsRoutes from "./routes/news";
 
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Prisma } from "@prisma/client";
+import { decryptSymmetric, encryptSymmetric } from "./services/encrpytion";
 
 const app = express();
 
 declare global {
   namespace Express {
     interface Request {
-      authSession: Prisma.sessionGetPayload<{}>;
-      healthcare_professional: Prisma.healthcare_professionalGetPayload<{}>;
+      authSession?: Prisma.sessionGetPayload<{}>;
+      healthcare_professional?: Prisma.healthcare_professionalGetPayload<{}>;
     }
   }
 }
