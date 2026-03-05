@@ -11,4 +11,4 @@ values ('0.01% atropine'),
     ('Ortho-K'),
     ('HALT'),
     ('MiSight'),
-    ('None')
+    ('None') on conflict ("name") do nothing;
