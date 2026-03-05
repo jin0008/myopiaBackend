@@ -2,7 +2,7 @@ import express from "express";
 import bcrypt from "bcrypt";
 import prisma from "../lib/prisma";
 
-import { generateSession, getAuthSession } from "../lib/util";
+import { generateSession, getAuthSession } from "../lib/session";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { loginRequired, validateRequestBody } from "../lib/middlewares";
 

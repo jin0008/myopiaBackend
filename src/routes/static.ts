@@ -19,4 +19,10 @@ router.get("/treatment", async (req, res) => {
   await prisma.treatment.findMany().then((result) => res.json(result));
 });
 
+router.get("/refractive_error_method", async (req, res) => {
+  await prisma.refractive_error_method
+    .findMany()
+    .then((result) => res.json(result));
+});
+
 export default router;

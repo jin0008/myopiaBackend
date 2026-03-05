@@ -1,8 +1,12 @@
 import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
-import { approvedProfessionalRequired } from "../lib/middlewares";
+import {
+  approvedProfessionalRequired,
+  validateRequestBody,
+} from "../lib/middlewares";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { isPatientInHospital } from "../lib/authorization";
 
 const router = express.Router();
 
@@ -13,35 +17,20 @@ const postBodyType = zod.object({
   od: zod.number().gte(15).lte(35),
   os: zod.number().gte(15).lte(35),
 });
-router.post("/", approvedProfessionalRequired, async (req, res) => {
-  let data;
-  try {
-    data = postBodyType.parse(req.body);
-  } catch {
-    res.sendStatus(400);
-    return;
-  }
-  const patient_hospital_id = await prisma.hospital
-    .findFirst({
-      where: {
-        patient: {
-          some: {
-            id: data.patient_id,
-          },
-        },
-      },
-
-      select: {
-        id: true,
-      },
-    })
-    .then((result) => result?.id);
-
-  const auth_hospital_id = req.healthcare_professional!.hospital_id;
-
-  if (patient_hospital_id !== auth_hospital_id) {
-    res.sendStatus(403);
-  } else {
+router.post(
+  "/",
+  validateRequestBody(postBodyType),
+  approvedProfessionalRequired,
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof postBodyType>;
+    const authorized = await isPatientInHospital(
+      data.patient_id,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
     await prisma.measurement.create({
       data: {
         patient_id: data.patient_id,
@@ -53,14 +42,40 @@ router.post("/", approvedProfessionalRequired, async (req, res) => {
       },
     });
     res.sendStatus(200);
-  }
-});
+  },
+);
 
 router.delete(
   "/:measurementId",
   approvedProfessionalRequired,
-  async (req, res, next) => {
-    prisma.measurement
+  async (req, res) => {
+    const measurementId = String(req.params.measurementId);
+
+    const authorized = await prisma.measurement
+      .findUnique({
+        where: {
+          id: measurementId,
+        },
+        select: {
+          patient: {
+            select: {
+              hospital_id: true,
+            },
+          },
+        },
+      })
+      .then(
+        (measurement) =>
+          measurement?.patient?.hospital_id ===
+          req.healthcare_professional!.hospital_id,
+      );
+
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
+
+    await prisma.measurement
       .delete({
         where: {
           id: req.params.measurementId as string,
@@ -71,9 +86,11 @@ router.delete(
         if (
           err instanceof PrismaClientKnownRequestError &&
           err.code === "P2025"
-        )
+        ) {
           res.sendStatus(404);
-        else next(err);
+          return;
+        }
+        throw err;
       });
   },
 );

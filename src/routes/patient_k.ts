@@ -1,8 +1,12 @@
 import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
-import { approvedProfessionalRequired } from "../lib/middlewares";
+import {
+  approvedProfessionalRequired,
+  validateRequestBody,
+} from "../lib/middlewares";
 import { ktype } from "@prisma/client";
+import { isPatientInHospital } from "../lib/authorization";
 
 const router = express.Router();
 
@@ -12,35 +16,21 @@ const putBodyType = zod.object({
   od: zod.number().nullable(),
   os: zod.number().nullable(),
 });
-router.put("/", approvedProfessionalRequired, async (req, res) => {
-  let data;
-  try {
-    data = putBodyType.parse(req.body);
-  } catch {
-    res.sendStatus(400);
-    return;
-  }
-  const patient_hospital_id = await prisma.hospital
-    .findFirst({
-      where: {
-        patient: {
-          some: {
-            id: data.patient_id,
-          },
-        },
-      },
+router.put(
+  "/",
+  validateRequestBody(putBodyType),
+  approvedProfessionalRequired,
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof putBodyType>;
+    const authorized = await isPatientInHospital(
+      data.patient_id,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
 
-      select: {
-        id: true,
-      },
-    })
-    .then((result) => result?.id);
-
-  const auth_hospital_id = req.healthcare_professional!.hospital_id;
-
-  if (patient_hospital_id !== auth_hospital_id) {
-    res.sendStatus(403);
-  } else {
     await prisma.patient_k.upsert({
       where: {
         patient_id_k_type: {
@@ -60,7 +50,7 @@ router.put("/", approvedProfessionalRequired, async (req, res) => {
       },
     });
     res.sendStatus(200);
-  }
-});
+  },
+);
 
 export default router;

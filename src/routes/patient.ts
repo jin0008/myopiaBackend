@@ -7,10 +7,11 @@ import {
   loginRequired,
   validateRequestBody,
 } from "../lib/middlewares";
-import { sex } from "@prisma/client";
+import { myopia_status, sex } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
-import { WrongArgumentsMessage } from "../lib/util";
+import { activity_duration_category } from "@prisma/client";
 import { decryptSymmetric, encryptSymmetric } from "../services/encrpytion";
+import { isPatientInHospital } from "../lib/authorization";
 
 const router = express.Router();
 
@@ -98,35 +99,25 @@ router.post(
   validateRequestBody(deleteRequestSchema),
   approvedProfessionalRequired,
   async (req, res) => {
-    const patientHospitalId = await prisma.patient
-      .findUnique({
-        where: {
-          id: req.body.patient_id,
-        },
-        select: {
-          hospital_id: true,
-        },
-      })
-      .then((result) => result?.hospital_id);
-
-    if (patientHospitalId == null) {
-      res.sendStatus(404);
-      return;
-    }
-    if (patientHospitalId !== req.healthcare_professional!.hospital_id) {
+    const data = req.body as zod.infer<typeof deleteRequestSchema>;
+    const authorized = await isPatientInHospital(
+      data.patient_id,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
       res.sendStatus(403);
       return;
     }
 
     await prisma.pending_patient_deletion.upsert({
       where: {
-        patient_id: req.body.patient_id,
+        patient_id: data.patient_id,
       },
       update: {
         requested_by: req.healthcare_professional!.user_id,
       },
       create: {
-        patient_id: req.body.patient_id,
+        patient_id: data.patient_id,
         requested_by: req.healthcare_professional!.user_id,
       },
     });
@@ -139,22 +130,12 @@ router.post(
   hospitalAdminRequired,
   async (req, res) => {
     const patientId = String(req.params.id);
-    const patientHospitalId = await prisma.patient
-      .findUnique({
-        where: {
-          id: patientId,
-        },
-        select: {
-          hospital_id: true,
-        },
-      })
-      .then((result) => result?.hospital_id);
+    const authorized = await isPatientInHospital(
+      patientId,
+      req.healthcare_professional!.hospital_id,
+    );
 
-    if (patientHospitalId == null) {
-      res.sendStatus(404);
-      return;
-    }
-    if (patientHospitalId !== req.healthcare_professional!.hospital_id) {
+    if (!authorized) {
       res.sendStatus(403);
       return;
     }
@@ -180,11 +161,204 @@ router.post(
   hospitalAdminRequired,
   async (req, res) => {
     const patientId = String(req.params.id);
+    const authorized = await isPatientInHospital(
+      patientId,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
     await prisma.pending_patient_deletion.delete({
       where: {
         patient_id: patientId,
       },
     });
+    res.sendStatus(200);
+  },
+);
+
+router.get(
+  "/:patientId/data",
+  approvedProfessionalRequired,
+
+  async (req, res) => {
+    const patientId = String(req.params.patientId);
+
+    const authorized = await isPatientInHospital(
+      patientId,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
+
+    const [
+      nearwork_activity,
+      outdoor_activity,
+      mother_myopia_status,
+      father_myopia_status,
+    ] = await Promise.all([
+      prisma.patient_nearwork_activity.findMany({
+        where: { patient_id: patientId },
+      }),
+      prisma.patient_outdoor_activity.findMany({
+        where: { patient_id: patientId },
+      }),
+      prisma.patient_parental_myopia_status.findMany({
+        where: {
+          patient_id: patientId,
+          parent_sex: sex.female,
+        },
+      }),
+      prisma.patient_parental_myopia_status.findMany({
+        where: {
+          patient_id: patientId,
+          parent_sex: sex.male,
+        },
+      }),
+    ]);
+
+    res.json({
+      nearwork_activity,
+      outdoor_activity,
+      mother_myopia_status,
+      father_myopia_status,
+    });
+  },
+);
+
+router.get(
+  "/:patientId/data/latest",
+  approvedProfessionalRequired,
+  async (req, res) => {
+    const patientId = String(req.params.patientId);
+    const authorized = await isPatientInHospital(
+      patientId,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
+
+    const [
+      nearwork_activity,
+      outdoor_activity,
+      mother_myopia_status,
+      father_myopia_status,
+    ] = await Promise.all([
+      prisma.patient_nearwork_activity.findFirst({
+        where: { patient_id: patientId },
+        orderBy: { timestamp: "desc" },
+      }),
+      prisma.patient_outdoor_activity.findFirst({
+        where: { patient_id: patientId },
+        orderBy: { timestamp: "desc" },
+      }),
+      prisma.patient_parental_myopia_status.findFirst({
+        where: {
+          patient_id: patientId,
+          parent_sex: sex.female,
+        },
+        orderBy: { timestamp: "desc" },
+      }),
+      prisma.patient_parental_myopia_status.findFirst({
+        where: {
+          patient_id: patientId,
+          parent_sex: sex.male,
+        },
+        orderBy: { timestamp: "desc" },
+      }),
+    ]);
+    res.json({
+      nearwork_activity,
+      outdoor_activity,
+      mother_myopia_status,
+      father_myopia_status,
+    });
+  },
+);
+
+const postPatientDataSchema = zod
+  .object({
+    nearwork_activity: zod.object({
+      category: zod.nativeEnum(activity_duration_category),
+    }),
+    outdoor_activity: zod.object({
+      category: zod.nativeEnum(activity_duration_category),
+    }),
+    mother_myopia_status: zod.object({
+      status: zod.nativeEnum(myopia_status),
+    }),
+    father_myopia_status: zod.object({
+      status: zod.nativeEnum(myopia_status),
+    }),
+  })
+  .partial();
+
+router.post(
+  "/:patientId/data",
+  validateRequestBody(postPatientDataSchema),
+  approvedProfessionalRequired,
+  async (req, res) => {
+    const patientId = String(req.params.patientId);
+    const authorized = await isPatientInHospital(
+      patientId,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
+    const data = req.body as zod.infer<typeof postPatientDataSchema>;
+
+    const transactions = [];
+    if (data.nearwork_activity) {
+      transactions.push(
+        prisma.patient_nearwork_activity.create({
+          data: {
+            patient_id: patientId,
+            category: data.nearwork_activity.category,
+          },
+        }),
+      );
+    }
+    if (data.outdoor_activity) {
+      transactions.push(
+        prisma.patient_outdoor_activity.create({
+          data: {
+            patient_id: patientId,
+            category: data.outdoor_activity.category,
+          },
+        }),
+      );
+    }
+    if (data.mother_myopia_status) {
+      transactions.push(
+        prisma.patient_parental_myopia_status.create({
+          data: {
+            patient_id: patientId,
+            parent_sex: sex.female,
+            status: data.mother_myopia_status.status,
+          },
+        }),
+      );
+    }
+    if (data.father_myopia_status) {
+      transactions.push(
+        prisma.patient_parental_myopia_status.create({
+          data: {
+            patient_id: patientId,
+            parent_sex: sex.male,
+            status: data.father_myopia_status.status,
+          },
+        }),
+      );
+    }
+
+    await prisma.$transaction(transactions);
     res.sendStatus(200);
   },
 );
@@ -223,6 +397,7 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         measurement: true,
         patient_treatment: true,
         patient_k: true,
+        refractive_error: true,
       },
     })
     .then(async (data) => {
@@ -230,7 +405,7 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         res.sendStatus(404);
         return;
       }
-      return {
+      res.json({
         ...data,
         date_of_birth: data.encrypted_date_of_birth
           ? await decryptSymmetric(data.encrypted_date_of_birth)
@@ -238,10 +413,7 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         registration_number: data.encrypted_registration_number
           ? await decryptSymmetric(data.encrypted_registration_number)
           : data.registration_number,
-      };
-    })
-    .then((data) => {
-      res.json(data);
+      });
     });
 });
 
@@ -252,50 +424,50 @@ const postPatientSchema = zod.object({
   ethnicity_id: zod.string().uuid(),
   email: zod.string().email().optional(),
 });
-router.post("/", approvedProfessionalRequired, async (req, res) => {
-  let data;
-  try {
-    data = postPatientSchema.parse(req.body);
-  } catch {
-    res.status(400).json(WrongArgumentsMessage);
-    return;
-  }
+router.post(
+  "/",
+  approvedProfessionalRequired,
+  validateRequestBody(postPatientSchema),
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof postPatientSchema>;
 
-  const existingPatient = await prisma.patient.findFirst({
-    where: {
-      // Fix: Trim and Case-Insensitive check
-      registration_number: {
-        equals: data.registration_number.trim(),
-        mode: "insensitive",
+    const exists = await prisma.patient
+      .count({
+        where: {
+          registration_number: {
+            equals: data.registration_number.trim(),
+            mode: "insensitive",
+          },
+          hospital_id: req.healthcare_professional!.hospital_id,
+        },
+      })
+      .then((count) => count > 0);
+
+    if (exists) {
+      res.status(409).json({
+        message: "Patient with this registration number already exists.",
+      });
+      return;
+    }
+
+    await prisma.patient.create({
+      data: {
+        sex: data.sex,
+        ethnicity_id: data.ethnicity_id,
+        email: data.email,
+        encrypted_registration_number: await encryptSymmetric(
+          data.registration_number,
+        ).then((encrypted) => Uint8Array.from(encrypted)),
+        encrypted_date_of_birth: await encryptSymmetric(
+          data.date_of_birth,
+        ).then((encrypted) => Uint8Array.from(encrypted)),
+        hospital_id: req.healthcare_professional!.hospital_id,
+        creator_id: req.authSession!.user_id,
       },
-      hospital_id: req.healthcare_professional!.hospital_id,
-    },
-  });
-
-  if (existingPatient) {
-    res.status(409).json({
-      message: "Patient with this registration number already exists.",
     });
-    return;
-  }
-
-  await prisma.patient.create({
-    data: {
-      sex: data.sex,
-      ethnicity_id: data.ethnicity_id,
-      email: data.email,
-      encrypted_registration_number: await encryptSymmetric(
-        data.registration_number,
-      ).then((encrypted) => Uint8Array.from(encrypted)),
-      encrypted_date_of_birth: await encryptSymmetric(data.date_of_birth).then(
-        (encrypted) => Uint8Array.from(encrypted),
-      ),
-      hospital_id: req.healthcare_professional!.hospital_id,
-      creator_id: req.authSession!.user_id,
-    },
-  });
-  res.sendStatus(201);
-});
+    res.sendStatus(201);
+  },
+);
 
 const patchPatientSchema = zod.object({
   date_of_birth: zod.string().date().optional(),
@@ -307,38 +479,38 @@ router.patch(
   validateRequestBody(patchPatientSchema),
   approvedProfessionalRequired,
   async (req, res) => {
-    const target = await prisma.patient.findUnique({
-      where: {
-        id: String(req.params.patientId),
-      },
-      select: {
-        hospital_id: true,
-      },
-    });
-    if (target == null) {
-      res.sendStatus(404);
-      return;
-    } else if (
-      target.hospital_id !== req.healthcare_professional!.hospital_id
-    ) {
+    const patientId = String(req.params.patientId);
+    const authorized = await isPatientInHospital(
+      patientId,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
       res.sendStatus(403);
       return;
     }
     const data = req.body as zod.infer<typeof patchPatientSchema>;
-    await prisma.patient.update({
-      where: {
-        id: String(req.params.patientId),
-      },
-      data: {
-        encrypted_date_of_birth: data.date_of_birth
-          ? await encryptSymmetric(data.date_of_birth).then((encrypted) =>
-              Uint8Array.from(encrypted),
-            )
-          : undefined,
-        sex: data.sex,
-      },
-    });
-    res.sendStatus(200);
+    await prisma.patient
+      .update({
+        where: {
+          id: patientId,
+        },
+        data: {
+          encrypted_date_of_birth: data.date_of_birth
+            ? await encryptSymmetric(data.date_of_birth).then((encrypted) =>
+                Uint8Array.from(encrypted),
+              )
+            : undefined,
+          sex: data.sex,
+        },
+      })
+      .then(() => res.sendStatus(200))
+      .catch((e) => {
+        if (e instanceof PrismaClientKnownRequestError && e.code === "P2025") {
+          res.sendStatus(404);
+          return;
+        }
+        throw e;
+      });
   },
 );
 

@@ -2,7 +2,7 @@ import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
 
-import { WrongArgumentsMessage } from "../lib/util";
+import { WrongArgumentsMessage } from "../lib/session";
 import {
   approvedProfessionalRequired,
   loginRequired,

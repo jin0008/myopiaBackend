@@ -1,1 +1,14 @@
-insert into treatment ("name") values ('0.01% atropine'),('0.02% atropine'),('0.025% atropine'),('0.05% atropine'),('0.075% atropine'),('0.1% atropine'),('0.125% atropine'),('1% atropine'),('DIMS'),('Ortho-K'),('None')
+insert into treatment ("name")
+values ('0.01% atropine'),
+    ('0.02% atropine'),
+    ('0.025% atropine'),
+    ('0.05% atropine'),
+    ('0.075% atropine'),
+    ('0.1% atropine'),
+    ('0.125% atropine'),
+    ('1% atropine'),
+    ('DIMS'),
+    ('Ortho-K'),
+    ('HALT'),
+    ('MiSight'),
+    ('None')

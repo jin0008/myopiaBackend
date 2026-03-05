@@ -1,6 +1,6 @@
 import express from "express";
 import prisma from "../lib/prisma";
-import { WrongArgumentsMessage } from "../lib/util";
+import { WrongArgumentsMessage } from "../lib/session";
 import { sex } from "@prisma/client";
 
 const router = express.Router();

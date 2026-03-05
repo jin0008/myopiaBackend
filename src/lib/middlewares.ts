@@ -1,6 +1,10 @@
 import { RequestHandler } from "express";
 import prisma from "./prisma";
-import { WrongArgumentsMessage, getAuthSession, refreshSession } from "./util";
+import {
+  WrongArgumentsMessage,
+  getAuthSession,
+  refreshSession,
+} from "./session";
 import { ZodType } from "zod";
 import express from "express";
 

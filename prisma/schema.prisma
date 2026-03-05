@@ -17,7 +17,7 @@ model country {
 
 model ethnicity {
   id                      String                    @id(map: "ethnicity_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name                    String                    @db.VarChar(25)
+  name                    String                    @unique(map: "ethnicity_unique") @db.VarChar(25)
   healthcare_professional healthcare_professional[]
   patient                 patient[]
 }
@@ -62,12 +62,12 @@ model measurement {
   patient_id    String     @db.Uuid
   date          DateTime   @db.Date
   instrument_id String     @db.Uuid
-  creator_id    String     @db.Uuid
+  creator_id    String?    @db.Uuid
   od            Float?     @db.Real
   os            Float?     @db.Real
-  instrument    instrument @relation(fields: [instrument_id], references: [id], onDelete: SetNull, map: "measurement_instrument_fk")
+  instrument    instrument @relation(fields: [instrument_id], references: [id], onDelete: NoAction, map: "measurement_instrument_fk")
   patient       patient    @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "measurement_patient_fk")
-  user          user       @relation(fields: [creator_id], references: [id], onDelete: SetNull, map: "measurement_user_fk")
+  user          user?      @relation(fields: [creator_id], references: [id], map: "measurement_user_fk")
 }
 
 model normal_user {
@@ -83,25 +83,29 @@ model password_auth {
 }
 
 model patient {
-  id                            String                    @id(map: "patient_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  hospital_id                   String                    @db.Uuid
-  registration_number           String?
-  date_of_birth                 DateTime?                 @db.Date
-  sex                           sex
-  ethnicity_id                  String                    @db.Uuid
-  creator_id                    String?                   @db.Uuid
-  email                         String?
-  created_at                    DateTime                  @default(now()) @db.Timestamp(6)
-  encrypted_registration_number Bytes?
-  encrypted_date_of_birth       Bytes?
-  measurement                   measurement[]
-  ethnicity                     ethnicity                 @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
-  hospital                      hospital                  @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "patient_hospital_fk")
-  creator                       user?                     @relation(fields: [creator_id], references: [id], map: "patient_user_fk")
-  patient_k                     patient_k[]
-  patient_treatment             patient_treatment[]
-  pending_patient_deletion      pending_patient_deletion?
-  user_patient                  user_patient[]
+  id                             String                           @id(map: "patient_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  hospital_id                    String                           @db.Uuid
+  registration_number            String?
+  date_of_birth                  DateTime?                        @db.Date
+  sex                            sex
+  ethnicity_id                   String                           @db.Uuid
+  creator_id                     String?                          @db.Uuid
+  email                          String?
+  created_at                     DateTime                         @default(now()) @db.Timestamp(6)
+  encrypted_registration_number  Bytes?
+  encrypted_date_of_birth        Bytes?
+  measurement                    measurement[]
+  ethnicity                      ethnicity                        @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
+  hospital                       hospital                         @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "patient_hospital_fk")
+  creator                        user?                            @relation(fields: [creator_id], references: [id], map: "patient_user_fk")
+  patient_k                      patient_k[]
+  patient_nearwork_activity      patient_nearwork_activity[]
+  patient_outdoor_activity       patient_outdoor_activity[]
+  patient_parental_myopia_status patient_parental_myopia_status[]
+  patient_treatment              patient_treatment[]
+  pending_patient_deletion       pending_patient_deletion?
+  refractive_error               refractive_error[]
+  user_patient                   user_patient[]
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -141,6 +145,7 @@ model user {
   normal_user             normal_user?
   password_auth           password_auth?
   patient                 patient[]
+  refractive_error        refractive_error[]
   session                 session[]
   user_patient            user_patient[]
 }
@@ -188,6 +193,52 @@ model pending_patient_deletion {
   patient                 patient                 @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "pending_patient_deletion_patient_fk")
 }
 
+model patient_nearwork_activity {
+  id         String                     @id(map: "patient_nearwork_activity_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patient_id String                     @db.Uuid
+  timestamp  DateTime                   @default(now()) @db.Timestamp(6)
+  category   activity_duration_category
+  patient    patient                    @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_nearwork_activity_patient_fk")
+}
+
+model patient_outdoor_activity {
+  id         String                     @id(map: "patient_outdoor_activity_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patient_id String                     @db.Uuid
+  timestamp  DateTime                   @default(now()) @db.Timestamp(6)
+  category   activity_duration_category
+  patient    patient                    @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_outdoor_activity_patient_fk")
+}
+
+model patient_parental_myopia_status {
+  id         String        @id(map: "patient_parental_myopia_status_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parent_sex sex
+  patient_id String        @db.Uuid
+  status     myopia_status
+  timestamp  DateTime      @default(now()) @db.Timestamp(6)
+  patient    patient       @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_parental_myopia_status_patient_fk")
+}
+
+model refractive_error {
+  id                      String                  @id(map: "refractive_error_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  method_id               Int
+  od_sph                  Float?                  @db.Real
+  od_cyl                  Float?                  @db.Real
+  os_cyl                  Float?                  @db.Real
+  os_sph                  Float?                  @db.Real
+  date                    DateTime                @db.Date
+  creator_id              String?                 @db.Uuid
+  patient_id              String                  @db.Uuid
+  patient                 patient                 @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "refractive_error_patient_fk")
+  refractive_error_method refractive_error_method @relation(fields: [method_id], references: [id], onDelete: NoAction, map: "refractive_error_refactive_error_method_fk")
+  user                    user?                   @relation(fields: [creator_id], references: [id], map: "refractive_error_user_fk")
+}
+
+model refractive_error_method {
+  id               Int                @id(map: "refractive_error_method_pk") @default(autoincrement())
+  name             String             @unique(map: "refractive_error_method_unique")
+  refractive_error refractive_error[]
+}
+
 enum sex {
   male
   female
@@ -196,4 +247,20 @@ enum sex {
 enum ktype {
   K1
   K2
+}
+
+enum activity_duration_category {
+  zero_to_one
+  one_to_two
+  two_to_four
+  four_to_six
+  six_to_eight
+  eight_to_infinity
+}
+
+enum myopia_status {
+  myopia
+  high_myopia
+  emmetropia
+  hyperopia
 }
