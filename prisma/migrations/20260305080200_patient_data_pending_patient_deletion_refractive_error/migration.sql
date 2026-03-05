@@ -10,6 +10,13 @@ ALTER TABLE "public"."measurement" DROP CONSTRAINT "measurement_instrument_fk";
 -- AlterTable
 ALTER TABLE "public"."measurement" ALTER COLUMN "creator_id" DROP NOT NULL;
 
+-- AlterTable
+ALTER TABLE "public"."patient" ADD COLUMN     "created_at" TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+ADD COLUMN     "encrypted_date_of_birth" BYTEA,
+ADD COLUMN     "encrypted_registration_number" BYTEA,
+ALTER COLUMN "registration_number" DROP NOT NULL,
+ALTER COLUMN "date_of_birth" DROP NOT NULL;
+
 -- CreateTable
 CREATE TABLE "public"."patient_nearwork_activity" (
     "id" UUID NOT NULL DEFAULT gen_random_uuid(),
@@ -39,6 +46,15 @@ CREATE TABLE "public"."patient_parental_myopia_status" (
     "timestamp" TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "patient_parental_myopia_status_pk" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "public"."pending_patient_deletion" (
+    "patient_id" UUID NOT NULL,
+    "requested_by" UUID NOT NULL,
+    "request_date" TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "pending_patient_deletion_pk" PRIMARY KEY ("patient_id")
 );
 
 -- CreateTable
@@ -81,6 +97,12 @@ ALTER TABLE "public"."patient_outdoor_activity" ADD CONSTRAINT "patient_outdoor_
 
 -- AddForeignKey
 ALTER TABLE "public"."patient_parental_myopia_status" ADD CONSTRAINT "patient_parental_myopia_status_patient_fk" FOREIGN KEY ("patient_id") REFERENCES "public"."patient"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."pending_patient_deletion" ADD CONSTRAINT "pending_patient_deletion_healthcare_professional_fk" FOREIGN KEY ("requested_by") REFERENCES "public"."healthcare_professional"("user_id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "public"."pending_patient_deletion" ADD CONSTRAINT "pending_patient_deletion_patient_fk" FOREIGN KEY ("patient_id") REFERENCES "public"."patient"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "public"."refractive_error" ADD CONSTRAINT "refractive_error_patient_fk" FOREIGN KEY ("patient_id") REFERENCES "public"."patient"("id") ON DELETE CASCADE ON UPDATE CASCADE;
