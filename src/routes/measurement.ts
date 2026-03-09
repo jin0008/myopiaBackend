@@ -45,6 +45,53 @@ router.post(
   },
 );
 
+const patchBodyType = postBodyType.omit({ patient_id: true });
+
+router.patch(
+  "/:measurementId",
+  approvedProfessionalRequired,
+  validateRequestBody(patchBodyType),
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof patchBodyType>;
+    const measurementId = String(req.params.measurementId);
+    const authorized = await prisma.measurement
+      .findUnique({
+        where: {
+          id: measurementId,
+        },
+        select: {
+          patient: {
+            select: {
+              hospital_id: true,
+            },
+          },
+        },
+      })
+      .then(
+        (measurement) =>
+          measurement?.patient.hospital_id ===
+          req.healthcare_professional!.hospital_id,
+      )
+      .catch(() => false);
+
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
+
+    await prisma.measurement.update({
+      where: {
+        id: measurementId,
+      },
+      data: {
+        ...data,
+        date: new Date(data.date),
+      },
+    });
+    res.sendStatus(200);
+  },
+);
+
 router.delete(
   "/:measurementId",
   approvedProfessionalRequired,

@@ -49,6 +49,54 @@ router.post(
   },
 );
 
+const patchBodyType = postBodyType.omit({ patient_id: true });
+
+router.patch(
+  "/:refractiveErrorId",
+  approvedProfessionalRequired,
+  validateRequestBody(patchBodyType),
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof patchBodyType>;
+    const refractiveErrorId = String(req.params.refractiveErrorId);
+
+    const authorized = await prisma.refractive_error
+      .findUnique({
+        where: {
+          id: refractiveErrorId,
+        },
+        select: {
+          patient: {
+            select: {
+              hospital_id: true,
+            },
+          },
+        },
+      })
+      .then(
+        (refractiveError) =>
+          refractiveError?.patient?.hospital_id ===
+          req.healthcare_professional!.hospital_id,
+      )
+      .catch(() => false);
+
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
+
+    await prisma.refractive_error.update({
+      where: {
+        id: refractiveErrorId,
+      },
+      data: {
+        ...data,
+        date: new Date(data.date),
+      },
+    });
+    res.sendStatus(200);
+  },
+);
+
 router.delete("/:id", approvedProfessionalRequired, async (req, res) => {
   const refractiveErrorId = String(req.params.id);
 

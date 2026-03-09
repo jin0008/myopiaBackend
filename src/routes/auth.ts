@@ -123,10 +123,40 @@ router.get("/user", loginRequired, async (req, res) => {
       },
       id: true,
       is_site_admin: true,
+      email: true,
+      receive_email_updates: true,
     },
   });
   res.json(data);
 });
+
+const userPatchType = zod.object({
+  email: zod.string().email().optional(),
+  receive_email_updates: zod.boolean().optional(),
+});
+
+router.patch(
+  "/user",
+  loginRequired,
+  validateRequestBody(userPatchType),
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof userPatchType>;
+
+    const { email, receive_email_updates } = data;
+
+    await prisma.user.update({
+      where: {
+        id: req.authSession!.user_id,
+      },
+      data: {
+        email: email,
+        receive_email_updates: receive_email_updates,
+      },
+    });
+
+    res.sendStatus(200);
+  },
+);
 
 const passwordAuthType = zod.object({
   username: zod
@@ -134,6 +164,8 @@ const passwordAuthType = zod.object({
     .nonempty()
     .regex(/^[a-zA-Z0-9]+$/),
   password: zod.string().nonempty(),
+  email: zod.string().email(),
+  receive_email_updates: zod.boolean().optional(),
 });
 
 router.post(
@@ -142,7 +174,7 @@ router.post(
   async (req, res) => {
     const data = req.body as zod.infer<typeof passwordAuthType>;
 
-    const { username, password } = data;
+    const { username, password, email, receive_email_updates } = data;
 
     const hash = await bcrypt.hash(password, 12);
 
@@ -155,6 +187,8 @@ router.post(
               hash: hash,
             },
           },
+          email: email,
+          receive_email_updates: receive_email_updates,
         },
       })
       .then(() => res.sendStatus(201))
@@ -272,48 +306,64 @@ router.patch("/user/passwordAuth", loginRequired, async (req, res) => {
     .then(() => res.sendStatus(200));
 });
 
-router.post("/user/googleAuth", async (req, res) => {
-  const token = req.body.token;
-  if (typeof token !== "string" || !token) {
-    res.sendStatus(400);
-    return;
-  }
-
-  const ticket = await client.verifyIdToken({
-    idToken: token,
-    audience: process.env.GOOGLE_CLIENT_ID,
-  });
-
-  const payload = ticket.getPayload();
-  if (payload == null) {
-    res.sendStatus(401);
-    return;
-  }
-
-  await prisma.user
-    .create({
-      data: {
-        google_auth: {
-          create: {
-            google_identity: payload.sub,
-          },
-        },
-      },
-    })
-    .catch((err) => {
-      if (
-        err instanceof PrismaClientKnownRequestError &&
-        err.code === "P2002"
-      ) {
-        res.status(400).json({
-          message: "The google account is already associated with an account",
-        });
-      } else {
-        res.sendStatus(500);
-      }
-    })
-    .then(() => res.sendStatus(201));
+const googleAuthType = zod.object({
+  token: zod.string().nonempty(),
+  receive_email_updates: zod.boolean().optional(),
 });
+
+router.post(
+  "/user/googleAuth",
+  validateRequestBody(googleAuthType),
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof googleAuthType>;
+
+    const { token, receive_email_updates } = data;
+
+    const ticket = await client.verifyIdToken({
+      idToken: token,
+      audience: process.env.GOOGLE_CLIENT_ID,
+    });
+
+    const payload = ticket.getPayload();
+    if (payload == null) {
+      res.sendStatus(400);
+      return;
+    }
+
+    const email = payload.email;
+    console.log(email);
+    if (email == null) {
+      res.sendStatus(400);
+      return;
+    }
+
+    await prisma.user
+      .create({
+        data: {
+          google_auth: {
+            create: {
+              google_identity: payload.sub,
+            },
+          },
+          email: payload.email,
+          receive_email_updates: receive_email_updates,
+        },
+      })
+      .then(() => res.sendStatus(201))
+      .catch((err) => {
+        if (
+          err instanceof PrismaClientKnownRequestError &&
+          err.code === "P2002"
+        ) {
+          res.status(400).json({
+            message: "The google account is already associated with an account",
+          });
+        } else {
+          res.sendStatus(500);
+        }
+      });
+  },
+);
 
 router.post("/googleAuth", loginRequired, async (req, res) => {
   const token = req.body.token;

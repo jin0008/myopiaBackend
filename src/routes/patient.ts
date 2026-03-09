@@ -9,7 +9,6 @@ import {
 } from "../lib/middlewares";
 import { myopia_status, sex } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
-import { activity_duration_category } from "@prisma/client";
 import { decryptSymmetric, encryptSymmetric } from "../services/encrpytion";
 import { isPatientInHospital } from "../lib/authorization";
 
@@ -284,10 +283,10 @@ router.get(
 const postPatientDataSchema = zod
   .object({
     nearwork_activity: zod.object({
-      category: zod.nativeEnum(activity_duration_category),
+      hours: zod.number(),
     }),
     outdoor_activity: zod.object({
-      category: zod.nativeEnum(activity_duration_category),
+      hours: zod.number(),
     }),
     mother_myopia_status: zod.object({
       status: zod.nativeEnum(myopia_status),
@@ -320,7 +319,7 @@ router.post(
         prisma.patient_nearwork_activity.create({
           data: {
             patient_id: patientId,
-            category: data.nearwork_activity.category,
+            hours: data.nearwork_activity.hours,
           },
         }),
       );
@@ -330,7 +329,7 @@ router.post(
         prisma.patient_outdoor_activity.create({
           data: {
             patient_id: patientId,
-            category: data.outdoor_activity.category,
+            hours: data.outdoor_activity.hours,
           },
         }),
       );
