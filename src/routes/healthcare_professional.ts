@@ -157,6 +157,7 @@ router.patch("/hospital", approvedProfessionalRequired, async (req, res) => {
           },
         },
         approved: false,
+        is_admin: false,
       },
     });
     res.sendStatus(200);
