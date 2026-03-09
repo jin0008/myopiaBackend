@@ -26,6 +26,7 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
     res.sendStatus(400);
     return;
   }
+
   const orderByDirection =
     req.query.orderByDirection === "asc" ? "asc" : "desc";
   const data = await prisma.hospital
@@ -52,24 +53,31 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
       );
     })
     .then((data) => {
-      return data.sort((a, b) => {
-        if (orderBy === "created_at") {
-          return a.created_at.getTime() - b.created_at.getTime();
-        } else if (orderBy === "registration_number") {
-          return a.registration_number!.localeCompare(b.registration_number!);
-        } else if (orderBy === "date_of_birth") {
-          return (
-            new Date(a.date_of_birth!).getTime() -
-            new Date(b.date_of_birth!).getTime()
-          );
-        } else if (orderBy === "sex") {
-          return a.sex.localeCompare(b.sex);
-        }
-        return 0;
-      });
-    })
-    .then((data) => {
-      return orderByDirection === "asc" ? data : data.reverse();
+      const multiplier = orderByDirection === "asc" ? 1 : -1;
+      let comparatorFunction: (a: any, b: any) => number;
+      switch (orderBy) {
+        case "created_at":
+          comparatorFunction = (a, b) =>
+            multiplier * (a.created_at.getTime() - b.created_at.getTime());
+          break;
+        case "registration_number":
+          comparatorFunction = (a, b) =>
+            multiplier *
+            a.registration_number!.localeCompare(b.registration_number!);
+          break;
+        case "date_of_birth":
+          comparatorFunction = (a, b) =>
+            multiplier *
+            (a.date_of_birth!.getTime() - b.date_of_birth!.getTime());
+          break;
+        case "sex":
+          comparatorFunction = (a, b) =>
+            multiplier * a.sex.localeCompare(b.sex);
+          break;
+        default:
+          throw new Error("this should not happen");
+      }
+      return data.sort(comparatorFunction);
     });
 
   res.json(data);
