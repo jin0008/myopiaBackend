@@ -9,18 +9,21 @@ export async function encryptPatientData() {
         registration_number: true,
         date_of_birth: true,
       },
+      where: {
+        encrypted_date_of_birth: null,
+        encrypted_registration_number: null,
+      },
     })
     .then((patients) => {
       return Promise.all(
         patients.map(async (patient) => {
-          const encryptedRegistrationNumber = patient.registration_number
-            ? await encryptSymmetric(patient.registration_number)
-            : undefined;
-          const encryptedDateOfBirth = patient.date_of_birth
-            ? await encryptSymmetric(
-                patient.date_of_birth.toISOString().split("T")[0],
-              )
-            : undefined;
+          const encryptedRegistrationNumber = await encryptSymmetric(
+            patient.registration_number!,
+          );
+
+          const encryptedDateOfBirth = await encryptSymmetric(
+            patient.date_of_birth!.toISOString().split("T")[0],
+          );
           return {
             ...patient,
             encrypted_registration_number: encryptedRegistrationNumber,
@@ -35,9 +38,12 @@ export async function encryptPatientData() {
           return prisma.patient.update({
             where: { id: patient.id },
             data: {
-              encrypted_registration_number:
+              encrypted_registration_number: Uint8Array.from(
                 patient.encrypted_registration_number,
-              encrypted_date_of_birth: patient.encrypted_date_of_birth,
+              ),
+              encrypted_date_of_birth: Uint8Array.from(
+                patient.encrypted_date_of_birth,
+              ),
             },
           });
         }),
@@ -84,3 +90,5 @@ export async function deletePlaintextPatientData() {
   });
   console.log(`${plainTextCount} plaintext patient data left in the database`);
 }
+
+encryptPatientData().then(deletePlaintextPatientData).catch(console.error);
