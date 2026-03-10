@@ -6,6 +6,7 @@ import {
   validateRequestBody,
 } from "../lib/middlewares";
 import zod from "zod";
+import { decryptSymmetric } from "../services/encrpytion";
 
 const router = express.Router();
 
@@ -82,6 +83,32 @@ router.get(
     );
   },
 );
+
+router.get("/:hospital_id/measurement", siteAdminRequired, async (req, res) => {
+  await prisma.patient
+    .findMany({
+      where: {
+        hospital_id: req.params.hospital_id as string,
+      },
+      include: {
+        measurement: true,
+      },
+    })
+    .then((result) =>
+      Promise.all(
+        result.map(async (patient) => ({
+          ...patient,
+          date_of_birth: patient.encrypted_date_of_birth
+            ? await decryptSymmetric(patient.encrypted_date_of_birth)
+            : patient.date_of_birth,
+          registration_number: patient.encrypted_registration_number
+            ? await decryptSymmetric(patient.encrypted_registration_number)
+            : patient.registration_number,
+        })),
+      ),
+    )
+    .then((result) => res.json(result));
+});
 
 router.get(
   "/healthcare_professional",
