@@ -2,59 +2,41 @@ import prisma from "../lib/prisma";
 import { encryptSymmetric } from "../services/encrpytion";
 
 export async function encryptPatientData() {
-  await prisma.patient
-    .findMany({
-      select: {
-        id: true,
-        registration_number: true,
-        date_of_birth: true,
-      },
-      where: {
-        encrypted_date_of_birth: null,
-        encrypted_registration_number: null,
-      },
-    })
-    .then((patients) => {
-      return Promise.all(
-        patients.map(async (patient) => {
-          const encryptedRegistrationNumber = await encryptSymmetric(
-            patient.registration_number!,
-          );
+  const toEncrypt = await prisma.patient.findMany({
+    select: {
+      id: true,
+      registration_number: true,
+      date_of_birth: true,
+    },
+    where: {
+      encrypted_date_of_birth: null,
+      encrypted_registration_number: null,
+    },
+  });
 
-          const encryptedDateOfBirth = await encryptSymmetric(
-            patient.date_of_birth!.toISOString().split("T")[0],
-          );
-          return {
-            ...patient,
-            encrypted_registration_number: encryptedRegistrationNumber,
-            encrypted_date_of_birth: encryptedDateOfBirth,
-          };
-        }),
-      );
-    })
-    .then((data) => {
-      return prisma.$transaction(
-        data.map((patient) => {
-          return prisma.patient.update({
-            where: { id: patient.id },
-            data: {
-              encrypted_registration_number: Uint8Array.from(
-                patient.encrypted_registration_number,
-              ),
-              encrypted_date_of_birth: Uint8Array.from(
-                patient.encrypted_date_of_birth,
-              ),
-            },
-          });
-        }),
-      );
-    })
-    .then(() => {
-      console.log("Patient data encrypted successfully");
-    })
-    .catch((error) => {
-      console.error("Error encrypting patient data:", error);
-    });
+  for (const patient of toEncrypt) {
+    const [encryptedRegistrationNumber, encryptedDateOfBirth] =
+      await Promise.all([
+        encryptSymmetric(patient.registration_number!),
+        encryptSymmetric(patient.date_of_birth!.toISOString().split("T")[0]),
+      ]);
+    await prisma.patient
+      .update({
+        where: { id: patient.id },
+        data: {
+          encrypted_registration_number: Uint8Array.from(
+            encryptedRegistrationNumber,
+          ),
+          encrypted_date_of_birth: Uint8Array.from(encryptedDateOfBirth),
+        },
+      })
+      .then(() => {
+        console.log(`Encrypted patient ${patient.id}`);
+      })
+      .catch((error) => {
+        console.error(`Error encrypting patient ${patient.id}: ${error}`);
+      });
+  }
 }
 
 export async function deletePlaintextPatientData() {
