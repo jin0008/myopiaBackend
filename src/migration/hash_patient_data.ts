@@ -12,6 +12,9 @@ export async function hashPatientRegistrationNumbers() {
     },
   });
 
+  let count = 0;
+  let errorCount = 0;
+
   async function processOne(patient: (typeof toHash)[number]) {
     try {
       const registrationNumber = await decryptSymmetric(
@@ -23,8 +26,10 @@ export async function hashPatientRegistrationNumbers() {
         data: { registration_number_hash: hash },
       });
       console.log(`Hashed patient ${patient.id}`);
+      count++;
     } catch (error) {
       console.error(`Error hashing patient ${patient.id}: ${error}`);
+      errorCount++;
     }
   }
 
@@ -32,6 +37,8 @@ export async function hashPatientRegistrationNumbers() {
     const batch = toHash.slice(i, i + CONCURRENCY);
     await Promise.all(batch.map(processOne));
   }
+  console.log(`Hashed ${count} patients`);
+  console.log(`Errored ${errorCount} patients`);
 }
 
 hashPatientRegistrationNumbers().catch(console.error);
