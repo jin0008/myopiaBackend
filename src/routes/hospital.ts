@@ -98,12 +98,12 @@ router.get("/:hospital_id/measurement", siteAdminRequired, async (req, res) => {
       Promise.all(
         result.map(async (patient) => ({
           ...patient,
-          date_of_birth: patient.encrypted_date_of_birth
-            ? await decryptSymmetric(patient.encrypted_date_of_birth)
-            : patient.date_of_birth,
-          registration_number: patient.encrypted_registration_number
-            ? await decryptSymmetric(patient.encrypted_registration_number)
-            : patient.registration_number,
+          date_of_birth: await decryptSymmetric(
+            patient.encrypted_date_of_birth,
+          ),
+          registration_number: await decryptSymmetric(
+            patient.encrypted_registration_number,
+          ),
         })),
       ),
     )

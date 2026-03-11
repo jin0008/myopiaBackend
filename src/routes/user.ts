@@ -3,6 +3,8 @@ import prisma from "../lib/prisma";
 import zod from "zod";
 import { loginRequired, validateRequestBody } from "../lib/middlewares";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { hashRegistrationNumber } from "../lib/hash";
+import { decryptSymmetric } from "../services/encrpytion";
 
 const router = express.Router();
 router.use(loginRequired);
@@ -31,15 +33,24 @@ router.post(
   async (req, res) => {
     const data = req.body;
 
-    const patient = await prisma.patient.findFirst({
+    const hash = hashRegistrationNumber(data.registration_number);
+
+    const patient = await prisma.patient.findUnique({
       where: {
-        hospital_id: data.hospital_id,
-        registration_number: data.registration_number,
-        date_of_birth: new Date(data.date_of_birth),
+        registration_number_hash_hospital_id: {
+          registration_number_hash: hash,
+          hospital_id: data.hospital_id,
+        },
       },
     });
 
     if (patient == null) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const dateOfBirth = await decryptSymmetric(patient.encrypted_date_of_birth);
+    if (dateOfBirth !== data.date_of_birth) {
       res.sendStatus(404);
       return;
     }

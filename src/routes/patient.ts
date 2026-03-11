@@ -11,6 +11,8 @@ import { myopia_status, sex } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { decryptSymmetric, encryptSymmetric } from "../services/encrpytion";
 import { isPatientInHospital } from "../lib/authorization";
+import bcrypt from "bcrypt";
+import { hashRegistrationNumber } from "../lib/hash";
 
 const router = express.Router();
 
@@ -43,18 +45,21 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
       return Promise.all(
         patients.map(async (patient) => ({
           ...patient,
-          date_of_birth: patient.encrypted_date_of_birth
-            ? await decryptSymmetric(patient.encrypted_date_of_birth)
-            : patient.date_of_birth,
-          registration_number: patient.encrypted_registration_number
-            ? await decryptSymmetric(patient.encrypted_registration_number)
-            : patient.registration_number,
+          date_of_birth: await decryptSymmetric(
+            patient.encrypted_date_of_birth,
+          ),
+          registration_number: await decryptSymmetric(
+            patient.encrypted_registration_number,
+          ),
         })),
       );
     })
     .then((data) => {
       const multiplier = orderByDirection === "asc" ? 1 : -1;
-      let comparatorFunction: (a: any, b: any) => number;
+      let comparatorFunction: (
+        a: (typeof data)[number],
+        b: (typeof data)[number],
+      ) => number;
       switch (orderBy) {
         case "created_at":
           comparatorFunction = (a, b) =>
@@ -63,12 +68,11 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
         case "registration_number":
           comparatorFunction = (a, b) =>
             multiplier *
-            a.registration_number!.localeCompare(b.registration_number!);
+            a.registration_number.localeCompare(b.registration_number);
           break;
         case "date_of_birth":
           comparatorFunction = (a, b) =>
-            multiplier *
-            (a.date_of_birth!.getTime() - b.date_of_birth!.getTime());
+            multiplier * a.date_of_birth.localeCompare(b.date_of_birth);
           break;
         case "sex":
           comparatorFunction = (a, b) =>
@@ -414,12 +418,10 @@ router.get("/:patientId", loginRequired, async (req, res) => {
       }
       res.json({
         ...data,
-        date_of_birth: data.encrypted_date_of_birth
-          ? await decryptSymmetric(data.encrypted_date_of_birth)
-          : data.date_of_birth,
-        registration_number: data.encrypted_registration_number
-          ? await decryptSymmetric(data.encrypted_registration_number)
-          : data.registration_number,
+        date_of_birth: await decryptSymmetric(data.encrypted_date_of_birth),
+        registration_number: await decryptSymmetric(
+          data.encrypted_registration_number,
+        ),
       });
     });
 });
@@ -438,24 +440,8 @@ router.post(
   async (req, res) => {
     const data = req.body as zod.infer<typeof postPatientSchema>;
 
-    const exists = await prisma.patient
-      .count({
-        where: {
-          registration_number: {
-            equals: data.registration_number.trim(),
-            mode: "insensitive",
-          },
-          hospital_id: req.healthcare_professional!.hospital_id,
-        },
-      })
-      .then((count) => count > 0);
-
-    if (exists) {
-      res.status(409).json({
-        message: "Patient with this registration number already exists.",
-      });
-      return;
-    }
+    const trimmedRegistrationNumber = data.registration_number.trim();
+    const hash = hashRegistrationNumber(trimmedRegistrationNumber);
 
     await prisma.patient.create({
       data: {
@@ -463,8 +449,9 @@ router.post(
         ethnicity_id: data.ethnicity_id,
         email: data.email,
         encrypted_registration_number: await encryptSymmetric(
-          data.registration_number,
+          trimmedRegistrationNumber,
         ).then((encrypted) => Uint8Array.from(encrypted)),
+        registration_number_hash: hash,
         encrypted_date_of_birth: await encryptSymmetric(
           data.date_of_birth,
         ).then((encrypted) => Uint8Array.from(encrypted)),

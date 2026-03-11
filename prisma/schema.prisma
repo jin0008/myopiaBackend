@@ -85,15 +85,14 @@ model password_auth {
 model patient {
   id                             String                           @id(map: "patient_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   hospital_id                    String                           @db.Uuid
-  registration_number            String?
-  date_of_birth                  DateTime?                        @db.Date
   sex                            sex
   ethnicity_id                   String                           @db.Uuid
   creator_id                     String?                          @db.Uuid
   email                          String?
   created_at                     DateTime                         @default(now()) @db.Timestamp(6)
-  encrypted_registration_number  Bytes?
-  encrypted_date_of_birth        Bytes?
+  encrypted_registration_number  Bytes
+  registration_number_hash       String
+  encrypted_date_of_birth        Bytes
   measurement                    measurement[]
   ethnicity                      ethnicity                        @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
   hospital                       hospital                         @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "patient_hospital_fk")
@@ -106,6 +105,8 @@ model patient {
   pending_patient_deletion       pending_patient_deletion?
   refractive_error               refractive_error[]
   user_patient                   user_patient[]
+
+  @@unique([registration_number_hash, hospital_id], map: "patient_registration_number_hash_unique")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
