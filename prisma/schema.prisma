@@ -91,7 +91,7 @@ model patient {
   email                          String?
   created_at                     DateTime                         @default(now()) @db.Timestamp(6)
   encrypted_registration_number  Bytes
-  registration_number_hash       String
+  registration_number_hash       String?
   encrypted_date_of_birth        Bytes
   measurement                    measurement[]
   ethnicity                      ethnicity                        @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
