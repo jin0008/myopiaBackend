@@ -10,15 +10,31 @@ const router = express.Router();
 router.use(loginRequired);
 
 router.get("/patient", async (req, res) => {
-  const data = await prisma.patient.findMany({
-    where: {
-      user_patient: {
-        some: {
-          user_id: req.authSession?.user_id,
+  const data = await prisma.patient
+    .findMany({
+      where: {
+        user_patient: {
+          some: {
+            user_id: req.authSession?.user_id,
+          },
         },
       },
-    },
-  });
+    })
+    .then((patients) => {
+      return Promise.all(
+        patients.map(async (patient) => {
+          return {
+            ...patient,
+            date_of_birth: await decryptSymmetric(
+              patient.encrypted_date_of_birth,
+            ),
+            registration_number: await decryptSymmetric(
+              patient.encrypted_registration_number,
+            ),
+          };
+        }),
+      );
+    });
   res.json(data);
 });
 
