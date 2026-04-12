@@ -77,7 +77,16 @@ async function fetchFromPubMed(): Promise<CachedArticle[]> {
       if (!pmid || !title) return null;
 
       const decode = (s: string) =>
-        s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+        s
+          .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
+            String.fromCodePoint(parseInt(hex, 16)),
+          )
+          .replace(/&#(\d+);/g, (_, dec) =>
+            String.fromCodePoint(parseInt(dec, 10)),
+          )
+          .replace(/&lt;/g, "<")
+          .replace(/&gt;/g, ">")
+          .replace(/&amp;/g, "&");
       return {
         id: pmid,
         title: decode(title),
