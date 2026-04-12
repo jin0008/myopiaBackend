@@ -22,7 +22,7 @@ let cache: CachedArticle[] | null = null;
 async function fetchFromPubMed(): Promise<CachedArticle[]> {
   console.log("Fetching news from PubMed...");
   // 1. Search for latest articles on Myopia Control within last 6 months (reldate=180)
-  const searchUrl = `${BASE_URL}/esearch.fcgi?db=pubmed&term=myopia[Title]+AND+(control[Title]+OR+management[Title]+OR+treatment[Title])&reldate=180&retmode=json&retmax=10&sort=date`;
+  const searchUrl = `${BASE_URL}/esearch.fcgi?db=pubmed&term=myopia[Title]+AND+(control[Title]+OR+management[Title]+OR+treatment[Title])+AND+english[Language]&reldate=180&retmode=json&retmax=10&sort=date`;
 
   const searchResponse = await fetch(searchUrl);
   if (!searchResponse.ok) throw new Error("PubMed Search Failed");
