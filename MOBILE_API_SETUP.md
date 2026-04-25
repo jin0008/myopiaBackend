@@ -80,6 +80,16 @@ hospital's `patient` record or the `measurement` / `refractive_error` /
 `child_hospital_link` to `patient` and `hospital` are `ON DELETE NO ACTION`
 to enforce this at the DB level too.
 
+### Web compatibility (`user_patient` mirror)
+
+The iOS app shares the existing `user` / `password_auth` tables with myopiamanage.org, so any `regular_user` account can sign in with the same id+password. To make the *children list* match too, `/api/mobile/children` reads from both `parent_child_link` (iOS-side) and `user_patient` (the table populated by the web's regular-user "register child" flow), tagging each result with `source: "app" | "web"`. Patients managed only by HCPs (no `user_patient` row) are intentionally NOT exposed.
+
+iOS link/unlink also writes through to `user_patient` so the mirror stays in sync:
+
+- `POST /children/:id/hospital-links` upserts a `user_patient(user_id, patient_id)` row alongside the new `child_hospital_link`.
+- `DELETE /children/:id/hospital-links/:hospitalId` removes the matching `child_hospital_link` and, when no other iOS hospital-link of the same user still references that patient, also drops the `user_patient` row.
+- `DELETE /children/:id` (app-source) cascades the same way; (web-source) just removes the `user_patient` row.
+
 ### Hospital-link matching
 
 When the parent taps "Link a hospital" the app sends `{ hospitalCode,

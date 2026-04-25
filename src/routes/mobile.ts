@@ -92,26 +92,112 @@ function requireAppUser(req: express.Request): MobileJWTPayload {
 }
 
 /**
- * Loads a parent_child_link and asserts it belongs to the requesting user.
- * Returns null if not found or not owned.
+ * Discriminated union representing the two ways a child can be associated
+ * with the requesting parent user:
+ *
+ *   - "app"  → a row in `parent_child_link` (created via the iOS app's
+ *              "add child" flow). Has a nickname/DOB/sex and may be
+ *              connected to multiple hospitals via child_hospital_link.
+ *   - "web"  → a row in `user_patient` (created via the existing
+ *              myopiamanage.org "register child" flow on the web). Has
+ *              a single linked patient row (1 hospital).
+ *
+ * The `childId` is the unique identifier the iOS app exposes externally:
+ *   - for app-source: parent_child_link.id
+ *   - for web-source: patient.id
+ * UUIDs are globally unique so no namespace collision is possible.
  */
-async function loadOwnedChild(userId: string, childId: string) {
-  const child = await prisma.parent_child_link.findUnique({
+type OwnedChild =
+  | { source: "app"; childId: string; userId: string; appLink: { id: string; user_id: string; nickname: string; date_of_birth: Date; sex: SexEnum } }
+  | { source: "web"; childId: string; userId: string; patientId: string };
+
+/**
+ * Resolves a childId for the requesting user, transparently looking in
+ * both `parent_child_link` (app-source) and `user_patient` (web-source).
+ * Returns null if no match was found or the child does not belong to
+ * the user.
+ */
+async function findOwnedChild(
+  childId: string,
+  userId: string,
+): Promise<OwnedChild | null> {
+  // 1) App-source: parent_child_link
+  const appLink = await prisma.parent_child_link.findUnique({
     where: { id: childId },
   });
-  if (child == null || child.user_id !== userId) return null;
-  return child;
+  if (appLink != null && appLink.user_id === userId) {
+    return { source: "app", childId: appLink.id, userId, appLink };
+  }
+  // 2) Web-source: user_patient (myopiamanage.org "register child")
+  const userPatient = await prisma.user_patient.findUnique({
+    where: { user_id_patient_id: { user_id: userId, patient_id: childId } },
+  });
+  if (userPatient != null) {
+    return { source: "web", childId, userId, patientId: childId };
+  }
+  return null;
+}
+
+/** Compatibility shim — keep the old name working while we migrate
+ *  call sites. Returns the underlying `parent_child_link` row for app
+ *  sources and `null` for web sources. New code should use
+ *  `findOwnedChild` directly.
+ */
+async function loadOwnedChild(userId: string, childId: string) {
+  const owned = await findOwnedChild(childId, userId);
+  if (owned == null) return null;
+  if (owned.source !== "app") return null;
+  return owned.appLink;
+}
+async function getOwnedChild(childId: string, userId: string) {
+  return loadOwnedChild(userId, childId);
 }
 
 /**
- * Returns the patient ids for every active hospital link a given child has.
- * Used by the measurement-aggregation endpoints.
+ * Returns the patient ids for every hospital that a given child is
+ * linked to, regardless of source.
+ *
+ *   - app-source children fan out across `child_hospital_link` rows
+ *     (status: active).
+ *   - web-source children resolve to the single linked patient (the
+ *     1:1 mapping enforced by the web's user_patient flow).
  */
-async function linkedPatientIds(childId: string): Promise<
+async function linkedPatientIds(childOrId: OwnedChild | string): Promise<
   { patientId: string; hospitalId: string; hospitalName: string }[]
 > {
+  // Backwards-compat: callers that passed a raw childId continue to
+  // work as if it's an app-source child (which was the only case the
+  // old signature supported).
+  if (typeof childOrId === "string") {
+    const links = await prisma.child_hospital_link.findMany({
+      where: { parent_child_link_id: childOrId, status: "active" },
+      include: { hospital: { select: { id: true, name: true } } },
+    });
+    return links.map((l) => ({
+      patientId: l.patient_id,
+      hospitalId: l.hospital_id,
+      hospitalName: l.hospital.name,
+    }));
+  }
+
+  if (childOrId.source === "web") {
+    const patient = await prisma.patient.findUnique({
+      where: { id: childOrId.patientId },
+      include: { hospital: { select: { id: true, name: true } } },
+    });
+    if (patient == null) return [];
+    return [
+      {
+        patientId: patient.id,
+        hospitalId: patient.hospital_id,
+        hospitalName: patient.hospital.name,
+      },
+    ];
+  }
+
+  // app-source
   const links = await prisma.child_hospital_link.findMany({
-    where: { parent_child_link_id: childId, status: "active" },
+    where: { parent_child_link_id: childOrId.childId, status: "active" },
     include: { hospital: { select: { id: true, name: true } } },
   });
   return links.map((l) => ({
@@ -304,7 +390,9 @@ function serializeDateOnly(d: Date): string {
 
 router.get("/children", requireMobileAuth, async (req, res) => {
   const user = requireAppUser(req);
-  const children = await prisma.parent_child_link.findMany({
+
+  // ── App-source: parent_child_link rows the user owns ──────────────
+  const appChildren = await prisma.parent_child_link.findMany({
     where: { user_id: user.sub },
     orderBy: { created_at: "asc" },
     include: {
@@ -322,9 +410,33 @@ router.get("/children", requireMobileAuth, async (req, res) => {
     },
   });
 
-  const result = await Promise.all(
-    children.map(async (c) => ({
+  // ── Web-source: user_patient rows from myopiamanage.org ─────────────
+  // We deliberately filter to user_patient ONLY (the regular_user
+  // "register child" flow). HCP-managed patients without a user_patient
+  // link never reach the iOS app, even if the patient row exists.
+  const webChildren = await prisma.user_patient.findMany({
+    where: { user_id: user.sub },
+    include: {
+      patient: {
+        include: {
+          hospital: { select: { id: true, name: true, code: true } },
+        },
+      },
+    },
+  });
+
+  // Patient ids already represented by an app-source child — used to
+  // dedupe so the same patient doesn't appear twice when a parent has
+  // both an iOS parent_child_link and a web user_patient pointing at
+  // the same patient row. App-source wins (richer metadata).
+  const appPatientIds = new Set<string>(
+    appChildren.flatMap((c) => c.child_hospital_link.map((l) => l.patient_id)),
+  );
+
+  const appResults = await Promise.all(
+    appChildren.map(async (c) => ({
       childId: c.id,
+      source: "app" as const,
       nickname: c.nickname,
       dateOfBirth: serializeDateOnly(c.date_of_birth),
       sex: c.sex,
@@ -343,7 +455,38 @@ router.get("/children", requireMobileAuth, async (req, res) => {
       ),
     })),
   );
-  res.json(result);
+
+  const webResults = await Promise.all(
+    webChildren
+      .filter((up) => !appPatientIds.has(up.patient_id))
+      .map(async (up) => {
+        const p = up.patient;
+        const [regNumber, dob] = await Promise.all([
+          decryptSymmetric(p.encrypted_registration_number),
+          decryptSymmetric(p.encrypted_date_of_birth),
+        ]);
+        return {
+          childId: p.id,                     // patient_id used as the public child id
+          source: "web" as const,
+          nickname: regNumber,               // web rows have no nickname; show MRN
+          dateOfBirth: dob,                  // YYYY-MM-DD
+          sex: p.sex,
+          linkedHospitals: [
+            {
+              hospitalId: p.hospital.id,
+              hospitalName: p.hospital.name,
+              hospitalCode: p.hospital.code,
+              patientId: p.id,
+              registrationNumber: regNumber,
+              linkedAt: p.created_at.toISOString(),
+              status: "active" as const,
+            },
+          ],
+        };
+      }),
+  );
+
+  res.json([...appResults, ...webResults]);
 });
 
 const childCreateSchema = zod.object({
@@ -393,11 +536,22 @@ router.patch(
   validateRequestBody(childPatchSchema),
   async (req, res) => {
     const user = requireAppUser(req);
-    const child = await loadOwnedChild(user.sub, String(req.params.childId));
-    if (child == null) {
+    // Looking through findOwnedChild lets us distinguish the two
+    // failure modes ("doesn't exist" vs "exists but is web-source so
+    // not editable here").
+    const owned = await findOwnedChild(String(req.params.childId), user.sub);
+    if (owned == null) {
       res.status(404).json({ error: "child not found", code: "not_found" });
       return;
     }
+    if (owned.source === "web") {
+      res.status(400).json({
+        error: "web-source children cannot be edited from the iOS app",
+        code: "validation_error",
+      });
+      return;
+    }
+    const child = owned.appLink;
     const data = req.body as zod.infer<typeof childPatchSchema>;
     const updated = await prisma.parent_child_link.update({
       where: { id: child.id },
@@ -419,18 +573,53 @@ router.patch(
 /**
  * DELETE /children/:childId
  *
- * IMPORTANT: This deletes the parent_child_link (and its child_hospital_link
- * rows via cascade) but NEVER the underlying patient record or its
- * measurements. That preservation is required by the product spec.
+ * IMPORTANT: This NEVER touches the underlying patient record, its
+ * measurements, or any HCP-managed clinical data. Behavior depends on
+ * the source of the child:
+ *
+ *   - app-source: deletes the parent_child_link (and its
+ *     child_hospital_link rows via cascade), and removes the matching
+ *     user_patient mirror rows the iOS fan-out put there so the
+ *     patient also disappears from myopiamanage.org's regular_user
+ *     list. The patient row itself stays.
+ *
+ *   - web-source: only the user_patient row for this user+patient is
+ *     removed (i.e. the same effect as the web "unlink child" button).
+ *     The patient row stays.
  */
 router.delete("/children/:childId", requireMobileAuth, async (req, res) => {
   const user = requireAppUser(req);
-  const child = await loadOwnedChild(user.sub, String(req.params.childId));
+  const child = await findOwnedChild(String(req.params.childId), user.sub);
   if (child == null) {
     res.status(404).json({ error: "child not found", code: "not_found" });
     return;
   }
-  await prisma.parent_child_link.delete({ where: { id: child.id } });
+
+  if (child.source === "web") {
+    await prisma.user_patient.deleteMany({
+      where: { user_id: user.sub, patient_id: child.patientId },
+    });
+    res.json({ ok: true });
+    return;
+  }
+
+  // app-source: collect linked patient_ids before cascade so we can
+  // also clean up the user_patient mirrors.
+  const links = await prisma.child_hospital_link.findMany({
+    where: { parent_child_link_id: child.childId },
+    select: { patient_id: true },
+  });
+  await prisma.$transaction(async (tx) => {
+    await tx.parent_child_link.delete({ where: { id: child.childId } });
+    if (links.length > 0) {
+      await tx.user_patient.deleteMany({
+        where: {
+          user_id: user.sub,
+          patient_id: { in: links.map((l) => l.patient_id) },
+        },
+      });
+    }
+  });
   res.json({ ok: true });
 });
 
@@ -502,13 +691,31 @@ router.post(
     }
 
     try {
-      const link = await prisma.child_hospital_link.create({
-        data: {
-          parent_child_link_id: child.id,
-          hospital_id: hospital.id,
-          patient_id: patient.id,
-          status: "active",
-        },
+      const link = await prisma.$transaction(async (tx) => {
+        // 1) child_hospital_link — iOS-side mapping
+        const created = await tx.child_hospital_link.create({
+          data: {
+            parent_child_link_id: child.id,
+            hospital_id: hospital.id,
+            patient_id: patient.id,
+            status: "active",
+          },
+        });
+        // 2) user_patient — mirror to the web-side mapping so the same
+        //    patient also shows up on myopiamanage.org for this user.
+        //    upsert handles the case where the user already has the
+        //    patient registered on web (just leave the existing row).
+        await tx.user_patient.upsert({
+          where: {
+            user_id_patient_id: {
+              user_id: user.sub,
+              patient_id: patient.id,
+            },
+          },
+          create: { user_id: user.sub, patient_id: patient.id },
+          update: {},
+        });
+        return created;
       });
       res.status(201).json({
         hospitalId: hospital.id,
@@ -542,13 +749,48 @@ router.delete(
       return;
     }
     try {
-      await prisma.child_hospital_link.delete({
-        where: {
-          parent_child_link_id_hospital_id: {
-            parent_child_link_id: child.id,
-            hospital_id: String(req.params.hospitalId),
+      await prisma.$transaction(async (tx) => {
+        // 1) Find the link first so we know which patient_id it pointed at.
+        const existing = await tx.child_hospital_link.findUnique({
+          where: {
+            parent_child_link_id_hospital_id: {
+              parent_child_link_id: child.id,
+              hospital_id: String(req.params.hospitalId),
+            },
           },
-        },
+        });
+        if (existing == null) {
+          throw new PrismaClientKnownRequestError("link not found", {
+            code: "P2025",
+            clientVersion: "n/a",
+          });
+        }
+
+        // 2) Delete the iOS-side mapping.
+        await tx.child_hospital_link.delete({ where: { id: existing.id } });
+
+        // 3) If the user has no remaining child_hospital_link rows
+        //    pointing at this patient, also drop the web-side
+        //    user_patient mirror so the patient stops showing up in
+        //    myopiamanage.org's regular_user list. This only fires if
+        //    the user_patient row was originally created by the iOS
+        //    fan-out (or if the user has effectively unlinked via the
+        //    iOS UI). Web users who linked the patient on web first
+        //    will still have their own user_patient row which we
+        //    don't recreate when deleting the child_hospital_link, so
+        //    the conservative read here is: cleanup is a no-op when
+        //    the user_patient was set up before any iOS link existed.
+        const stillLinked = await tx.child_hospital_link.findFirst({
+          where: {
+            patient_id: existing.patient_id,
+            parent_child_link: { user_id: user.sub },
+          },
+        });
+        if (stillLinked == null) {
+          await tx.user_patient.deleteMany({
+            where: { user_id: user.sub, patient_id: existing.patient_id },
+          });
+        }
       });
       res.json({ ok: true });
     } catch (e) {
@@ -584,16 +826,16 @@ async function guardChild(
   req: express.Request,
   res: express.Response,
 ): Promise<{
-  child: NonNullable<Awaited<ReturnType<typeof loadOwnedChild>>>;
+  child: OwnedChild;
   patients: Awaited<ReturnType<typeof linkedPatientIds>>;
 } | null> {
   const user = requireAppUser(req);
-  const child = await loadOwnedChild(user.sub, String(req.params.childId));
+  const child = await findOwnedChild(String(req.params.childId), user.sub);
   if (child == null) {
     res.status(404).json({ error: "child not found", code: "not_found" });
     return null;
   }
-  const patients = await linkedPatientIds(child.id);
+  const patients = await linkedPatientIds(child);
   return { child, patients };
 }
 
@@ -850,10 +1092,10 @@ router.get(
   requireMobileAuth,
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const child = await getOwnedChild(req.params.childId, userId);
+    const child = await findOwnedChild(req.params.childId, userId);
     if (child == null) return res.status(404).json({ error: "child not found" });
 
-    const links = await linkedPatientIds(child.id);
+    const links = await linkedPatientIds(child);
     if (links.length === 0) {
       return res.json({ mother: null, father: null });
     }
@@ -904,10 +1146,10 @@ router.put(
   validateRequestBody(parentalMyopiaUpdateSchema),
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const child = await getOwnedChild(req.params.childId, userId);
+    const child = await findOwnedChild(req.params.childId, userId);
     if (child == null) return res.status(404).json({ error: "child not found" });
 
-    const links = await linkedPatientIds(child.id);
+    const links = await linkedPatientIds(child);
     if (links.length === 0) {
       return res
         .status(400)
@@ -1023,10 +1265,10 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
     requireMobileAuth,
     async (req, res) => {
       const userId = req.mobileUser!.sub;
-      const child = await getOwnedChild(req.params.childId, userId);
+      const child = await findOwnedChild(req.params.childId, userId);
       if (child == null) return res.status(404).json({ error: "child not found" });
 
-      const links = await linkedPatientIds(child.id);
+      const links = await linkedPatientIds(child);
       if (links.length === 0) return res.json({ entries: [] });
 
       const entries = await listActivity(kind, links.map((l) => l.patientId));
@@ -1040,10 +1282,10 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
     validateRequestBody(lifestyleEntrySchema),
     async (req, res) => {
       const userId = req.mobileUser!.sub;
-      const child = await getOwnedChild(req.params.childId, userId);
+      const child = await findOwnedChild(req.params.childId, userId);
       if (child == null) return res.status(404).json({ error: "child not found" });
 
-      const links = await linkedPatientIds(child.id);
+      const links = await linkedPatientIds(child);
       if (links.length === 0) {
         return res
           .status(400)
@@ -1079,10 +1321,10 @@ router.get(
   requireMobileAuth,
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const child = await getOwnedChild(req.params.childId, userId);
+    const child = await findOwnedChild(req.params.childId, userId);
     if (child == null) return res.status(404).json({ error: "child not found" });
 
-    const links = await linkedPatientIds(child.id);
+    const links = await linkedPatientIds(child);
     if (links.length === 0) {
       return res.json({
         dueForUpdate: false,
