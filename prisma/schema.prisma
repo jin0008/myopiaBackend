@@ -1,5 +1,6 @@
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {
@@ -48,6 +49,7 @@ model hospital {
   healthcare_professional healthcare_professional[]
   country                 country                   @relation(fields: [country_id], references: [id], map: "hospital_country_fk")
   patient                 patient[]
+  child_hospital_link     child_hospital_link[]
 }
 
 model instrument {
@@ -105,6 +107,7 @@ model patient {
   pending_patient_deletion       pending_patient_deletion?
   refractive_error               refractive_error[]
   user_patient                   user_patient[]
+  child_hospital_link            child_hospital_link[]
 
   @@unique([registration_number_hash, hospital_id], map: "patient_registration_number_hash_unique")
 }
@@ -151,6 +154,9 @@ model user {
   refractive_error        refractive_error[]
   session                 session[]
   user_patient            user_patient[]
+  parent_child_link       parent_child_link[]
+  mobile_refresh_token    mobile_refresh_token[]
+  oauth_identity          oauth_identity[]
 }
 
 model user_patient {
@@ -257,4 +263,69 @@ enum myopia_status {
   high_myopia
   emmetropia
   hyperopia
+  unknown
+}
+
+/// Parent (app user) ↔ child profile. One user may have many children.
+/// Contains the child's display nickname and identity fields the app collected
+/// locally — these are used to match against a hospital patient record when
+/// the parent attempts to link a hospital.
+model parent_child_link {
+  id                  String                @id(map: "parent_child_link_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String                @db.Uuid
+  nickname            String
+  date_of_birth       DateTime              @db.Date
+  sex                 sex
+  created_at          DateTime              @default(now()) @db.Timestamptz(6)
+  user                user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "parent_child_link_user_fk")
+  child_hospital_link child_hospital_link[]
+
+  @@index([user_id], map: "idx_parent_child_link_user")
+}
+
+/// Link between a parent's child profile and an actual hospital patient record.
+/// When a parent deletes a child profile, these links cascade-delete BUT the
+/// underlying patient record and its measurements stay intact at the hospital.
+model child_hospital_link {
+  id                   String            @id(map: "child_hospital_link_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parent_child_link_id String            @db.Uuid
+  hospital_id          String            @db.Uuid
+  patient_id           String            @db.Uuid
+  status               String            @default("active")
+  linked_at            DateTime          @default(now()) @db.Timestamptz(6)
+  parent_child_link    parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade, map: "child_hospital_link_parent_child_link_fk")
+  hospital             hospital          @relation(fields: [hospital_id], references: [id], map: "child_hospital_link_hospital_fk")
+  patient              patient           @relation(fields: [patient_id], references: [id], map: "child_hospital_link_patient_fk")
+
+  @@unique([parent_child_link_id, hospital_id], map: "child_hospital_link_unique")
+}
+
+/// Refresh tokens for the mobile app. Access tokens are stateless JWTs.
+model mobile_refresh_token {
+  id           String                @id(map: "mobile_refresh_token_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String                @db.Uuid
+  token_hash   String                @unique(map: "mobile_refresh_token_hash_unique")
+  expires_at   DateTime              @db.Timestamptz(6)
+  created_at   DateTime              @default(now()) @db.Timestamptz(6)
+  rotated_from String?               @db.Uuid
+  revoked_at   DateTime?             @db.Timestamptz(6)
+  user         user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "mobile_refresh_token_user_fk")
+  parent       mobile_refresh_token? @relation("mobile_refresh_token_rotation", fields: [rotated_from], references: [id], map: "mobile_refresh_token_rotated_from_fk")
+  rotations    mobile_refresh_token[] @relation("mobile_refresh_token_rotation")
+
+  @@index([user_id], map: "idx_refresh_user")
+}
+
+/// OAuth identities per social provider (Apple / Google / Kakao / Naver).
+/// The existing google_auth table is kept for the web flow; this new table
+/// is specifically for the mobile app's multi-provider flow.
+model oauth_identity {
+  id         String   @id(map: "oauth_identity_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String   @db.Uuid
+  provider   String
+  subject    String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  user       user     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "oauth_identity_user_fk")
+
+  @@unique([provider, subject], map: "oauth_identity_provider_subject_unique")
 }
