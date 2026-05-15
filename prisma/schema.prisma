@@ -157,6 +157,10 @@ model user {
   parent_child_link       parent_child_link[]
   mobile_refresh_token    mobile_refresh_token[]
   oauth_identity          oauth_identity[]
+  community_post          community_post[]
+  community_comment       community_comment[]
+  community_post_like     community_post_like[]
+  community_comment_like  community_comment_like[]
 }
 
 model user_patient {
@@ -328,4 +332,73 @@ model oauth_identity {
   user       user     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "oauth_identity_user_fk")
 
   @@unique([provider, subject], map: "oauth_identity_provider_subject_unique")
+}
+
+/// Community board (자유게시판) — added for the EAGLE vision iOS app so
+/// signed-in regular users can post threads, comment, reply, and like.
+/// Posts and comments are soft-deleted (deleted_at) so reply chains
+/// stay intact and moderation actions are reversible.
+model community_post {
+  id         String                @id(map: "community_post_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String                @db.Uuid
+  title      String
+  body       String
+  created_at DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
+  deleted_at DateTime?             @db.Timestamptz(6)
+  user       user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "community_post_user_fk")
+  comments   community_comment[]
+  likes      community_post_like[]
+
+  @@index([created_at(sort: Desc)], map: "idx_community_post_created_at")
+  @@index([user_id], map: "idx_community_post_user")
+}
+
+/// One row per comment OR reply. A reply is just a comment with
+/// `parent_comment_id` pointing at another comment in the same post.
+/// Replies-of-replies are flattened to a single level in the UI by
+/// treating any parent_comment_id as a top-level "this is a reply".
+model community_comment {
+  id                String                   @id(map: "community_comment_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  post_id           String                   @db.Uuid
+  user_id           String                   @db.Uuid
+  parent_comment_id String?                  @db.Uuid
+  body              String
+  created_at        DateTime                 @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime                 @default(now()) @updatedAt @db.Timestamptz(6)
+  deleted_at        DateTime?                @db.Timestamptz(6)
+  user              user                     @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "community_comment_user_fk")
+  post              community_post           @relation(fields: [post_id], references: [id], onDelete: Cascade, map: "community_comment_post_fk")
+  parent            community_comment?       @relation("comment_replies", fields: [parent_comment_id], references: [id], onDelete: Cascade, map: "community_comment_parent_fk")
+  replies           community_comment[]      @relation("comment_replies")
+  likes             community_comment_like[]
+
+  @@index([post_id, created_at], map: "idx_community_comment_post")
+  @@index([parent_comment_id], map: "idx_community_comment_parent")
+  @@index([user_id], map: "idx_community_comment_user")
+}
+
+/// Idempotent "liked" record. The (user_id, post_id) composite key
+/// makes liking twice a no-op at the DB level — the API converts that
+/// into a 200 OK with the same response shape as the first like.
+model community_post_like {
+  user_id    String         @db.Uuid
+  post_id    String         @db.Uuid
+  created_at DateTime       @default(now()) @db.Timestamptz(6)
+  user       user           @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "community_post_like_user_fk")
+  post       community_post @relation(fields: [post_id], references: [id], onDelete: Cascade, map: "community_post_like_post_fk")
+
+  @@id([user_id, post_id], map: "community_post_like_pk")
+  @@index([post_id], map: "idx_community_post_like_post")
+}
+
+model community_comment_like {
+  user_id    String            @db.Uuid
+  comment_id String            @db.Uuid
+  created_at DateTime          @default(now()) @db.Timestamptz(6)
+  user       user              @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "community_comment_like_user_fk")
+  comment    community_comment @relation(fields: [comment_id], references: [id], onDelete: Cascade, map: "community_comment_like_comment_fk")
+
+  @@id([user_id, comment_id], map: "community_comment_like_pk")
+  @@index([comment_id], map: "idx_community_comment_like_comment")
 }

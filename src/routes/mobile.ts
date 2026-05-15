@@ -1368,4 +1368,448 @@ router.get(
   },
 );
 
+/* ================================================================== *
+ * Community board (자유게시판)                                         *
+ *                                                                    *
+ * Posts and comments are soft-deleted via the deleted_at column —    *
+ * we never DELETE rows so reply chains remain navigable. The API     *
+ * filters out deleted rows for everyone except the original author,  *
+ * who instead sees a tombstoned placeholder body so they know the    *
+ * delete actually took effect.                                       *
+ *                                                                    *
+ * Likes are idempotent on the DB side via composite primary keys —   *
+ * POST /like twice is a no-op, DELETE /like is also idempotent.      *
+ * ================================================================== */
+
+const POST_LIST_PAGE_SIZE = 20;
+const COMMENT_PAGE_SIZE = 200; // realistically a single post won't exceed this
+
+type CommunityAuthorDTO = {
+  id: string;
+  username: string | null;
+  isMe: boolean;
+};
+
+async function authorDTO(userId: string, viewerId: string): Promise<CommunityAuthorDTO> {
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { password_auth: true },
+  });
+  return {
+    id: userId,
+    username: u?.password_auth?.username ?? null,
+    isMe: userId === viewerId,
+  };
+}
+
+/** GET /api/mobile/community/posts?cursor=<id>&pageSize=20
+ *
+ * Reverse-chronological feed. Pagination uses created_at + id as a
+ * keyset cursor so it survives concurrent inserts without dupes/gaps.
+ */
+router.get("/community/posts", requireMobileAuth, async (req, res) => {
+  const viewerId = req.mobileUser!.sub;
+  const pageSize = Math.min(
+    Number.parseInt(String(req.query.pageSize ?? POST_LIST_PAGE_SIZE), 10) ||
+      POST_LIST_PAGE_SIZE,
+    50,
+  );
+  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
+
+  const cursorRow = cursor
+    ? await prisma.community_post.findUnique({ where: { id: cursor } })
+    : null;
+
+  const rows = await prisma.community_post.findMany({
+    where: {
+      deleted_at: null,
+      ...(cursorRow != null && {
+        OR: [
+          { created_at: { lt: cursorRow.created_at } },
+          {
+            created_at: cursorRow.created_at,
+            id: { lt: cursorRow.id },
+          },
+        ],
+      }),
+    },
+    orderBy: [{ created_at: "desc" }, { id: "desc" }],
+    take: pageSize + 1, // fetch one extra to know if there's more
+    include: {
+      _count: { select: { comments: true, likes: true } },
+      likes: { where: { user_id: viewerId }, take: 1 },
+      user: { include: { password_auth: true } },
+    },
+  });
+
+  const hasMore = rows.length > pageSize;
+  const slice = rows.slice(0, pageSize);
+  const nextCursor = hasMore ? slice[slice.length - 1].id : null;
+
+  res.json({
+    posts: slice.map((p) => ({
+      id: p.id,
+      title: p.title,
+      bodyPreview: p.body.length > 200 ? p.body.slice(0, 200) + "…" : p.body,
+      author: {
+        id: p.user_id,
+        username: p.user.password_auth?.username ?? null,
+        isMe: p.user_id === viewerId,
+      },
+      createdAt: p.created_at.toISOString(),
+      updatedAt: p.updated_at.toISOString(),
+      commentCount: p._count.comments,
+      likeCount: p._count.likes,
+      likedByMe: p.likes.length > 0,
+    })),
+    nextCursor,
+  });
+});
+
+const createPostSchema = zod.object({
+  title: zod.string().trim().min(1).max(200),
+  body: zod.string().trim().min(1).max(20_000),
+});
+
+/** POST /api/mobile/community/posts */
+router.post(
+  "/community/posts",
+  requireMobileAuth,
+  validateRequestBody(createPostSchema),
+  async (req, res) => {
+    const userId = req.mobileUser!.sub;
+    const { title, body } = req.body as zod.infer<typeof createPostSchema>;
+    const post = await prisma.community_post.create({
+      data: { user_id: userId, title, body },
+    });
+    res.status(201).json({
+      id: post.id,
+      title: post.title,
+      body: post.body,
+      author: await authorDTO(userId, userId),
+      createdAt: post.created_at.toISOString(),
+      updatedAt: post.updated_at.toISOString(),
+      commentCount: 0,
+      likeCount: 0,
+      likedByMe: false,
+    });
+  },
+);
+
+/** GET /api/mobile/community/posts/:id */
+router.get("/community/posts/:id", requireMobileAuth, async (req, res) => {
+  const viewerId = req.mobileUser!.sub;
+  const post = await prisma.community_post.findUnique({
+    where: { id: req.params.id },
+    include: {
+      _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
+      likes: { where: { user_id: viewerId }, take: 1 },
+      user: { include: { password_auth: true } },
+    },
+  });
+  if (post == null || post.deleted_at != null) {
+    return res.status(404).json({ error: "post not found" });
+  }
+  res.json({
+    id: post.id,
+    title: post.title,
+    body: post.body,
+    author: {
+      id: post.user_id,
+      username: post.user.password_auth?.username ?? null,
+      isMe: post.user_id === viewerId,
+    },
+    createdAt: post.created_at.toISOString(),
+    updatedAt: post.updated_at.toISOString(),
+    commentCount: post._count.comments,
+    likeCount: post._count.likes,
+    likedByMe: post.likes.length > 0,
+  });
+});
+
+const updatePostSchema = zod.object({
+  title: zod.string().trim().min(1).max(200).optional(),
+  body: zod.string().trim().min(1).max(20_000).optional(),
+});
+
+/** PATCH /api/mobile/community/posts/:id — author only */
+router.patch(
+  "/community/posts/:id",
+  requireMobileAuth,
+  validateRequestBody(updatePostSchema),
+  async (req, res) => {
+    const userId = req.mobileUser!.sub;
+    const post = await prisma.community_post.findUnique({
+      where: { id: req.params.id },
+    });
+    if (post == null || post.deleted_at != null) {
+      return res.status(404).json({ error: "post not found" });
+    }
+    if (post.user_id !== userId) {
+      return res.status(403).json({ error: "not your post" });
+    }
+    const data = req.body as zod.infer<typeof updatePostSchema>;
+    if (data.title == null && data.body == null) {
+      return res.status(400).json({ error: "nothing to update" });
+    }
+    const updated = await prisma.community_post.update({
+      where: { id: post.id },
+      data: { ...data },
+    });
+    res.json({
+      id: updated.id,
+      title: updated.title,
+      body: updated.body,
+      updatedAt: updated.updated_at.toISOString(),
+    });
+  },
+);
+
+/** DELETE /api/mobile/community/posts/:id — soft-delete; author only */
+router.delete("/community/posts/:id", requireMobileAuth, async (req, res) => {
+  const userId = req.mobileUser!.sub;
+  const post = await prisma.community_post.findUnique({
+    where: { id: req.params.id },
+  });
+  if (post == null || post.deleted_at != null) {
+    return res.status(404).json({ error: "post not found" });
+  }
+  if (post.user_id !== userId) {
+    return res.status(403).json({ error: "not your post" });
+  }
+  await prisma.community_post.update({
+    where: { id: post.id },
+    data: { deleted_at: new Date() },
+  });
+  res.json({ ok: true });
+});
+
+/** GET /api/mobile/community/posts/:id/comments
+ *
+ * Returns a flat list of comments ordered by created_at ASC, with the
+ * parent_comment_id set for replies. The client rebuilds the
+ * top-level → replies tree (one level deep is enough for v1).
+ *
+ * Deleted comments are returned with body=null + deleted=true so the
+ * UI can render a "(deleted)" placeholder rather than disappearing
+ * mid-thread.
+ */
+router.get(
+  "/community/posts/:id/comments",
+  requireMobileAuth,
+  async (req, res) => {
+    const viewerId = req.mobileUser!.sub;
+    const postExists = await prisma.community_post.findFirst({
+      where: { id: req.params.id, deleted_at: null },
+      select: { id: true },
+    });
+    if (postExists == null) return res.status(404).json({ error: "post not found" });
+
+    const rows = await prisma.community_comment.findMany({
+      where: { post_id: req.params.id },
+      orderBy: [{ created_at: "asc" }, { id: "asc" }],
+      take: COMMENT_PAGE_SIZE,
+      include: {
+        _count: { select: { likes: true } },
+        likes: { where: { user_id: viewerId }, take: 1 },
+        user: { include: { password_auth: true } },
+      },
+    });
+
+    res.json({
+      comments: rows.map((c) => ({
+        id: c.id,
+        postId: c.post_id,
+        parentCommentId: c.parent_comment_id,
+        body: c.deleted_at != null ? null : c.body,
+        deleted: c.deleted_at != null,
+        author: {
+          id: c.user_id,
+          username: c.user.password_auth?.username ?? null,
+          isMe: c.user_id === viewerId,
+        },
+        createdAt: c.created_at.toISOString(),
+        updatedAt: c.updated_at.toISOString(),
+        likeCount: c._count.likes,
+        likedByMe: c.likes.length > 0,
+      })),
+    });
+  },
+);
+
+const createCommentSchema = zod.object({
+  body: zod.string().trim().min(1).max(5_000),
+  parentCommentId: zod.string().uuid().nullable().optional(),
+});
+
+/** POST /api/mobile/community/posts/:id/comments
+ *
+ * `parentCommentId` is optional; pass it to make the comment a reply.
+ * Replies-of-replies are flattened — if the supplied parent itself has
+ * a parent, we use its parent's id instead so the tree never goes
+ * deeper than one level.
+ */
+router.post(
+  "/community/posts/:id/comments",
+  requireMobileAuth,
+  validateRequestBody(createCommentSchema),
+  async (req, res) => {
+    const userId = req.mobileUser!.sub;
+    const postId = req.params.id;
+    const post = await prisma.community_post.findFirst({
+      where: { id: postId, deleted_at: null },
+      select: { id: true },
+    });
+    if (post == null) return res.status(404).json({ error: "post not found" });
+
+    const { body, parentCommentId } = req.body as zod.infer<
+      typeof createCommentSchema
+    >;
+
+    let resolvedParentId: string | null = null;
+    if (parentCommentId != null) {
+      const parent = await prisma.community_comment.findUnique({
+        where: { id: parentCommentId },
+      });
+      if (parent == null || parent.post_id !== postId || parent.deleted_at != null) {
+        return res.status(400).json({ error: "invalid parentCommentId" });
+      }
+      // Flatten one level: a reply to a reply attaches to the top-level comment.
+      resolvedParentId = parent.parent_comment_id ?? parent.id;
+    }
+
+    const comment = await prisma.community_comment.create({
+      data: {
+        post_id: postId,
+        user_id: userId,
+        parent_comment_id: resolvedParentId,
+        body,
+      },
+    });
+
+    res.status(201).json({
+      id: comment.id,
+      postId: comment.post_id,
+      parentCommentId: comment.parent_comment_id,
+      body: comment.body,
+      deleted: false,
+      author: await authorDTO(userId, userId),
+      createdAt: comment.created_at.toISOString(),
+      updatedAt: comment.updated_at.toISOString(),
+      likeCount: 0,
+      likedByMe: false,
+    });
+  },
+);
+
+/** DELETE /api/mobile/community/comments/:id — soft-delete; author only */
+router.delete(
+  "/community/comments/:id",
+  requireMobileAuth,
+  async (req, res) => {
+    const userId = req.mobileUser!.sub;
+    const comment = await prisma.community_comment.findUnique({
+      where: { id: req.params.id },
+    });
+    if (comment == null || comment.deleted_at != null) {
+      return res.status(404).json({ error: "comment not found" });
+    }
+    if (comment.user_id !== userId) {
+      return res.status(403).json({ error: "not your comment" });
+    }
+    await prisma.community_comment.update({
+      where: { id: comment.id },
+      data: { deleted_at: new Date() },
+    });
+    res.json({ ok: true });
+  },
+);
+
+/** POST /api/mobile/community/posts/:id/like — idempotent */
+router.post("/community/posts/:id/like", requireMobileAuth, async (req, res) => {
+  const userId = req.mobileUser!.sub;
+  const post = await prisma.community_post.findFirst({
+    where: { id: req.params.id, deleted_at: null },
+    select: { id: true },
+  });
+  if (post == null) return res.status(404).json({ error: "post not found" });
+  try {
+    await prisma.community_post_like.create({
+      data: { post_id: post.id, user_id: userId },
+    });
+  } catch (e) {
+    if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
+      /* already liked — fall through */
+    } else {
+      throw e;
+    }
+  }
+  const likeCount = await prisma.community_post_like.count({
+    where: { post_id: post.id },
+  });
+  res.json({ liked: true, likeCount });
+});
+
+/** DELETE /api/mobile/community/posts/:id/like — idempotent */
+router.delete(
+  "/community/posts/:id/like",
+  requireMobileAuth,
+  async (req, res) => {
+    const userId = req.mobileUser!.sub;
+    await prisma.community_post_like.deleteMany({
+      where: { post_id: req.params.id, user_id: userId },
+    });
+    const likeCount = await prisma.community_post_like.count({
+      where: { post_id: req.params.id },
+    });
+    res.json({ liked: false, likeCount });
+  },
+);
+
+/** POST /api/mobile/community/comments/:id/like — idempotent */
+router.post(
+  "/community/comments/:id/like",
+  requireMobileAuth,
+  async (req, res) => {
+    const userId = req.mobileUser!.sub;
+    const comment = await prisma.community_comment.findFirst({
+      where: { id: req.params.id, deleted_at: null },
+      select: { id: true },
+    });
+    if (comment == null)
+      return res.status(404).json({ error: "comment not found" });
+    try {
+      await prisma.community_comment_like.create({
+        data: { comment_id: comment.id, user_id: userId },
+      });
+    } catch (e) {
+      if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
+        /* already liked — fall through */
+      } else {
+        throw e;
+      }
+    }
+    const likeCount = await prisma.community_comment_like.count({
+      where: { comment_id: comment.id },
+    });
+    res.json({ liked: true, likeCount });
+  },
+);
+
+/** DELETE /api/mobile/community/comments/:id/like — idempotent */
+router.delete(
+  "/community/comments/:id/like",
+  requireMobileAuth,
+  async (req, res) => {
+    const userId = req.mobileUser!.sub;
+    await prisma.community_comment_like.deleteMany({
+      where: { comment_id: req.params.id, user_id: userId },
+    });
+    const likeCount = await prisma.community_comment_like.count({
+      where: { comment_id: req.params.id },
+    });
+    res.json({ liked: false, likeCount });
+  },
+);
+
 export default router;
