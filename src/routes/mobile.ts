@@ -1092,7 +1092,7 @@ router.get(
   requireMobileAuth,
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const child = await findOwnedChild(req.params.childId, userId);
+    const child = await findOwnedChild(String(req.params.childId), userId);
     if (child == null) return res.status(404).json({ error: "child not found" });
 
     const links = await linkedPatientIds(child);
@@ -1146,7 +1146,7 @@ router.put(
   validateRequestBody(parentalMyopiaUpdateSchema),
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const child = await findOwnedChild(req.params.childId, userId);
+    const child = await findOwnedChild(String(req.params.childId), userId);
     if (child == null) return res.status(404).json({ error: "child not found" });
 
     const links = await linkedPatientIds(child);
@@ -1265,7 +1265,7 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
     requireMobileAuth,
     async (req, res) => {
       const userId = req.mobileUser!.sub;
-      const child = await findOwnedChild(req.params.childId, userId);
+      const child = await findOwnedChild(String(req.params.childId), userId);
       if (child == null) return res.status(404).json({ error: "child not found" });
 
       const links = await linkedPatientIds(child);
@@ -1282,7 +1282,7 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
     validateRequestBody(lifestyleEntrySchema),
     async (req, res) => {
       const userId = req.mobileUser!.sub;
-      const child = await findOwnedChild(req.params.childId, userId);
+      const child = await findOwnedChild(String(req.params.childId), userId);
       if (child == null) return res.status(404).json({ error: "child not found" });
 
       const links = await linkedPatientIds(child);
@@ -1321,7 +1321,7 @@ router.get(
   requireMobileAuth,
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const child = await findOwnedChild(req.params.childId, userId);
+    const child = await findOwnedChild(String(req.params.childId), userId);
     if (child == null) return res.status(404).json({ error: "child not found" });
 
     const links = await linkedPatientIds(child);
@@ -1500,7 +1500,7 @@ router.post(
 router.get("/community/posts/:id", requireMobileAuth, async (req, res) => {
   const viewerId = req.mobileUser!.sub;
   const post = await prisma.community_post.findUnique({
-    where: { id: req.params.id },
+    where: { id: String(req.params.id) },
     include: {
       _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
       likes: { where: { user_id: viewerId }, take: 1 },
@@ -1540,7 +1540,7 @@ router.patch(
   async (req, res) => {
     const userId = req.mobileUser!.sub;
     const post = await prisma.community_post.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
     });
     if (post == null || post.deleted_at != null) {
       return res.status(404).json({ error: "post not found" });
@@ -1569,7 +1569,7 @@ router.patch(
 router.delete("/community/posts/:id", requireMobileAuth, async (req, res) => {
   const userId = req.mobileUser!.sub;
   const post = await prisma.community_post.findUnique({
-    where: { id: req.params.id },
+    where: { id: String(req.params.id) },
   });
   if (post == null || post.deleted_at != null) {
     return res.status(404).json({ error: "post not found" });
@@ -1600,13 +1600,13 @@ router.get(
   async (req, res) => {
     const viewerId = req.mobileUser!.sub;
     const postExists = await prisma.community_post.findFirst({
-      where: { id: req.params.id, deleted_at: null },
+      where: { id: String(req.params.id), deleted_at: null },
       select: { id: true },
     });
     if (postExists == null) return res.status(404).json({ error: "post not found" });
 
     const rows = await prisma.community_comment.findMany({
-      where: { post_id: req.params.id },
+      where: { post_id: String(req.params.id) },
       orderBy: [{ created_at: "asc" }, { id: "asc" }],
       take: COMMENT_PAGE_SIZE,
       include: {
@@ -1655,7 +1655,7 @@ router.post(
   validateRequestBody(createCommentSchema),
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const postId = req.params.id;
+    const postId = String(req.params.id);
     const post = await prisma.community_post.findFirst({
       where: { id: postId, deleted_at: null },
       select: { id: true },
@@ -1709,7 +1709,7 @@ router.delete(
   async (req, res) => {
     const userId = req.mobileUser!.sub;
     const comment = await prisma.community_comment.findUnique({
-      where: { id: req.params.id },
+      where: { id: String(req.params.id) },
     });
     if (comment == null || comment.deleted_at != null) {
       return res.status(404).json({ error: "comment not found" });
@@ -1729,7 +1729,7 @@ router.delete(
 router.post("/community/posts/:id/like", requireMobileAuth, async (req, res) => {
   const userId = req.mobileUser!.sub;
   const post = await prisma.community_post.findFirst({
-    where: { id: req.params.id, deleted_at: null },
+    where: { id: String(req.params.id), deleted_at: null },
     select: { id: true },
   });
   if (post == null) return res.status(404).json({ error: "post not found" });
@@ -1757,10 +1757,10 @@ router.delete(
   async (req, res) => {
     const userId = req.mobileUser!.sub;
     await prisma.community_post_like.deleteMany({
-      where: { post_id: req.params.id, user_id: userId },
+      where: { post_id: String(req.params.id), user_id: userId },
     });
     const likeCount = await prisma.community_post_like.count({
-      where: { post_id: req.params.id },
+      where: { post_id: String(req.params.id) },
     });
     res.json({ liked: false, likeCount });
   },
@@ -1773,7 +1773,7 @@ router.post(
   async (req, res) => {
     const userId = req.mobileUser!.sub;
     const comment = await prisma.community_comment.findFirst({
-      where: { id: req.params.id, deleted_at: null },
+      where: { id: String(req.params.id), deleted_at: null },
       select: { id: true },
     });
     if (comment == null)
@@ -1803,10 +1803,10 @@ router.delete(
   async (req, res) => {
     const userId = req.mobileUser!.sub;
     await prisma.community_comment_like.deleteMany({
-      where: { comment_id: req.params.id, user_id: userId },
+      where: { comment_id: String(req.params.id), user_id: userId },
     });
     const likeCount = await prisma.community_comment_like.count({
-      where: { comment_id: req.params.id },
+      where: { comment_id: String(req.params.id) },
     });
     res.json({ liked: false, likeCount });
   },
