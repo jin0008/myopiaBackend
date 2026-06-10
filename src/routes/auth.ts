@@ -5,12 +5,36 @@ import prisma from "../lib/prisma";
 import { generateSession, getAuthSession } from "../lib/session";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { loginRequired, validateRequestBody } from "../lib/middlewares";
+import { CONSENT_VERSION } from "../lib/consent";
 
 import { OAuth2Client } from "google-auth-library";
 
 import zod from "zod";
 
 const client = new OAuth2Client();
+
+// Builds the nested user_consent rows recorded at signup. Required consents
+// (terms / privacy) are enforced as `true` by the zod schema; marketing is
+// optional and mirrored into user.receive_email_updates.
+function signupConsentRows(agreeMarketing: boolean) {
+  return [
+    {
+      consent_type: "terms_of_service" as const,
+      version: CONSENT_VERSION,
+      agreed: true,
+    },
+    {
+      consent_type: "privacy_policy" as const,
+      version: CONSENT_VERSION,
+      agreed: true,
+    },
+    {
+      consent_type: "marketing" as const,
+      version: CONSENT_VERSION,
+      agreed: agreeMarketing,
+    },
+  ];
+}
 
 const router = express.Router();
 
@@ -168,13 +192,24 @@ const passwordAuthType = zod.object({
   receive_email_updates: zod.boolean().optional(),
 });
 
+// Signup variant: requires explicit agreement to the mandatory consents
+// (이용약관 + 개인정보 수집·이용). `agree_marketing` is optional (선택).
+// zod.literal(true) rejects signup at the API level if a required box is
+// unchecked, so consent cannot be bypassed by a tampered client.
+const signupPasswordAuthType = passwordAuthType.extend({
+  agree_terms: zod.literal(true),
+  agree_privacy: zod.literal(true),
+  agree_marketing: zod.boolean().optional(),
+});
+
 router.post(
   "/user/passwordAuth",
-  validateRequestBody(passwordAuthType),
+  validateRequestBody(signupPasswordAuthType),
   async (req, res) => {
-    const data = req.body as zod.infer<typeof passwordAuthType>;
+    const data = req.body as zod.infer<typeof signupPasswordAuthType>;
 
-    const { username, password, email, receive_email_updates } = data;
+    const { username, password, email, agree_marketing } = data;
+    const receive_email_updates = agree_marketing ?? false;
 
     const hash = await bcrypt.hash(password, 12);
 
@@ -189,6 +224,9 @@ router.post(
           },
           email: email,
           receive_email_updates: receive_email_updates,
+          user_consent: {
+            create: signupConsentRows(receive_email_updates),
+          },
         },
       })
       .then(() => res.sendStatus(201))
@@ -311,13 +349,21 @@ const googleAuthType = zod.object({
   receive_email_updates: zod.boolean().optional(),
 });
 
+// Signup via Google must also carry the mandatory consents.
+const signupGoogleAuthType = googleAuthType.extend({
+  agree_terms: zod.literal(true),
+  agree_privacy: zod.literal(true),
+  agree_marketing: zod.boolean().optional(),
+});
+
 router.post(
   "/user/googleAuth",
-  validateRequestBody(googleAuthType),
+  validateRequestBody(signupGoogleAuthType),
   async (req, res) => {
-    const data = req.body as zod.infer<typeof googleAuthType>;
+    const data = req.body as zod.infer<typeof signupGoogleAuthType>;
 
-    const { token, receive_email_updates } = data;
+    const { token, agree_marketing } = data;
+    const receive_email_updates = agree_marketing ?? false;
 
     const ticket = await client.verifyIdToken({
       idToken: token,
@@ -347,6 +393,9 @@ router.post(
           },
           email: payload.email,
           receive_email_updates: receive_email_updates,
+          user_consent: {
+            create: signupConsentRows(receive_email_updates),
+          },
         },
       })
       .then(() => res.sendStatus(201))

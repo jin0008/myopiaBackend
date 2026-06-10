@@ -17,6 +17,7 @@ import {
 import { verifySocialToken, SocialProvider } from "../lib/socialAuth";
 import { decryptSymmetric } from "../services/encrpytion";
 import { hashRegistrationNumber } from "../lib/hash";
+import { CONSENT_VERSION } from "../lib/consent";
 
 /**
  * Mobile API — mounted at /api/mobile in src/index.ts.
@@ -645,6 +646,13 @@ router.get("/hospitals", async (_req, res) => {
 const hospitalLinkSchema = zod.object({
   hospitalCode: zod.string().nonempty(),
   registrationNumber: zod.string().nonempty(),
+  // Legal-guardian (법정대리인) consent to collect/use the child's sensitive
+  // data (민감정보: 등록번호·생년월일·안축장 등), captured at the moment the
+  // hospital record becomes visible to the parent.
+  // NOTE: kept optional for now so existing iOS clients aren't broken. Once the
+  // iOS app ships the consent checkbox and always sends `guardianConsent: true`,
+  // change this to `zod.literal(true)` to make consent mandatory at the API.
+  guardianConsent: zod.boolean().optional(),
 });
 
 router.post(
@@ -715,6 +723,19 @@ router.post(
           create: { user_id: user.sub, patient_id: patient.id },
           update: {},
         });
+        // 3) patient_consent — record the parent's legal-guardian consent to
+        //    process the child's sensitive data. Recorded only when the client
+        //    sends guardianConsent (see schema note about making it mandatory).
+        if (body.guardianConsent) {
+          await tx.patient_consent.create({
+            data: {
+              patient_id: patient.id,
+              given_by: user.sub,
+              role: "legal_guardian",
+              version: CONSENT_VERSION,
+            },
+          });
+        }
         return created;
       });
       res.status(201).json({

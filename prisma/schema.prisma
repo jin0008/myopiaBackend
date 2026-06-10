@@ -108,6 +108,7 @@ model patient {
   refractive_error               refractive_error[]
   user_patient                   user_patient[]
   child_hospital_link            child_hospital_link[]
+  patient_consent                patient_consent[]
 
   @@unique([registration_number_hash, hospital_id], map: "patient_registration_number_hash_unique")
 }
@@ -161,6 +162,8 @@ model user {
   community_comment       community_comment[]
   community_post_like     community_post_like[]
   community_comment_like  community_comment_like[]
+  user_consent            user_consent[]
+  patient_consent         patient_consent[]
 }
 
 model user_patient {
@@ -250,6 +253,53 @@ model refractive_error_method {
   id               Int                @id(map: "refractive_error_method_pk") @default(autoincrement())
   name             String             @unique(map: "refractive_error_method_unique")
   refractive_error refractive_error[]
+}
+
+/// Account-level consent captured at signup (이용약관 / 개인정보 수집·이용 / 마케팅).
+/// One row per consent item per user. `version` records WHICH version of the
+/// document the user agreed to, so re-consent after a policy revision is auditable.
+/// This is required to demonstrate valid consent under the Korean PIPA (개인정보보호법).
+model user_consent {
+  id           String       @id(map: "user_consent_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String       @db.Uuid
+  consent_type consent_type
+  version      String
+  agreed       Boolean
+  agreed_at    DateTime     @default(now()) @db.Timestamptz(6)
+  user         user         @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "user_consent_user_fk")
+
+  @@index([user_id], map: "idx_user_consent_user")
+}
+
+/// Patient-level consent for SENSITIVE data (민감정보: 등록번호·생년월일·안축장 등).
+/// The data subject is the patient (child). This row records the legal basis by
+/// which their sensitive data is processed — currently only `legal_guardian`:
+/// a parent (법정대리인) consents at the moment they link the child to a hospital
+/// record, since that is when the hospital-registered sensitive data becomes
+/// visible to them. `given_by` is the user (parent) who gave the consent.
+model patient_consent {
+  id         String                @id(map: "patient_consent_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patient_id String                @db.Uuid
+  given_by   String                @db.Uuid
+  role       patient_consent_role
+  version    String
+  agreed_at  DateTime              @default(now()) @db.Timestamptz(6)
+  patient    patient               @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_consent_patient_fk")
+  user       user                  @relation(fields: [given_by], references: [id], onDelete: Cascade, map: "patient_consent_user_fk")
+
+  @@index([patient_id], map: "idx_patient_consent_patient")
+  @@index([given_by], map: "idx_patient_consent_given_by")
+}
+
+enum consent_type {
+  terms_of_service
+  privacy_policy
+  marketing
+}
+
+enum patient_consent_role {
+  legal_guardian
+  hospital_attestation
 }
 
 enum sex {
