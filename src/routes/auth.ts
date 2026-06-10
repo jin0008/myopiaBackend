@@ -151,8 +151,67 @@ router.get("/user", loginRequired, async (req, res) => {
       receive_email_updates: true,
     },
   });
-  res.json(data);
+
+  // needs_consent: true if the user is missing any REQUIRED consent
+  // (terms / privacy) at the current document version. Used to prompt
+  // existing users (who signed up before consent existed) to re-consent.
+  const requiredTypes = ["terms_of_service", "privacy_policy"] as const;
+  const agreedRequired = await prisma.user_consent.findMany({
+    where: {
+      user_id: req.authSession!.user_id,
+      version: CONSENT_VERSION,
+      agreed: true,
+      consent_type: { in: [...requiredTypes] },
+    },
+    select: { consent_type: true },
+  });
+  const agreedSet = new Set(
+    agreedRequired.map((c: { consent_type: string }) => c.consent_type),
+  );
+  const needs_consent = requiredTypes.some((t) => !agreedSet.has(t));
+
+  res.json({ ...data, needs_consent });
 });
+
+// Existing-user (re)consent. The signup flow already records consent, but
+// users created before consent existed — or before a policy revision —
+// agree here. zod.literal(true) enforces the required boxes server-side.
+const consentSubmitType = zod.object({
+  agree_terms: zod.literal(true),
+  agree_privacy: zod.literal(true),
+  agree_marketing: zod.boolean().optional(),
+});
+
+router.post(
+  "/consent",
+  loginRequired,
+  validateRequestBody(consentSubmitType),
+  async (req, res) => {
+    const data = req.body as zod.infer<typeof consentSubmitType>;
+    const userId = req.authSession!.user_id;
+    const agreeMarketing = data.agree_marketing ?? false;
+
+    await prisma.$transaction(async (tx) => {
+      // Replace any existing rows at the current version so re-submitting
+      // is idempotent (no duplicate audit rows for the same version).
+      await tx.user_consent.deleteMany({
+        where: { user_id: userId, version: CONSENT_VERSION },
+      });
+      await tx.user_consent.createMany({
+        data: signupConsentRows(agreeMarketing).map((row) => ({
+          ...row,
+          user_id: userId,
+        })),
+      });
+      await tx.user.update({
+        where: { id: userId },
+        data: { receive_email_updates: agreeMarketing },
+      });
+    });
+
+    res.sendStatus(200);
+  },
+);
 
 const userPatchType = zod.object({
   email: zod.string().email().optional(),
