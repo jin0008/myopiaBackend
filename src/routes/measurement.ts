@@ -7,6 +7,8 @@ import {
 } from "../lib/middlewares";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { isPatientInHospital } from "../lib/authorization";
+import { writeAuditLog } from "../services/audit";
+import { checkMeasurementThreshold } from "../services/notification";
 
 const router = express.Router();
 
@@ -31,7 +33,7 @@ router.post(
       res.sendStatus(403);
       return;
     }
-    await prisma.measurement.create({
+    const created = await prisma.measurement.create({
       data: {
         patient_id: data.patient_id,
         date: new Date(data.date),
@@ -41,6 +43,18 @@ router.post(
         creator_id: req.authSession!.user_id,
       },
     });
+
+    await writeAuditLog({
+      tableName: "measurement",
+      recordId: created.id,
+      action: "CREATE",
+      actorId: req.authSession!.user_id,
+      patientId: created.patient_id,
+      newValue: created,
+    });
+
+    checkMeasurementThreshold(created).catch(console.error);
+
     res.sendStatus(200);
   },
 );
@@ -79,15 +93,34 @@ router.patch(
       return;
     }
 
-    await prisma.measurement.update({
-      where: {
-        id: measurementId,
-      },
-      data: {
-        ...data,
-        date: new Date(data.date),
-      },
+    const updated = await prisma.$transaction(async (tx) => {
+      const oldValue = await tx.measurement.findUnique({
+        where: { id: measurementId },
+      });
+      const updated = await tx.measurement.update({
+        where: {
+          id: measurementId,
+        },
+        data: {
+          ...data,
+          date: new Date(data.date),
+        },
+      });
+      await writeAuditLog({
+        tableName: "measurement",
+        recordId: updated.id,
+        action: "UPDATE",
+        actorId: req.authSession!.user_id,
+        patientId: updated.patient_id,
+        oldValue,
+        newValue: updated,
+        client: tx,
+      });
+      return updated;
     });
+
+    checkMeasurementThreshold(updated).catch(console.error);
+
     res.sendStatus(200);
   },
 );
@@ -122,11 +155,25 @@ router.delete(
       return;
     }
 
-    await prisma.measurement
-      .delete({
-        where: {
-          id: req.params.measurementId as string,
-        },
+    await prisma
+      .$transaction(async (tx) => {
+        const oldValue = await tx.measurement.findUnique({
+          where: { id: measurementId },
+        });
+        const deleted = await tx.measurement.delete({
+          where: {
+            id: measurementId,
+          },
+        });
+        await writeAuditLog({
+          tableName: "measurement",
+          recordId: deleted.id,
+          action: "DELETE",
+          actorId: req.authSession!.user_id,
+          patientId: deleted.patient_id,
+          oldValue,
+          client: tx,
+        });
       })
       .then(() => res.sendStatus(200))
       .catch((err) => {

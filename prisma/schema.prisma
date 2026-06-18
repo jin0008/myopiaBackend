@@ -151,6 +151,7 @@ model user {
   refractive_error        refractive_error[]
   session                 session[]
   user_patient            user_patient[]
+  audit_log               audit_log[]
 }
 
 model user_patient {
@@ -240,6 +241,25 @@ model refractive_error_method {
   id               Int                @id(map: "refractive_error_method_pk") @default(autoincrement())
   name             String             @unique(map: "refractive_error_method_unique")
   refractive_error refractive_error[]
+}
+
+model audit_log {
+  id         String       @id(map: "audit_log_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  table_name String
+  record_id  String       @db.Uuid
+  action     audit_action
+  actor_id   String?      @db.Uuid
+  patient_id String?      @db.Uuid
+  old_value  Json?
+  new_value  Json?
+  created_at DateTime     @default(now()) @db.Timestamp(6)
+  actor      user?        @relation(fields: [actor_id], references: [id], map: "audit_log_user_fk")
+}
+
+enum audit_action {
+  CREATE
+  UPDATE
+  DELETE
 }
 
 enum sex {

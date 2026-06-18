@@ -7,6 +7,7 @@ import {
 } from "../lib/middlewares";
 import { ktype } from "@prisma/client";
 import { isPatientInHospital } from "../lib/authorization";
+import { writeAuditLog } from "../services/audit";
 
 const router = express.Router();
 
@@ -31,23 +32,45 @@ router.put(
       return;
     }
 
-    await prisma.patient_k.upsert({
-      where: {
-        patient_id_k_type: {
+    await prisma.$transaction(async (tx) => {
+      const oldValue = await tx.patient_k.findUnique({
+        where: {
+          patient_id_k_type: {
+            patient_id: data.patient_id,
+            k_type: data.k_type,
+          },
+        },
+      });
+      const upserted = await tx.patient_k.upsert({
+        where: {
+          patient_id_k_type: {
+            patient_id: data.patient_id,
+            k_type: data.k_type,
+          },
+        },
+        update: {
+          od: data.od,
+          os: data.os,
+        },
+        create: {
           patient_id: data.patient_id,
           k_type: data.k_type,
+          od: data.od,
+          os: data.os,
         },
-      },
-      update: {
-        od: data.od,
-        os: data.os,
-      },
-      create: {
-        patient_id: data.patient_id,
-        k_type: data.k_type,
-        od: data.od,
-        os: data.os,
-      },
+      });
+      // patient_k has a composite key (patient_id, k_type) and no uuid id, so
+      // the patient_id is used as the audit record_id.
+      await writeAuditLog({
+        tableName: "patient_k",
+        recordId: upserted.patient_id,
+        action: oldValue == null ? "CREATE" : "UPDATE",
+        actorId: req.authSession!.user_id,
+        patientId: upserted.patient_id,
+        oldValue,
+        newValue: upserted,
+        client: tx,
+      });
     });
     res.sendStatus(200);
   },

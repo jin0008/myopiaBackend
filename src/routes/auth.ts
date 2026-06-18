@@ -479,6 +479,13 @@ router.delete("/user", loginRequired, async (req, res) => {
 });
 
 router.post("/dev_login", async (req, res) => {
+  // Local-development helper only. Never expose in production: it issues an
+  // approved admin session without real credentials.
+  if (process.env.NODE_ENV === "production") {
+    res.sendStatus(404);
+    return;
+  }
+
   // 1. Ensure Default Country exists
   let country = await prisma.country.findFirst({ where: { code: "US" } });
   if (!country) {
