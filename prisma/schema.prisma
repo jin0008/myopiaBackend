@@ -173,6 +173,17 @@ model growth_data {
   @@unique([age, percentile, sex, ethnicity], map: "growth_data_unique")
 }
 
+/// Age/sex-specific axial length warning threshold (mm). A measurement whose
+/// od/os exceeds `warn_max` for the patient's age triggers an alert. Seeded with
+/// placeholder values; the clinical table is supplied by the client.
+model axial_length_threshold {
+  age      Int
+  sex      sex
+  warn_max Float @db.Real
+
+  @@unique([age, sex], map: "axial_length_threshold_unique")
+}
+
 model google_auth {
   user_id         String @id(map: "google_auth_pk") @db.Uuid
   google_identity String @unique(map: "google_auth_unique")
@@ -244,22 +255,44 @@ model refractive_error_method {
 }
 
 model audit_log {
-  id         String       @id(map: "audit_log_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  table_name String
-  record_id  String       @db.Uuid
-  action     audit_action
-  actor_id   String?      @db.Uuid
-  patient_id String?      @db.Uuid
-  old_value  Json?
-  new_value  Json?
-  created_at DateTime     @default(now()) @db.Timestamp(6)
-  actor      user?        @relation(fields: [actor_id], references: [id], map: "audit_log_user_fk")
+  id                String       @id(map: "audit_log_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  table_name        String
+  record_id         String?      @db.Uuid
+  action            audit_action
+  status            audit_status @default(SUCCESS)
+  actor_id          String?      @db.Uuid
+  actor_name        String?
+  actor_role        String?
+  actor_hospital_id String?      @db.Uuid
+  patient_id        String?      @db.Uuid
+  hospital_id       String?      @db.Uuid
+  ip_address        String?
+  user_agent        String?
+  changed_fields    String[]     @default([])
+  old_value         Json?
+  new_value         Json?
+  error_message     String?
+  created_at        DateTime     @default(now()) @db.Timestamptz(6)
+  actor             user?        @relation(fields: [actor_id], references: [id], map: "audit_log_user_fk")
+
+  @@index([patient_id, created_at(sort: Desc)], map: "audit_log_patient_created_idx")
+  @@index([actor_id, created_at(sort: Desc)], map: "audit_log_actor_created_idx")
+  @@index([hospital_id, created_at(sort: Desc)], map: "audit_log_hospital_created_idx")
+  @@index([created_at(sort: Desc)], map: "audit_log_created_idx")
 }
 
 enum audit_action {
   CREATE
   UPDATE
   DELETE
+  READ
+  EXPORT
+}
+
+enum audit_status {
+  SUCCESS
+  FAILURE
+  REVERTED
 }
 
 enum sex {

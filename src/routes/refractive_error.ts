@@ -7,7 +7,12 @@ import {
 } from "../lib/middlewares";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { isPatientInHospital } from "../lib/authorization";
-import { writeAuditLog } from "../services/audit";
+import {
+  auditContextFromRequest,
+  writeAuditFailure,
+  writeAuditLog,
+} from "../services/audit";
+import { checkRefractiveErrorAlerts } from "../services/notification";
 
 const router = express.Router();
 
@@ -26,37 +31,54 @@ router.post(
   approvedProfessionalRequired,
   async (req, res) => {
     const data = req.body as zod.infer<typeof postBodyType>;
-    const authorized = await isPatientInHospital(
-      data.patient_id,
-      req.healthcare_professional!.hospital_id,
-    );
+    const hospitalId = req.healthcare_professional!.hospital_id;
+    const authorized = await isPatientInHospital(data.patient_id, hospitalId);
     if (!authorized) {
       res.sendStatus(403);
       return;
     }
-    const created = await prisma.refractive_error.create({
-      data: {
-        patient_id: data.patient_id,
-        date: new Date(data.date),
-        method_id: data.method_id,
-        od_sph: data.od_sph,
-        od_cyl: data.od_cyl,
-        os_sph: data.os_sph,
-        os_cyl: data.os_cyl,
-        creator_id: req.authSession!.user_id,
-      },
-    });
+    const ctx = auditContextFromRequest(req);
+    try {
+      const created = await prisma.refractive_error.create({
+        data: {
+          patient_id: data.patient_id,
+          date: new Date(data.date),
+          method_id: data.method_id,
+          od_sph: data.od_sph,
+          od_cyl: data.od_cyl,
+          os_sph: data.os_sph,
+          os_cyl: data.os_cyl,
+          creator_id: req.authSession!.user_id,
+        },
+      });
 
-    await writeAuditLog({
-      tableName: "refractive_error",
-      recordId: created.id,
-      action: "CREATE",
-      actorId: req.authSession!.user_id,
-      patientId: created.patient_id,
-      newValue: created,
-    });
+      await writeAuditLog({
+        ...ctx,
+        tableName: "refractive_error",
+        recordId: created.id,
+        action: "CREATE",
+        hospitalId,
+        patientId: created.patient_id,
+        newValue: created,
+      });
 
-    res.sendStatus(200);
+      checkRefractiveErrorAlerts(created).catch(console.error);
+
+      res.sendStatus(200);
+    } catch (err) {
+      await writeAuditFailure(
+        {
+          ...ctx,
+          tableName: "refractive_error",
+          action: "CREATE",
+          hospitalId,
+          patientId: data.patient_id,
+          newValue: data,
+        },
+        err,
+      );
+      throw err;
+    }
   },
 );
 
@@ -69,6 +91,7 @@ router.patch(
   async (req, res) => {
     const data = req.body as zod.infer<typeof patchBodyType>;
     const refractiveErrorId = String(req.params.refractiveErrorId);
+    const hospitalId = req.healthcare_professional!.hospital_id;
 
     const authorized = await prisma.refractive_error
       .findUnique({
@@ -85,8 +108,7 @@ router.patch(
       })
       .then(
         (refractiveError) =>
-          refractiveError?.patient?.hospital_id ===
-          req.healthcare_professional!.hospital_id,
+          refractiveError?.patient?.hospital_id === hospitalId,
       )
       .catch(() => false);
 
@@ -95,36 +117,58 @@ router.patch(
       return;
     }
 
-    await prisma.$transaction(async (tx) => {
-      const oldValue = await tx.refractive_error.findUnique({
-        where: { id: refractiveErrorId },
+    const ctx = auditContextFromRequest(req);
+    try {
+      const updated = await prisma.$transaction(async (tx) => {
+        const oldValue = await tx.refractive_error.findUnique({
+          where: { id: refractiveErrorId },
+        });
+        const updated = await tx.refractive_error.update({
+          where: {
+            id: refractiveErrorId,
+          },
+          data: {
+            ...data,
+            date: new Date(data.date),
+          },
+        });
+        await writeAuditLog({
+          ...ctx,
+          tableName: "refractive_error",
+          recordId: updated.id,
+          action: "UPDATE",
+          hospitalId,
+          patientId: updated.patient_id,
+          oldValue,
+          newValue: updated,
+          client: tx,
+        });
+        return updated;
       });
-      const updated = await tx.refractive_error.update({
-        where: {
-          id: refractiveErrorId,
+
+      checkRefractiveErrorAlerts(updated).catch(console.error);
+
+      res.sendStatus(200);
+    } catch (err) {
+      await writeAuditFailure(
+        {
+          ...ctx,
+          tableName: "refractive_error",
+          recordId: refractiveErrorId,
+          action: "UPDATE",
+          hospitalId,
+          newValue: data,
         },
-        data: {
-          ...data,
-          date: new Date(data.date),
-        },
-      });
-      await writeAuditLog({
-        tableName: "refractive_error",
-        recordId: updated.id,
-        action: "UPDATE",
-        actorId: req.authSession!.user_id,
-        patientId: updated.patient_id,
-        oldValue,
-        newValue: updated,
-        client: tx,
-      });
-    });
-    res.sendStatus(200);
+        err,
+      );
+      throw err;
+    }
   },
 );
 
 router.delete("/:id", approvedProfessionalRequired, async (req, res) => {
   const refractiveErrorId = String(req.params.id);
+  const hospitalId = req.healthcare_professional!.hospital_id;
 
   const authorized = await prisma.refractive_error
     .findUnique({
@@ -140,9 +184,7 @@ router.delete("/:id", approvedProfessionalRequired, async (req, res) => {
       },
     })
     .then(
-      (refractiveError) =>
-        refractiveError?.patient?.hospital_id ===
-        req.healthcare_professional!.hospital_id,
+      (refractiveError) => refractiveError?.patient?.hospital_id === hospitalId,
     );
 
   if (!authorized) {
@@ -150,6 +192,7 @@ router.delete("/:id", approvedProfessionalRequired, async (req, res) => {
     return;
   }
 
+  const ctx = auditContextFromRequest(req);
   await prisma
     .$transaction(async (tx) => {
       const oldValue = await tx.refractive_error.findUnique({
@@ -161,17 +204,18 @@ router.delete("/:id", approvedProfessionalRequired, async (req, res) => {
         },
       });
       await writeAuditLog({
+        ...ctx,
         tableName: "refractive_error",
         recordId: deleted.id,
         action: "DELETE",
-        actorId: req.authSession!.user_id,
+        hospitalId,
         patientId: deleted.patient_id,
         oldValue,
         client: tx,
       });
     })
     .then(() => res.sendStatus(200))
-    .catch((err) => {
+    .catch(async (err) => {
       if (
         err instanceof PrismaClientKnownRequestError &&
         err.code === "P2025"
@@ -179,6 +223,16 @@ router.delete("/:id", approvedProfessionalRequired, async (req, res) => {
         res.sendStatus(404);
         return;
       }
+      await writeAuditFailure(
+        {
+          ...ctx,
+          tableName: "refractive_error",
+          recordId: refractiveErrorId,
+          action: "DELETE",
+          hospitalId,
+        },
+        err,
+      );
       throw err;
     });
 });
