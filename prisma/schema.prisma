@@ -48,6 +48,7 @@ model hospital {
   healthcare_professional healthcare_professional[]
   country                 country                   @relation(fields: [country_id], references: [id], map: "hospital_country_fk")
   patient                 patient[]
+  study_hospital          study_hospital[]
 }
 
 model instrument {
@@ -105,6 +106,7 @@ model patient {
   pending_patient_deletion       pending_patient_deletion?
   refractive_error               refractive_error[]
   user_patient                   user_patient[]
+  study_patient                  study_patient[]
 
   @@unique([registration_number_hash, hospital_id], map: "patient_registration_number_hash_unique")
 }
@@ -152,6 +154,7 @@ model user {
   session                 session[]
   user_patient            user_patient[]
   audit_log               audit_log[]
+  study_patient           study_patient[]
 }
 
 model user_patient {
@@ -279,6 +282,46 @@ model audit_log {
   @@index([actor_id, created_at(sort: Desc)], map: "audit_log_actor_created_idx")
   @@index([hospital_id, created_at(sort: Desc)], map: "audit_log_hospital_created_idx")
   @@index([created_at(sort: Desc)], map: "audit_log_created_idx")
+}
+
+/// A clinical study (trial). Created and managed by site admins. Hospitals are
+/// granted participation via `study_hospital`; only participating hospitals see
+/// the study button and may enrol their patients via `study_patient`.
+model study {
+  id             String           @id(map: "study_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String           @unique(map: "study_unique")
+  description    String?
+  created_at     DateTime         @default(now()) @db.Timestamptz(6)
+  study_hospital study_hospital[]
+  study_patient  study_patient[]
+}
+
+/// Which hospitals are allowed to participate in a study (assigned by a site
+/// admin). Many-to-many join between `study` and `hospital`.
+model study_hospital {
+  study_id    String   @db.Uuid
+  hospital_id String   @db.Uuid
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  study       study    @relation(fields: [study_id], references: [id], onDelete: Cascade, map: "study_hospital_study_fk")
+  hospital    hospital @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "study_hospital_hospital_fk")
+
+  @@id([study_id, hospital_id], map: "study_hospital_pk")
+}
+
+/// A patient enrolled into a study (by an approved professional of a
+/// participating hospital). Once enrolled, study visit data can be recorded
+/// against this enrolment.
+model study_patient {
+  id            String   @id(map: "study_patient_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  study_id      String   @db.Uuid
+  patient_id    String   @db.Uuid
+  registered_at DateTime @default(now()) @db.Timestamptz(6)
+  registered_by String?  @db.Uuid
+  study         study    @relation(fields: [study_id], references: [id], onDelete: Cascade, map: "study_patient_study_fk")
+  patient       patient  @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "study_patient_patient_fk")
+  registrar     user?    @relation(fields: [registered_by], references: [id], map: "study_patient_user_fk")
+
+  @@unique([study_id, patient_id], map: "study_patient_unique")
 }
 
 enum audit_action {
