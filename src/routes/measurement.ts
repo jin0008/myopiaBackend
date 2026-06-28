@@ -7,6 +7,12 @@ import {
 } from "../lib/middlewares";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { isPatientInHospital } from "../lib/authorization";
+import {
+  auditContextFromRequest,
+  writeAuditFailure,
+  writeAuditLog,
+} from "../services/audit";
+import { checkMeasurementAlerts } from "../services/notification";
 
 const router = express.Router();
 
@@ -23,25 +29,52 @@ router.post(
   approvedProfessionalRequired,
   async (req, res) => {
     const data = req.body as zod.infer<typeof postBodyType>;
-    const authorized = await isPatientInHospital(
-      data.patient_id,
-      req.healthcare_professional!.hospital_id,
-    );
+    const hospitalId = req.healthcare_professional!.hospital_id;
+    const authorized = await isPatientInHospital(data.patient_id, hospitalId);
     if (!authorized) {
       res.sendStatus(403);
       return;
     }
-    await prisma.measurement.create({
-      data: {
-        patient_id: data.patient_id,
-        date: new Date(data.date),
-        instrument_id: data.instrument_id,
-        od: data.od,
-        os: data.os,
-        creator_id: req.authSession!.user_id,
-      },
-    });
-    res.sendStatus(200);
+    const ctx = auditContextFromRequest(req);
+    try {
+      const created = await prisma.measurement.create({
+        data: {
+          patient_id: data.patient_id,
+          date: new Date(data.date),
+          instrument_id: data.instrument_id,
+          od: data.od,
+          os: data.os,
+          creator_id: req.authSession!.user_id,
+        },
+      });
+
+      await writeAuditLog({
+        ...ctx,
+        tableName: "measurement",
+        recordId: created.id,
+        action: "CREATE",
+        hospitalId,
+        patientId: created.patient_id,
+        newValue: created,
+      });
+
+      checkMeasurementAlerts(created).catch(console.error);
+
+      res.sendStatus(200);
+    } catch (err) {
+      await writeAuditFailure(
+        {
+          ...ctx,
+          tableName: "measurement",
+          action: "CREATE",
+          hospitalId,
+          patientId: data.patient_id,
+          newValue: data,
+        },
+        err,
+      );
+      throw err;
+    }
   },
 );
 
@@ -54,6 +87,7 @@ router.patch(
   async (req, res) => {
     const data = req.body as zod.infer<typeof patchBodyType>;
     const measurementId = String(req.params.measurementId);
+    const hospitalId = req.healthcare_professional!.hospital_id;
     const authorized = await prisma.measurement
       .findUnique({
         where: {
@@ -67,11 +101,7 @@ router.patch(
           },
         },
       })
-      .then(
-        (measurement) =>
-          measurement?.patient.hospital_id ===
-          req.healthcare_professional!.hospital_id,
-      )
+      .then((measurement) => measurement?.patient.hospital_id === hospitalId)
       .catch(() => false);
 
     if (!authorized) {
@@ -79,16 +109,52 @@ router.patch(
       return;
     }
 
-    await prisma.measurement.update({
-      where: {
-        id: measurementId,
-      },
-      data: {
-        ...data,
-        date: new Date(data.date),
-      },
-    });
-    res.sendStatus(200);
+    const ctx = auditContextFromRequest(req);
+    try {
+      const updated = await prisma.$transaction(async (tx) => {
+        const oldValue = await tx.measurement.findUnique({
+          where: { id: measurementId },
+        });
+        const updated = await tx.measurement.update({
+          where: {
+            id: measurementId,
+          },
+          data: {
+            ...data,
+            date: new Date(data.date),
+          },
+        });
+        await writeAuditLog({
+          ...ctx,
+          tableName: "measurement",
+          recordId: updated.id,
+          action: "UPDATE",
+          hospitalId,
+          patientId: updated.patient_id,
+          oldValue,
+          newValue: updated,
+          client: tx,
+        });
+        return updated;
+      });
+
+      checkMeasurementAlerts(updated).catch(console.error);
+
+      res.sendStatus(200);
+    } catch (err) {
+      await writeAuditFailure(
+        {
+          ...ctx,
+          tableName: "measurement",
+          recordId: measurementId,
+          action: "UPDATE",
+          hospitalId,
+          newValue: data,
+        },
+        err,
+      );
+      throw err;
+    }
   },
 );
 
@@ -97,6 +163,7 @@ router.delete(
   approvedProfessionalRequired,
   async (req, res) => {
     const measurementId = String(req.params.measurementId);
+    const hospitalId = req.healthcare_professional!.hospital_id;
 
     const authorized = await prisma.measurement
       .findUnique({
@@ -111,25 +178,37 @@ router.delete(
           },
         },
       })
-      .then(
-        (measurement) =>
-          measurement?.patient?.hospital_id ===
-          req.healthcare_professional!.hospital_id,
-      );
+      .then((measurement) => measurement?.patient?.hospital_id === hospitalId);
 
     if (!authorized) {
       res.sendStatus(403);
       return;
     }
 
-    await prisma.measurement
-      .delete({
-        where: {
-          id: req.params.measurementId as string,
-        },
+    const ctx = auditContextFromRequest(req);
+    await prisma
+      .$transaction(async (tx) => {
+        const oldValue = await tx.measurement.findUnique({
+          where: { id: measurementId },
+        });
+        const deleted = await tx.measurement.delete({
+          where: {
+            id: measurementId,
+          },
+        });
+        await writeAuditLog({
+          ...ctx,
+          tableName: "measurement",
+          recordId: deleted.id,
+          action: "DELETE",
+          hospitalId,
+          patientId: deleted.patient_id,
+          oldValue,
+          client: tx,
+        });
       })
       .then(() => res.sendStatus(200))
-      .catch((err) => {
+      .catch(async (err) => {
         if (
           err instanceof PrismaClientKnownRequestError &&
           err.code === "P2025"
@@ -137,6 +216,16 @@ router.delete(
           res.sendStatus(404);
           return;
         }
+        await writeAuditFailure(
+          {
+            ...ctx,
+            tableName: "measurement",
+            recordId: measurementId,
+            action: "DELETE",
+            hospitalId,
+          },
+          err,
+        );
         throw err;
       });
   },

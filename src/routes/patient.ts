@@ -13,6 +13,7 @@ import { decryptSymmetric, encryptSymmetric } from "../services/encrpytion";
 import { isPatientInHospital } from "../lib/authorization";
 import bcrypt from "bcrypt";
 import { hashRegistrationNumber } from "../lib/hash";
+import { auditContextFromRequest, writeAuditLog } from "../services/audit";
 
 const router = express.Router();
 
@@ -83,6 +84,15 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
       }
       return data.sort(comparatorFunction);
     });
+
+  // High-risk read: bulk patient list with decrypted PII (reg. number, DOB).
+  writeAuditLog({
+    ...auditContextFromRequest(req),
+    tableName: "patient",
+    action: "READ",
+    hospitalId: req.healthcare_professional!.hospital_id,
+    newValue: { scope: "patient_list", count: data.length },
+  }).catch(console.error);
 
   res.json(data);
 });
@@ -416,6 +426,18 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         res.sendStatus(404);
         return;
       }
+
+      // High-risk read: full patient record with decrypted PII (reg. number,
+      // DOB) plus all clinical measurements.
+      writeAuditLog({
+        ...auditContextFromRequest(req),
+        tableName: "patient",
+        recordId: data.id,
+        action: "READ",
+        hospitalId: data.hospital_id,
+        patientId: data.id,
+      }).catch(console.error);
+
       res.json({
         ...data,
         date_of_birth: await decryptSymmetric(data.encrypted_date_of_birth),

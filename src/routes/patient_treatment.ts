@@ -7,6 +7,11 @@ import {
 } from "../lib/middlewares";
 import { WrongArgumentsMessage } from "../lib/session";
 import { isPatientInHospital } from "../lib/authorization";
+import {
+  auditContextFromRequest,
+  writeAuditFailure,
+  writeAuditLog,
+} from "../services/audit";
 
 const router = express.Router();
 router.use(approvedProfessionalRequired);
@@ -20,15 +25,14 @@ const postBodyType = zod.object({
 
 router.post("/", validateRequestBody(postBodyType), async (req, res) => {
   const data = req.body as zod.infer<typeof postBodyType>;
-  const authorized = await isPatientInHospital(
-    data.patient_id,
-    req.healthcare_professional!.hospital_id,
-  );
+  const hospitalId = req.healthcare_professional!.hospital_id;
+  const authorized = await isPatientInHospital(data.patient_id, hospitalId);
   if (!authorized) {
     res.sendStatus(403);
     return;
   }
 
+  const ctx = auditContextFromRequest(req);
   prisma.patient_treatment
     .create({
       data: {
@@ -38,8 +42,32 @@ router.post("/", validateRequestBody(postBodyType), async (req, res) => {
         end_date: data.end_date == null ? null : new Date(data.end_date),
       },
     })
-    .then(() => res.sendStatus(200))
-    .catch(() => res.status(400).json(WrongArgumentsMessage));
+    .then(async (created) => {
+      await writeAuditLog({
+        ...ctx,
+        tableName: "patient_treatment",
+        recordId: created.id,
+        action: "CREATE",
+        hospitalId,
+        patientId: created.patient_id,
+        newValue: created,
+      });
+      res.sendStatus(200);
+    })
+    .catch(async (err) => {
+      await writeAuditFailure(
+        {
+          ...ctx,
+          tableName: "patient_treatment",
+          action: "CREATE",
+          hospitalId,
+          patientId: data.patient_id,
+          newValue: data,
+        },
+        err,
+      );
+      res.status(400).json(WrongArgumentsMessage);
+    });
 });
 
 const patientTreatmentPatchType = zod
@@ -54,6 +82,7 @@ router.patch(
   "/:id",
   validateRequestBody(patientTreatmentPatchType),
   async (req, res) => {
+    const auth_hospital_id = req.healthcare_professional!.hospital_id;
     const patient_hospital_id = await prisma.patient_treatment
       .findUnique({
         where: {
@@ -68,35 +97,65 @@ router.patch(
         },
       })
       .then((result) => result?.patient.hospital_id);
-    const auth_hospital_id = req.healthcare_professional!.hospital_id;
     if (patient_hospital_id !== auth_hospital_id) {
       res.sendStatus(403);
       return;
     }
 
     const data = req.body;
+    const ctx = auditContextFromRequest(req);
 
-    prisma.patient_treatment
-      .update({
-        where: {
-          id: String(req.params.id),
-        },
-        data: {
-          treatment_id: data.treatment_id,
-          start_date:
-            data.start_date == null
-              ? data.start_date
-              : new Date(data.start_date),
-          end_date:
-            data.end_date == null ? data.end_date : new Date(data.end_date),
-        },
+    prisma
+      .$transaction(async (tx) => {
+        const oldValue = await tx.patient_treatment.findUnique({
+          where: { id: String(req.params.id) },
+        });
+        const updated = await tx.patient_treatment.update({
+          where: {
+            id: String(req.params.id),
+          },
+          data: {
+            treatment_id: data.treatment_id,
+            start_date:
+              data.start_date == null
+                ? data.start_date
+                : new Date(data.start_date),
+            end_date:
+              data.end_date == null ? data.end_date : new Date(data.end_date),
+          },
+        });
+        await writeAuditLog({
+          ...ctx,
+          tableName: "patient_treatment",
+          recordId: updated.id,
+          action: "UPDATE",
+          hospitalId: auth_hospital_id,
+          patientId: updated.patient_id,
+          oldValue,
+          newValue: updated,
+          client: tx,
+        });
       })
       .then(() => res.sendStatus(200))
-      .catch(() => res.status(400).json(WrongArgumentsMessage));
+      .catch(async (err) => {
+        await writeAuditFailure(
+          {
+            ...ctx,
+            tableName: "patient_treatment",
+            recordId: String(req.params.id),
+            action: "UPDATE",
+            hospitalId: auth_hospital_id,
+            newValue: data,
+          },
+          err,
+        );
+        res.status(400).json(WrongArgumentsMessage);
+      });
   },
 );
 
 router.delete("/:id", async (req, res) => {
+  const auth_hospital_id = req.healthcare_professional!.hospital_id;
   const patient_hospital_id = await prisma.patient_treatment
     .findUnique({
       where: {
@@ -111,18 +170,47 @@ router.delete("/:id", async (req, res) => {
       },
     })
     .then((result) => result?.patient.hospital_id);
-  const auth_hospital_id = req.healthcare_professional!.hospital_id;
   if (patient_hospital_id !== auth_hospital_id) {
     res.sendStatus(403);
     return;
   }
 
-  await prisma.patient_treatment.delete({
-    where: {
-      id: req.params.id,
-    },
-  });
-  res.sendStatus(200);
+  const ctx = auditContextFromRequest(req);
+  try {
+    await prisma.$transaction(async (tx) => {
+      const oldValue = await tx.patient_treatment.findUnique({
+        where: { id: req.params.id },
+      });
+      const deleted = await tx.patient_treatment.delete({
+        where: {
+          id: req.params.id,
+        },
+      });
+      await writeAuditLog({
+        ...ctx,
+        tableName: "patient_treatment",
+        recordId: deleted.id,
+        action: "DELETE",
+        hospitalId: auth_hospital_id,
+        patientId: deleted.patient_id,
+        oldValue,
+        client: tx,
+      });
+    });
+    res.sendStatus(200);
+  } catch (err) {
+    await writeAuditFailure(
+      {
+        ...ctx,
+        tableName: "patient_treatment",
+        recordId: req.params.id,
+        action: "DELETE",
+        hospitalId: auth_hospital_id,
+      },
+      err,
+    );
+    throw err;
+  }
 });
 
 export default router;
