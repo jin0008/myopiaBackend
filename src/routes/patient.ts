@@ -161,7 +161,7 @@ router.post(
       return;
     }
 
-    await prisma.$transaction([
+    const [, deleted] = await prisma.$transaction([
       prisma.pending_patient_deletion.delete({
         where: {
           patient_id: patientId,
@@ -173,6 +173,21 @@ router.post(
         },
       }),
     ]);
+
+    writeAuditLog({
+      ...auditContextFromRequest(req),
+      tableName: "patient",
+      recordId: deleted.id,
+      action: "DELETE",
+      hospitalId: deleted.hospital_id,
+      patientId: deleted.id,
+      oldValue: {
+        sex: deleted.sex,
+        ethnicity_id: deleted.ethnicity_id,
+        created_at: deleted.created_at,
+      },
+    }).catch(console.error);
+
     res.sendStatus(200);
   },
 );
@@ -465,7 +480,7 @@ router.post(
     const trimmedRegistrationNumber = data.registration_number.trim();
     const hash = hashRegistrationNumber(trimmedRegistrationNumber);
 
-    await prisma.patient.create({
+    const created = await prisma.patient.create({
       data: {
         sex: data.sex,
         ethnicity_id: data.ethnicity_id,
@@ -481,6 +496,20 @@ router.post(
         creator_id: req.authSession!.user_id,
       },
     });
+
+    // Audit the creation with non-PII metadata only. Registration number, date
+    // of birth and email are sensitive personal data and are never written to
+    // the audit log.
+    writeAuditLog({
+      ...auditContextFromRequest(req),
+      tableName: "patient",
+      recordId: created.id,
+      action: "CREATE",
+      hospitalId: created.hospital_id,
+      patientId: created.id,
+      newValue: { sex: created.sex, ethnicity_id: created.ethnicity_id },
+    }).catch(console.error);
+
     res.sendStatus(201);
   },
 );
@@ -519,7 +548,22 @@ router.patch(
           sex: data.sex,
         },
       })
-      .then(() => res.sendStatus(200))
+      .then((updated) => {
+        // Record which fields changed; sensitive values (date of birth) are
+        // intentionally not stored in the audit log.
+        writeAuditLog({
+          ...auditContextFromRequest(req),
+          tableName: "patient",
+          recordId: patientId,
+          action: "UPDATE",
+          hospitalId: updated.hospital_id,
+          patientId,
+          changedFields: Object.keys(data).filter(
+            (key) => (data as Record<string, unknown>)[key] !== undefined,
+          ),
+        }).catch(console.error);
+        res.sendStatus(200);
+      })
       .catch((e) => {
         if (e instanceof PrismaClientKnownRequestError && e.code === "P2025") {
           res.sendStatus(404);
@@ -538,6 +582,22 @@ router.delete("/:patientId", hospitalAdminRequired, async (req, res, next) => {
         hospital_id: req.healthcare_professional!.hospital_id,
       },
     })
+    .then((deleted) => {
+      writeAuditLog({
+        ...auditContextFromRequest(req),
+        tableName: "patient",
+        recordId: deleted.id,
+        action: "DELETE",
+        hospitalId: deleted.hospital_id,
+        patientId: deleted.id,
+        oldValue: {
+          sex: deleted.sex,
+          ethnicity_id: deleted.ethnicity_id,
+          created_at: deleted.created_at,
+        },
+      }).catch(console.error);
+      res.sendStatus(200);
+    })
     .catch((e) => {
       if (e instanceof PrismaClientKnownRequestError && e.code === "P2025") {
         res.sendStatus(404);
@@ -545,8 +605,6 @@ router.delete("/:patientId", hospitalAdminRequired, async (req, res, next) => {
       }
       next(e);
     });
-
-  res.sendStatus(200);
 });
 
 export default router;
