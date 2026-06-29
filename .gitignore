@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# secrets — never commit
+.env
+.env.*
+!.env.example
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,8 +27,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
-.env
 
 # Local test scaffolding
 .test-server.pid
