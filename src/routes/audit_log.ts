@@ -3,21 +3,14 @@ import zod from "zod";
 import ExcelJS from "exceljs";
 import { Prisma, audit_action, audit_status } from "@prisma/client";
 import prisma from "../lib/prisma";
-import { approvedProfessionalRequired } from "../lib/middlewares";
+import {
+  approvedProfessionalRequired,
+  siteAdminRequired,
+} from "../lib/middlewares";
 import { isPatientInHospital } from "../lib/authorization";
 import { auditContextFromRequest, writeAuditLog } from "../services/audit";
 
 const router = express.Router();
-router.use(approvedProfessionalRequired);
-
-/** Hospital admins only — the audit console is an admin-facing feature. */
-const adminOnly: express.RequestHandler = (req, res, next) => {
-  if (!req.healthcare_professional?.is_admin) {
-    res.sendStatus(403);
-    return;
-  }
-  next();
-};
 
 const MAX_PAGE_SIZE = 500;
 const MAX_EXPORT_ROWS = 100_000;
@@ -25,6 +18,7 @@ const MAX_EXPORT_ROWS = 100_000;
 const filterSchema = zod.object({
   from: zod.string().date().optional(),
   to: zod.string().date().optional(),
+  hospital_id: zod.string().uuid().optional(),
   actor_id: zod.string().uuid().optional(),
   patient_id: zod.string().uuid().optional(),
   table_name: zod.string().optional(),
@@ -33,15 +27,16 @@ const filterSchema = zod.object({
 });
 
 /**
- * Builds the Prisma `where` clause for an audit query, always scoped to the
- * requesting admin's own hospital so a hospital cannot read another's logs.
+ * Builds the Prisma `where` clause for an audit query. The audit console is a
+ * platform-wide site-admin feature, so by default it spans all hospitals; an
+ * optional `hospital_id` filter narrows the view to a single institution.
  */
 function buildWhere(
   filters: zod.infer<typeof filterSchema>,
-  hospitalId: string,
 ): Prisma.audit_logWhereInput {
-  const where: Prisma.audit_logWhereInput = { hospital_id: hospitalId };
+  const where: Prisma.audit_logWhereInput = {};
 
+  if (filters.hospital_id) where.hospital_id = filters.hospital_id;
   if (filters.actor_id) where.actor_id = filters.actor_id;
   if (filters.patient_id) where.patient_id = filters.patient_id;
   if (filters.table_name) where.table_name = filters.table_name;
@@ -64,15 +59,14 @@ function buildWhere(
   return where;
 }
 
-// GET /audit_log  — admin console list with filters + pagination.
-router.get("/", adminOnly, async (req, res) => {
+// GET /audit_log  — site-admin console list with filters + pagination.
+router.get("/", siteAdminRequired, async (req, res) => {
   const parsed = filterSchema.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ message: "invalid filters" });
     return;
   }
-  const hospitalId = req.healthcare_professional!.hospital_id;
-  const where = buildWhere(parsed.data, hospitalId);
+  const where = buildWhere(parsed.data);
 
   const page = Math.max(1, Number(req.query.page) || 1);
   const pageSize = Math.min(
@@ -95,15 +89,14 @@ router.get("/", adminOnly, async (req, res) => {
 });
 
 // GET /audit_log/export?format=csv|xlsx — download filtered logs.
-router.get("/export", adminOnly, async (req, res) => {
+router.get("/export", siteAdminRequired, async (req, res) => {
   const parsed = filterSchema.safeParse(req.query);
   if (!parsed.success) {
     res.status(400).json({ message: "invalid filters" });
     return;
   }
   const format = req.query.format === "xlsx" ? "xlsx" : "csv";
-  const hospitalId = req.healthcare_professional!.hospital_id;
-  const where = buildWhere(parsed.data, hospitalId);
+  const where = buildWhere(parsed.data);
 
   const rows = await prisma.audit_log.findMany({
     where,
@@ -117,7 +110,7 @@ router.get("/export", adminOnly, async (req, res) => {
     ...auditContextFromRequest(req),
     tableName: "audit_log",
     action: "EXPORT",
-    hospitalId,
+    hospitalId: parsed.data.hospital_id ?? null,
     patientId: parsed.data.patient_id ?? null,
     newValue: { format, filters: parsed.data, count: rows.length },
   }).catch(console.error);
@@ -130,41 +123,39 @@ router.get("/export", adminOnly, async (req, res) => {
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     );
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${filename}"`,
-    );
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     await writeXlsx(res, rows);
   } else {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${filename}"`,
-    );
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
     res.send(toCsv(rows));
   }
 });
 
 // GET /audit_log/patient/:patientId — per-patient history (any approved pro).
-router.get("/patient/:patientId", async (req, res) => {
-  const patientId = String(req.params.patientId);
+router.get(
+  "/patient/:patientId",
+  approvedProfessionalRequired,
+  async (req, res) => {
+    const patientId = String(req.params.patientId);
 
-  const authorized = await isPatientInHospital(
-    patientId,
-    req.healthcare_professional!.hospital_id,
-  );
-  if (!authorized) {
-    res.sendStatus(403);
-    return;
-  }
+    const authorized = await isPatientInHospital(
+      patientId,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
 
-  const logs = await prisma.audit_log.findMany({
-    where: { patient_id: patientId },
-    include: { actor: { select: { email: true } } },
-    orderBy: { created_at: "desc" },
-  });
-  res.json(logs);
-});
+    const logs = await prisma.audit_log.findMany({
+      where: { patient_id: patientId },
+      include: { actor: { select: { email: true } } },
+      orderBy: { created_at: "desc" },
+    });
+    res.json(logs);
+  },
+);
 
 // ---- export serialization --------------------------------------------------
 
@@ -209,7 +200,10 @@ function toCsv(rows: AuditRow[]): string {
   return "﻿" + [header, ...body].join("\r\n");
 }
 
-async function writeXlsx(res: express.Response, rows: AuditRow[]): Promise<void> {
+async function writeXlsx(
+  res: express.Response,
+  rows: AuditRow[],
+): Promise<void> {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("audit_log");
   sheet.addRow(EXPORT_COLUMNS.map((c) => c.header));
