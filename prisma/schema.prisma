@@ -50,6 +50,19 @@ model hospital {
   country                 country                   @relation(fields: [country_id], references: [id], map: "hospital_country_fk")
   patient                 patient[]
   child_hospital_link     child_hospital_link[]
+  alert_recipient         alert_recipient[]
+}
+
+/// Email addresses designated by a hospital admin to receive query (abnormal
+/// measurement) alerts for that hospital.
+model alert_recipient {
+  id          String   @id(map: "alert_recipient_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  hospital_id String   @db.Uuid
+  email       String
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  hospital    hospital @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "alert_recipient_hospital_fk")
+
+  @@unique([hospital_id, email], map: "alert_recipient_hospital_email_unique")
 }
 
 model instrument {
