@@ -18,6 +18,7 @@ import growthDataRoutes from "./routes/growth_data";
 import patientKRoutes from "./routes/patient_k";
 import newsRoutes from "./routes/news";
 import auditLogRoutes from "./routes/audit_log";
+import alertRecipientRoutes from "./routes/alert_recipient";
 import mobileRoutes from "./routes/mobile";
 
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
@@ -52,6 +53,7 @@ app.use("/growth_Data", growthDataRoutes);
 app.use("/static", staticRoutes);
 app.use("/news", newsRoutes);
 app.use("/audit_log", auditLogRoutes);
+app.use("/alert_recipient", alertRecipientRoutes);
 app.use("/api/mobile", mobileRoutes);
 
 const prismaErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
