@@ -19,6 +19,13 @@ export const AXIAL_QUERY = {
   decreaseMm: 0.3,
   /** Flag if the annualised increase reaches this (mm/year). */
   increaseMmPerYear: 1.0,
+  /**
+   * Guards against false positives from the annualised rate. Only evaluate the
+   * increase-rate when the two measurements are at least this far apart (years),
+   * and only alert when the raw increase also exceeds measurement noise (mm).
+   */
+  minIntervalYears: 0.25,
+  minIncreaseMm: 0.1,
 };
 
 /**

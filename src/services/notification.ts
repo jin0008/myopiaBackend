@@ -164,10 +164,17 @@ export async function checkMeasurementAlerts(
       );
     }
 
-    // (3) Increasing too fast vs. the previous measurement.
+    // (3) Increasing too fast vs. the previous measurement. Guard against
+    // false positives: require a minimum interval (so a few-days gap doesn't
+    // blow up the annualised rate) and a raw increase above measurement noise.
     const years = yearsBetween(previous.date, measurement.date);
-    if (years != null && years > 0) {
-      const rate = (value - prev) / years;
+    const increase = value - prev;
+    if (
+      years != null &&
+      years >= AXIAL_QUERY.minIntervalYears &&
+      increase >= AXIAL_QUERY.minIncreaseMm
+    ) {
+      const rate = increase / years;
       if (rate >= AXIAL_QUERY.increaseMmPerYear) {
         reasons.push(
           `안축장 ${label} 증가 속도가 ${rate.toFixed(2)}mm/year로 기준(${AXIAL_QUERY.increaseMmPerYear.toFixed(1)}mm/year)을 초과했습니다.`,
