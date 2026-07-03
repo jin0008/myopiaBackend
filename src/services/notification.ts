@@ -157,7 +157,8 @@ export async function checkMeasurementAlerts(
     const prevDate = previous.date.toISOString().slice(0, 10);
 
     // (2) Decreased vs. the previous measurement (e.g. atropine effect).
-    const decrease = prev - value;
+    // Round to 3 decimals to avoid float error (e.g. 24.15 - 24.05 = 0.0999…).
+    const decrease = Math.round((prev - value) * 1000) / 1000;
     if (decrease >= AXIAL_QUERY.decreaseMm) {
       reasons.push(
         `안축장 ${label}가 직전 측정(${prevDate}, ${prev}mm) 대비 ${decrease.toFixed(2)}mm 감소했습니다.`,
@@ -168,7 +169,7 @@ export async function checkMeasurementAlerts(
     // false positives: require a minimum interval (so a few-days gap doesn't
     // blow up the annualised rate) and a raw increase above measurement noise.
     const years = yearsBetween(previous.date, measurement.date);
-    const increase = value - prev;
+    const increase = Math.round((value - prev) * 1000) / 1000;
     if (
       years != null &&
       years >= AXIAL_QUERY.minIntervalYears &&
