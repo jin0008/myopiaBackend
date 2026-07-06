@@ -2,6 +2,7 @@ import prisma from "../lib/prisma";
 import { sex } from "@prisma/client";
 import {
   AXIAL_LENGTH_ALERT,
+  AXIAL_QUERY,
   PROGRESSION_ALERT,
   SE_ALERT,
 } from "../lib/constants";
@@ -122,36 +123,13 @@ export async function checkMeasurementAlerts(
 ): Promise<void> {
   const patient = await prisma.patient.findUnique({
     where: { id: measurement.patient_id },
-    select: {
-      hospital_id: true,
-      sex: true,
-      encrypted_date_of_birth: true,
-    },
+    select: { hospital_id: true },
   });
   if (patient == null) return;
 
-  const age = await patientAgeYears(
-    patient.encrypted_date_of_birth,
-    measurement.date,
-  );
-  const threshold = await getAxialThreshold(age, patient.sex);
-
   const reasons: string[] = [];
 
-  // (1) Absolute threshold (age-based).
-  const ageLabel = age != null ? `만 ${age}세 기준` : "기본 기준";
-  if (measurement.od != null && measurement.od > threshold) {
-    reasons.push(
-      `안축장 OD ${measurement.od}mm 가 임계값(${threshold}mm, ${ageLabel})을 초과했습니다.`,
-    );
-  }
-  if (measurement.os != null && measurement.os > threshold) {
-    reasons.push(
-      `안축장 OS ${measurement.os}mm 가 임계값(${threshold}mm, ${ageLabel})을 초과했습니다.`,
-    );
-  }
-
-  // (2) Progression rate vs. the previous measurement.
+  // Most recent measurement before this one, for change-based checks.
   const previous = await prisma.measurement.findFirst({
     where: {
       patient_id: measurement.patient_id,
@@ -161,20 +139,47 @@ export async function checkMeasurementAlerts(
     orderBy: { date: "desc" },
     select: { date: true, od: true, os: true },
   });
-  if (previous != null) {
+
+  for (const eye of ["od", "os"] as const) {
+    const value = measurement[eye];
+    if (value == null) continue;
+    const label = eye.toUpperCase();
+
+    // (1) Outside the normal absolute range.
+    if (value <= AXIAL_QUERY.minNormal || value >= AXIAL_QUERY.maxNormal) {
+      reasons.push(
+        `안축장 ${label} ${value}mm — 기준 범위(${AXIAL_QUERY.minNormal.toFixed(1)}~${AXIAL_QUERY.maxNormal.toFixed(1)}mm)를 벗어났습니다.`,
+      );
+    }
+
+    const prev = previous?.[eye];
+    if (previous == null || prev == null) continue;
+    const prevDate = previous.date.toISOString().slice(0, 10);
+
+    // (2) Decreased vs. the previous measurement (e.g. atropine effect).
+    // Round to 3 decimals to avoid float error (e.g. 24.15 - 24.05 = 0.0999…).
+    const decrease = Math.round((prev - value) * 1000) / 1000;
+    if (decrease >= AXIAL_QUERY.decreaseMm) {
+      reasons.push(
+        `안축장 ${label}가 직전 측정(${prevDate}, ${prev}mm) 대비 ${decrease.toFixed(2)}mm 감소했습니다.`,
+      );
+    }
+
+    // (3) Increasing too fast vs. the previous measurement. Guard against
+    // false positives: require a minimum interval (so a few-days gap doesn't
+    // blow up the annualised rate) and a raw increase above measurement noise.
     const years = yearsBetween(previous.date, measurement.date);
-    if (years != null) {
-      for (const eye of ["od", "os"] as const) {
-        const curr = measurement[eye];
-        const prev = previous[eye];
-        if (curr == null || prev == null) continue;
-        const rate = (curr - prev) / years;
-        if (rate >= PROGRESSION_ALERT.axialLengthMmPerYear) {
-          reasons.push(
-            `안축장 ${eye.toUpperCase()} 진행속도 ${rate.toFixed(2)}mm/년 ` +
-              `(임계 ${PROGRESSION_ALERT.axialLengthMmPerYear}mm/년)으로 빠르게 진행 중입니다.`,
-          );
-        }
+    const increase = Math.round((value - prev) * 1000) / 1000;
+    if (
+      years != null &&
+      years >= AXIAL_QUERY.minIntervalYears &&
+      increase >= AXIAL_QUERY.minIncreaseMm
+    ) {
+      const rate = increase / years;
+      if (rate >= AXIAL_QUERY.increaseMmPerYear) {
+        reasons.push(
+          `안축장 ${label} 증가 속도가 ${rate.toFixed(2)}mm/year로 기준(${AXIAL_QUERY.increaseMmPerYear.toFixed(1)}mm/year)을 초과했습니다.`,
+        );
       }
     }
   }
@@ -278,7 +283,12 @@ async function emailAlert(
   // Deep link to the patient record. The email itself carries NO patient
   // identifier (registration number / DOB); the recipient identifies the
   // patient inside EYELOG after logging in, so no personal data travels by mail.
-  const baseUrl = process.env.APP_BASE_URL ?? "https://myopiamanage.org";
+  // `||` (not `??`) so an empty APP_BASE_URL="" falls back too; strip any
+  // trailing slash to avoid a double slash in the link.
+  const baseUrl = (process.env.APP_BASE_URL || "https://myopiamanage.org").replace(
+    /\/+$/,
+    "",
+  );
   const chartUrl = `${baseUrl}/chart/${alert.patientId}`;
   const html = `
     <p>${alert.title}</p>
