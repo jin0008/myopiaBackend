@@ -51,6 +51,7 @@ model hospital {
   patient                 patient[]
   child_hospital_link     child_hospital_link[]
   alert_recipient         alert_recipient[]
+  study_hospital          study_hospital[]
 }
 
 /// Email addresses designated by a hospital admin to receive query (abnormal
@@ -83,6 +84,7 @@ model measurement {
   instrument    instrument @relation(fields: [instrument_id], references: [id], onDelete: NoAction, map: "measurement_instrument_fk")
   patient       patient    @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "measurement_patient_fk")
   user          user?      @relation(fields: [creator_id], references: [id], map: "measurement_user_fk")
+  study_visit   study_visit[]
 }
 
 model normal_user {
@@ -113,6 +115,7 @@ model patient {
   hospital                       hospital                         @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "patient_hospital_fk")
   creator                        user?                            @relation(fields: [creator_id], references: [id], map: "patient_user_fk")
   patient_k                      patient_k[]
+  study_enrollment               study_enrollment[]
   patient_nearwork_activity      patient_nearwork_activity[]
   patient_outdoor_activity       patient_outdoor_activity[]
   patient_parental_myopia_status patient_parental_myopia_status[]
@@ -178,6 +181,8 @@ model user {
   community_comment_like  community_comment_like[]
   user_consent            user_consent[]
   patient_consent         patient_consent[]
+  study_enrollment        study_enrollment[]
+  study_visit             study_visit[]
 }
 
 model user_patient {
@@ -517,4 +522,111 @@ model community_comment_like {
 
   @@id([user_id, comment_id], map: "community_comment_like_pk")
   @@index([comment_id], map: "idx_community_comment_like_comment")
+}
+
+/// A clinical study (임상연구) patients can be enrolled into, e.g.
+/// "LPTAT-OS: 마이오클리어 0.05% PMS". Master list managed by site admins.
+model study {
+  id               String             @id(map: "study_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name             String             @unique(map: "study_unique")
+  code             String?            @db.VarChar
+  description      String?
+  active           Boolean            @default(true)
+  created_at       DateTime           @default(now()) @db.Timestamptz(6)
+  study_hospital   study_hospital[]
+  study_enrollment study_enrollment[]
+}
+
+/// Which hospitals may participate in a given study (admin-designated). A
+/// hospital sees the 연구 button only if it has at least one row here.
+model study_hospital {
+  study_id    String   @db.Uuid
+  hospital_id String   @db.Uuid
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  study       study    @relation(fields: [study_id], references: [id], onDelete: Cascade, map: "study_hospital_study_fk")
+  hospital    hospital @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "study_hospital_hospital_fk")
+
+  @@id([study_id, hospital_id], map: "study_hospital_pk")
+  @@index([hospital_id], map: "idx_study_hospital_hospital")
+}
+
+/// A patient enrolled into a study (연구환자 등록). One row per (study, patient).
+model study_enrollment {
+  id          String        @id(map: "study_enrollment_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  study_id    String        @db.Uuid
+  patient_id  String        @db.Uuid
+  enrolled_by String?       @db.Uuid
+  enrolled_at DateTime      @default(now()) @db.Timestamptz(6)
+  status      String        @default("active")
+  study       study         @relation(fields: [study_id], references: [id], onDelete: Cascade, map: "study_enrollment_study_fk")
+  patient     patient       @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "study_enrollment_patient_fk")
+  enroller    user?         @relation(fields: [enrolled_by], references: [id], map: "study_enrollment_user_fk")
+  study_visit study_visit[]
+
+  @@unique([study_id, patient_id], map: "study_enrollment_unique")
+  @@index([patient_id], map: "idx_study_enrollment_patient")
+}
+
+/// One study-visit data-entry record (방문 1건). Un-entered numeric/text fields
+/// stay NULL and render as "N.D." in the UI. Axial length is NOT stored here —
+/// it is written back to the shared `measurement` table and referenced via
+/// measurement_id so it also appears on the main growth chart.
+model study_visit {
+  id            String   @id(map: "study_visit_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  enrollment_id String   @db.Uuid
+  visit_date    DateTime @db.Date
+  created_by    String?  @db.Uuid
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+
+  // 1) Snellen visual acuity (0.0–1.5)
+  va_od Float? @db.Real
+  va_os Float? @db.Real
+
+  // 2) Best corrected visual acuity (0.0–1.5)
+  bcva_od Float? @db.Real
+  bcva_os Float? @db.Real
+
+  // 3) Refraction (Auto/MR/CR) — snapshot, includes axis
+  refraction_method refraction_method?
+  ref_od_sph        Float?             @db.Real
+  ref_od_cyl        Float?             @db.Real
+  ref_od_axis       Int?
+  ref_os_sph        Float?             @db.Real
+  ref_os_cyl        Float?             @db.Real
+  ref_os_axis       Int?
+
+  // 4) Slit lamp (전안부) — normal/abnormal + free-text finding per eye
+  slitlamp_od_normal  Boolean?
+  slitlamp_od_finding String?
+  slitlamp_os_normal  Boolean?
+  slitlamp_os_finding String?
+
+  // 5) Intraocular pressure (mmHg, 0.0–50.0)
+  iop_od Float? @db.Real
+  iop_os Float? @db.Real
+
+  // 6) Accommodation (Diopters, 0.0–20.0)
+  accom_od Float? @db.Real
+  accom_os Float? @db.Real
+
+  // 7) Axial length — linked to the shared measurement row (write-back)
+  measurement_id String? @db.Uuid
+
+  // 8) Concomitant medication (free text)
+  concomitant_meds String?
+
+  // 9) Adverse event report (free text)
+  adverse_event String?
+
+  enrollment  study_enrollment @relation(fields: [enrollment_id], references: [id], onDelete: Cascade, map: "study_visit_enrollment_fk")
+  creator     user?            @relation(fields: [created_by], references: [id], map: "study_visit_user_fk")
+  measurement measurement?     @relation(fields: [measurement_id], references: [id], onDelete: SetNull, map: "study_visit_measurement_fk")
+
+  @@index([enrollment_id, visit_date(sort: Desc)], map: "idx_study_visit_enrollment")
+}
+
+enum refraction_method {
+  Auto
+  MR
+  CR
 }
