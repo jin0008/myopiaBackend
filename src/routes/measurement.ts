@@ -20,8 +20,8 @@ const postBodyType = zod.object({
   patient_id: zod.string().uuid(),
   date: zod.string().date(),
   instrument_id: zod.string().uuid(),
-  od: zod.number().gte(15).lte(35),
-  os: zod.number().gte(15).lte(35),
+  od: zod.number().gte(15).lte(40),
+  os: zod.number().gte(15).lte(40),
 });
 router.post(
   "/",
