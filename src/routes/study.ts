@@ -343,7 +343,21 @@ const visitSchema = zod.object({
       od: optionalNum(15, 35),
       os: optionalNum(15, 35),
     })
-    .nullish(),
+    .nullish()
+    .superRefine((val, ctx) => {
+      if (!val) return;
+      // An AL value can't be persisted without a target: either an existing
+      // measurement to update, or an instrument to create a new one. Reject
+      // rather than silently dropping the entered value.
+      const hasValue = val.od != null || val.os != null;
+      if (hasValue && !val.measurement_id && !val.instrument_id) {
+        ctx.addIssue({
+          code: zod.ZodIssueCode.custom,
+          message: "instrument_id is required to create a new measurement",
+          path: ["instrument_id"],
+        });
+      }
+    }),
   // 8) Concomitant meds & 9) Adverse event
   concomitant_meds: zod.string().nullish(),
   adverse_event: zod.string().nullish(),
@@ -544,29 +558,33 @@ router.patch(
         const visit = await tx.study_visit.update({
           where: { id: visitId },
           data: {
+            // Pass values as-is: an omitted (undefined) field is skipped by
+            // Prisma so the existing value is kept, while an explicit null
+            // clears it (N.D.). Using `?? null` here would wipe every field a
+            // partial PATCH left out.
             visit_date: new Date(visitFields.visit_date),
-            va_od: visitFields.va_od ?? null,
-            va_os: visitFields.va_os ?? null,
-            bcva_od: visitFields.bcva_od ?? null,
-            bcva_os: visitFields.bcva_os ?? null,
-            refraction_method: visitFields.refraction_method ?? null,
-            ref_od_sph: visitFields.ref_od_sph ?? null,
-            ref_od_cyl: visitFields.ref_od_cyl ?? null,
-            ref_od_axis: visitFields.ref_od_axis ?? null,
-            ref_os_sph: visitFields.ref_os_sph ?? null,
-            ref_os_cyl: visitFields.ref_os_cyl ?? null,
-            ref_os_axis: visitFields.ref_os_axis ?? null,
-            slitlamp_od_normal: visitFields.slitlamp_od_normal ?? null,
-            slitlamp_od_finding: visitFields.slitlamp_od_finding ?? null,
-            slitlamp_os_normal: visitFields.slitlamp_os_normal ?? null,
-            slitlamp_os_finding: visitFields.slitlamp_os_finding ?? null,
-            iop_od: visitFields.iop_od ?? null,
-            iop_os: visitFields.iop_os ?? null,
-            accom_od: visitFields.accom_od ?? null,
-            accom_os: visitFields.accom_os ?? null,
+            va_od: visitFields.va_od,
+            va_os: visitFields.va_os,
+            bcva_od: visitFields.bcva_od,
+            bcva_os: visitFields.bcva_os,
+            refraction_method: visitFields.refraction_method,
+            ref_od_sph: visitFields.ref_od_sph,
+            ref_od_cyl: visitFields.ref_od_cyl,
+            ref_od_axis: visitFields.ref_od_axis,
+            ref_os_sph: visitFields.ref_os_sph,
+            ref_os_cyl: visitFields.ref_os_cyl,
+            ref_os_axis: visitFields.ref_os_axis,
+            slitlamp_od_normal: visitFields.slitlamp_od_normal,
+            slitlamp_od_finding: visitFields.slitlamp_od_finding,
+            slitlamp_os_normal: visitFields.slitlamp_os_normal,
+            slitlamp_os_finding: visitFields.slitlamp_os_finding,
+            iop_od: visitFields.iop_od,
+            iop_os: visitFields.iop_os,
+            accom_od: visitFields.accom_od,
+            accom_os: visitFields.accom_os,
             measurement_id: measurementId,
-            concomitant_meds: visitFields.concomitant_meds ?? null,
-            adverse_event: visitFields.adverse_event ?? null,
+            concomitant_meds: visitFields.concomitant_meds,
+            adverse_event: visitFields.adverse_event,
           },
         });
 
