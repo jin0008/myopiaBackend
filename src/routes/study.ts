@@ -252,6 +252,18 @@ router.post(
   },
 );
 
+/** Whether a measurement exists and belongs to the given patient. */
+async function measurementBelongsToPatient(
+  measurementId: string,
+  patientId: string,
+): Promise<boolean> {
+  const m = await prisma.measurement.findUnique({
+    where: { id: measurementId },
+    select: { patient_id: true },
+  });
+  return m != null && m.patient_id === patientId;
+}
+
 /** Resolve an enrollment and confirm the caller's hospital owns the patient. */
 async function authorizeEnrollment(enrollmentId: string, hospitalId: string) {
   const enrollment = await prisma.study_enrollment.findUnique({
@@ -357,6 +369,18 @@ router.post(
     const patientId = enrollment.patient.id;
     const userId = req.authSession!.user_id;
     const ctx = auditContextFromRequest(req);
+
+    // Guard against IDOR: a client-supplied measurement_id must belong to this
+    // patient, otherwise another patient's axial length could be overwritten.
+    if (
+      axial_length?.measurement_id &&
+      !(await measurementBelongsToPatient(axial_length.measurement_id, patientId))
+    ) {
+      res.status(400).json({
+        message: "measurement not found or does not belong to this patient",
+      });
+      return;
+    }
 
     try {
       const created = await prisma.$transaction(async (tx) => {
@@ -474,6 +498,18 @@ router.patch(
     const patientId = enrollment.patient.id;
     const userId = req.authSession!.user_id;
     const ctx = auditContextFromRequest(req);
+
+    // Guard against IDOR (see POST): a client-supplied measurement_id must
+    // belong to this patient.
+    if (
+      axial_length?.measurement_id &&
+      !(await measurementBelongsToPatient(axial_length.measurement_id, patientId))
+    ) {
+      res.status(400).json({
+        message: "measurement not found or does not belong to this patient",
+      });
+      return;
+    }
 
     try {
       const updated = await prisma.$transaction(async (tx) => {
