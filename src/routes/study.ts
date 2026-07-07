@@ -56,17 +56,15 @@ const studyBodySchema = zod.object({
 });
 
 // GET /study/admin — all studies with participating-hospital counts.
-router.get("/admin", siteAdminRequired, async (req, res) => {
+// Not audit-logged: this list is polled by the admin UI (refetch on focus),
+// so logging it floods the trail with meaningless site_admin READ rows. The
+// meaningful "열람" — a professional viewing a patient's study data — is logged
+// on GET /study/enrollment/:id instead.
+router.get("/admin", siteAdminRequired, async (_req, res) => {
   const studies = await prisma.study.findMany({
     orderBy: { created_at: "asc" },
     include: { _count: { select: { study_hospital: true } } },
   });
-  // 열람(READ) log — best-effort so it never blocks the response.
-  adminAuditContext(req)
-    .then((ctx) =>
-      writeAuditLog({ ...ctx, tableName: "study", action: "READ" }),
-    )
-    .catch(console.error);
   res.json(studies);
 });
 
@@ -179,22 +177,13 @@ router.delete("/admin/:studyId", siteAdminRequired, async (req, res) => {
 });
 
 // GET /study/admin/:studyId/hospital — hospital ids assigned to this study.
+// Not audit-logged (config lookup, polled by the admin UI).
 router.get("/admin/:studyId/hospital", siteAdminRequired, async (req, res) => {
   const studyId = String(req.params.studyId);
   const rows = await prisma.study_hospital.findMany({
     where: { study_id: studyId },
     select: { hospital_id: true },
   });
-  adminAuditContext(req)
-    .then((ctx) =>
-      writeAuditLog({
-        ...ctx,
-        tableName: "study_hospital",
-        recordId: studyId,
-        action: "READ",
-      }),
-    )
-    .catch(console.error);
   res.json(rows.map((r) => r.hospital_id));
 });
 
@@ -402,6 +391,17 @@ router.get(
       where: { enrollment_id: enrollment.id },
       orderBy: { visit_date: "desc" },
     });
+    // 열람(READ) log: a professional accessed this patient's study data. This
+    // is the compliance-relevant view (unlike the admin config lists), and the
+    // client caches it (staleTime) so a refetch on focus doesn't re-log.
+    writeAuditLog({
+      ...auditContextFromRequest(req),
+      tableName: "study_enrollment",
+      recordId: enrollment.id,
+      action: "READ",
+      hospitalId,
+      patientId: enrollment.patient.id,
+    }).catch(console.error);
     res.json({
       id: enrollment.id,
       study: enrollment.study,
@@ -746,6 +746,65 @@ router.patch(
           hospitalId,
           patientId,
           newValue: data,
+        },
+        error,
+      );
+      throw error;
+    }
+  },
+);
+
+// DELETE /study/enrollment/:enrollmentId/visit/:visitId — delete a visit record.
+// The linked axial-length `measurement` is intentionally kept (it belongs to
+// the main growth chart, not the study visit).
+router.delete(
+  "/enrollment/:enrollmentId/visit/:visitId",
+  approvedProfessionalRequired,
+  async (req, res) => {
+    const hospitalId = req.healthcare_professional!.hospital_id;
+    const enrollment = await authorizeEnrollment(
+      String(req.params.enrollmentId),
+      hospitalId,
+    );
+    if (!enrollment) {
+      res.sendStatus(404);
+      return;
+    }
+    const visitId = String(req.params.visitId);
+    const existing = await prisma.study_visit.findFirst({
+      where: { id: visitId, enrollment_id: enrollment.id },
+    });
+    if (!existing) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const patientId = enrollment.patient.id;
+    const ctx = auditContextFromRequest(req);
+    try {
+      await prisma.$transaction(async (tx) => {
+        await tx.study_visit.delete({ where: { id: visitId } });
+        await writeAuditLog({
+          ...ctx,
+          tableName: "study_visit",
+          recordId: visitId,
+          action: "DELETE",
+          hospitalId,
+          patientId,
+          oldValue: existing,
+          client: tx,
+        });
+      });
+      res.sendStatus(204);
+    } catch (error) {
+      await writeAuditFailure(
+        {
+          ...ctx,
+          tableName: "study_visit",
+          recordId: visitId,
+          action: "DELETE",
+          hospitalId,
+          patientId,
         },
         error,
       );
