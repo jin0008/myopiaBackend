@@ -390,9 +390,9 @@ router.post(
       axial_length?.measurement_id &&
       !(await measurementBelongsToPatient(axial_length.measurement_id, patientId))
     ) {
-      res.status(400).json({
-        message: "measurement not found or does not belong to this patient",
-      });
+      // 403 (not 400/404) to match the codebase's authz-failure convention and
+      // avoid disclosing whether the measurement id exists.
+      res.sendStatus(403);
       return;
     }
 
@@ -519,9 +519,9 @@ router.patch(
       axial_length?.measurement_id &&
       !(await measurementBelongsToPatient(axial_length.measurement_id, patientId))
     ) {
-      res.status(400).json({
-        message: "measurement not found or does not belong to this patient",
-      });
+      // 403 (not 400/404) to match the codebase's authz-failure convention and
+      // avoid disclosing whether the measurement id exists.
+      res.sendStatus(403);
       return;
     }
 
