@@ -340,8 +340,8 @@ const visitSchema = zod.object({
     .object({
       measurement_id: zod.string().uuid().nullish(),
       instrument_id: zod.string().uuid().nullish(),
-      od: optionalNum(15, 35),
-      os: optionalNum(15, 35),
+      od: optionalNum(15, 40),
+      os: optionalNum(15, 40),
     })
     .nullish(),
   // NOTE: "an AL value needs a measurement_id or instrument_id target" is
