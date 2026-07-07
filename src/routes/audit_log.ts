@@ -39,7 +39,16 @@ function buildWhere(
   if (filters.hospital_id) where.hospital_id = filters.hospital_id;
   if (filters.actor_id) where.actor_id = filters.actor_id;
   if (filters.patient_id) where.patient_id = filters.patient_id;
-  if (filters.table_name) where.table_name = filters.table_name;
+  if (filters.table_name) {
+    // Accept a comma-separated list so callers can pull several tables at once
+    // (e.g. all study-related tables). A single name still matches exactly.
+    const names = filters.table_name
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (names.length > 1) where.table_name = { in: names };
+    else if (names.length === 1) where.table_name = names[0];
+  }
   if (filters.action) where.action = filters.action;
   if (filters.status) where.status = filters.status;
 
