@@ -16,6 +16,35 @@ import {
 
 const router = express.Router();
 
+/**
+ * Audit context for site-admin routes. `siteAdminRequired` doesn't populate
+ * req.healthcare_professional, so resolve the actor's name/role from the DB
+ * (falling back to the user's email) so study logs carry the same actor detail
+ * as the rest of the audit trail.
+ */
+async function adminAuditContext(req: express.Request) {
+  const base = auditContextFromRequest(req);
+  const userId = req.authSession?.user_id;
+  if (!userId) return base;
+  const hp = await prisma.healthcare_professional.findUnique({
+    where: { user_id: userId },
+    select: { name: true, role: true, hospital_id: true },
+  });
+  if (hp) {
+    return {
+      ...base,
+      actorName: hp.name,
+      actorRole: hp.role,
+      actorHospitalId: hp.hospital_id,
+    };
+  }
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { email: true },
+  });
+  return { ...base, actorName: user?.email ?? null, actorRole: "site_admin" };
+}
+
 /* --------------------------------------------------------------------------
  * Site-admin: study master list + per-study hospital assignment
  * ------------------------------------------------------------------------ */
@@ -27,11 +56,17 @@ const studyBodySchema = zod.object({
 });
 
 // GET /study/admin — all studies with participating-hospital counts.
-router.get("/admin", siteAdminRequired, async (_req, res) => {
+router.get("/admin", siteAdminRequired, async (req, res) => {
   const studies = await prisma.study.findMany({
     orderBy: { created_at: "asc" },
     include: { _count: { select: { study_hospital: true } } },
   });
+  // 열람(READ) log — best-effort so it never blocks the response.
+  adminAuditContext(req)
+    .then((ctx) =>
+      writeAuditLog({ ...ctx, tableName: "study", action: "READ" }),
+    )
+    .catch(console.error);
   res.json(studies);
 });
 
@@ -44,6 +79,13 @@ router.post(
     const data = req.body as zod.infer<typeof studyBodySchema>;
     try {
       const created = await prisma.study.create({ data });
+      await writeAuditLog({
+        ...(await adminAuditContext(req)),
+        tableName: "study",
+        recordId: created.id,
+        action: "CREATE",
+        newValue: created,
+      });
       res.status(201).json(created);
     } catch (error) {
       if (
@@ -69,10 +111,20 @@ router.patch(
   validateRequestBody(studyPatchSchema),
   async (req, res) => {
     const data = req.body as zod.infer<typeof studyPatchSchema>;
+    const studyId = String(req.params.studyId);
     try {
+      const oldValue = await prisma.study.findUnique({ where: { id: studyId } });
       const updated = await prisma.study.update({
-        where: { id: String(req.params.studyId) },
+        where: { id: studyId },
         data,
+      });
+      await writeAuditLog({
+        ...(await adminAuditContext(req)),
+        tableName: "study",
+        recordId: updated.id,
+        action: "UPDATE",
+        oldValue,
+        newValue: updated,
       });
       res.json(updated);
     } catch (error) {
@@ -95,12 +147,54 @@ router.patch(
   },
 );
 
+// DELETE /study/admin/:studyId — delete a study (cascades to its hospital
+// assignments, enrolments and visits).
+router.delete("/admin/:studyId", siteAdminRequired, async (req, res) => {
+  const studyId = String(req.params.studyId);
+  const ctx = await adminAuditContext(req);
+  try {
+    const deleted = await prisma.study.delete({ where: { id: studyId } });
+    await writeAuditLog({
+      ...ctx,
+      tableName: "study",
+      recordId: studyId,
+      action: "DELETE",
+      oldValue: deleted,
+    });
+    res.sendStatus(204);
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2025"
+    ) {
+      res.sendStatus(404);
+      return;
+    }
+    await writeAuditFailure(
+      { ...ctx, tableName: "study", recordId: studyId, action: "DELETE" },
+      error,
+    );
+    throw error;
+  }
+});
+
 // GET /study/admin/:studyId/hospital — hospital ids assigned to this study.
 router.get("/admin/:studyId/hospital", siteAdminRequired, async (req, res) => {
+  const studyId = String(req.params.studyId);
   const rows = await prisma.study_hospital.findMany({
-    where: { study_id: String(req.params.studyId) },
+    where: { study_id: studyId },
     select: { hospital_id: true },
   });
+  adminAuditContext(req)
+    .then((ctx) =>
+      writeAuditLog({
+        ...ctx,
+        tableName: "study_hospital",
+        recordId: studyId,
+        action: "READ",
+      }),
+    )
+    .catch(console.error);
   res.json(rows.map((r) => r.hospital_id));
 });
 
@@ -124,6 +218,11 @@ router.put(
       return;
     }
 
+    const oldRows = await prisma.study_hospital.findMany({
+      where: { study_id: studyId },
+      select: { hospital_id: true },
+    });
+
     await prisma.$transaction([
       prisma.study_hospital.deleteMany({ where: { study_id: studyId } }),
       prisma.study_hospital.createMany({
@@ -134,6 +233,14 @@ router.put(
         skipDuplicates: true,
       }),
     ]);
+    await writeAuditLog({
+      ...(await adminAuditContext(req)),
+      tableName: "study_hospital",
+      recordId: studyId,
+      action: "UPDATE",
+      oldValue: { hospital_ids: oldRows.map((r) => r.hospital_id) },
+      newValue: { hospital_ids },
+    });
     res.sendStatus(204);
   },
 );
