@@ -343,21 +343,10 @@ const visitSchema = zod.object({
       od: optionalNum(15, 35),
       os: optionalNum(15, 35),
     })
-    .nullish()
-    .superRefine((val, ctx) => {
-      if (!val) return;
-      // An AL value can't be persisted without a target: either an existing
-      // measurement to update, or an instrument to create a new one. Reject
-      // rather than silently dropping the entered value.
-      const hasValue = val.od != null || val.os != null;
-      if (hasValue && !val.measurement_id && !val.instrument_id) {
-        ctx.addIssue({
-          code: zod.ZodIssueCode.custom,
-          message: "instrument_id is required to create a new measurement",
-          path: ["instrument_id"],
-        });
-      }
-    }),
+    .nullish(),
+  // NOTE: "an AL value needs a measurement_id or instrument_id target" is
+  // validated per-handler (POST vs PATCH), not here — PATCH may rely on the
+  // visit's existing measurement, which this shared schema can't see.
   // 8) Concomitant meds & 9) Adverse event
   concomitant_meds: zod.string().nullish(),
   adverse_event: zod.string().nullish(),
@@ -393,6 +382,20 @@ router.post(
       // 403 (not 400/404) to match the codebase's authz-failure convention and
       // avoid disclosing whether the measurement id exists.
       res.sendStatus(403);
+      return;
+    }
+
+    // An entered AL value needs a target: an existing measurement to update or
+    // an instrument to create a new one. Reject rather than silently drop it.
+    if (
+      axial_length &&
+      (axial_length.od != null || axial_length.os != null) &&
+      !axial_length.measurement_id &&
+      !axial_length.instrument_id
+    ) {
+      res.status(400).json({
+        message: "instrument_id is required to record axial length",
+      });
       return;
     }
 
@@ -525,12 +528,35 @@ router.patch(
       return;
     }
 
+    // An entered AL value needs a target. Unlike POST, an existing linked
+    // measurement counts (the client may send just od/os to update it).
+    if (
+      axial_length &&
+      (axial_length.od != null || axial_length.os != null) &&
+      !axial_length.measurement_id &&
+      !existing.measurement_id &&
+      !axial_length.instrument_id
+    ) {
+      res.status(400).json({
+        message: "instrument_id is required to record axial length",
+      });
+      return;
+    }
+
     try {
       const updated = await prisma.$transaction(async (tx) => {
-        // Axial length write-back: prefer an explicitly linked measurement,
-        // else the one this visit already points at.
-        let measurementId: string | null =
-          axial_length?.measurement_id ?? existing.measurement_id ?? null;
+        // Resolve which measurement this visit links to. Distinguish an omitted
+        // field (undefined → keep the existing link) from an explicit null
+        // (unlink); a plain `??` chain would make unlinking impossible.
+        let measurementId: string | null = existing.measurement_id;
+        if (axial_length === null) {
+          measurementId = null;
+        } else if (
+          axial_length !== undefined &&
+          axial_length.measurement_id !== undefined
+        ) {
+          measurementId = axial_length.measurement_id;
+        }
         if (
           axial_length &&
           (axial_length.od != null || axial_length.os != null)
