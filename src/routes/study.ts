@@ -344,6 +344,9 @@ const visitSchema = zod.object({
       os: optionalNum(15, 35),
     })
     .nullish(),
+  // NOTE: "an AL value needs a measurement_id or instrument_id target" is
+  // validated per-handler (POST vs PATCH), not here — PATCH may rely on the
+  // visit's existing measurement, which this shared schema can't see.
   // 8) Concomitant meds & 9) Adverse event
   concomitant_meds: zod.string().nullish(),
   adverse_event: zod.string().nullish(),
@@ -376,8 +379,22 @@ router.post(
       axial_length?.measurement_id &&
       !(await measurementBelongsToPatient(axial_length.measurement_id, patientId))
     ) {
+      // 403 (not 400/404) to match the codebase's authz-failure convention and
+      // avoid disclosing whether the measurement id exists.
+      res.sendStatus(403);
+      return;
+    }
+
+    // An entered AL value needs a target: an existing measurement to update or
+    // an instrument to create a new one. Reject rather than silently drop it.
+    if (
+      axial_length &&
+      (axial_length.od != null || axial_length.os != null) &&
+      !axial_length.measurement_id &&
+      !axial_length.instrument_id
+    ) {
       res.status(400).json({
-        message: "measurement not found or does not belong to this patient",
+        message: "instrument_id is required to record axial length",
       });
       return;
     }
@@ -505,18 +522,41 @@ router.patch(
       axial_length?.measurement_id &&
       !(await measurementBelongsToPatient(axial_length.measurement_id, patientId))
     ) {
+      // 403 (not 400/404) to match the codebase's authz-failure convention and
+      // avoid disclosing whether the measurement id exists.
+      res.sendStatus(403);
+      return;
+    }
+
+    // An entered AL value needs a target. Unlike POST, an existing linked
+    // measurement counts (the client may send just od/os to update it).
+    if (
+      axial_length &&
+      (axial_length.od != null || axial_length.os != null) &&
+      !axial_length.measurement_id &&
+      !existing.measurement_id &&
+      !axial_length.instrument_id
+    ) {
       res.status(400).json({
-        message: "measurement not found or does not belong to this patient",
+        message: "instrument_id is required to record axial length",
       });
       return;
     }
 
     try {
       const updated = await prisma.$transaction(async (tx) => {
-        // Axial length write-back: prefer an explicitly linked measurement,
-        // else the one this visit already points at.
-        let measurementId: string | null =
-          axial_length?.measurement_id ?? existing.measurement_id ?? null;
+        // Resolve which measurement this visit links to. Distinguish an omitted
+        // field (undefined → keep the existing link) from an explicit null
+        // (unlink); a plain `??` chain would make unlinking impossible.
+        let measurementId: string | null = existing.measurement_id;
+        if (axial_length === null) {
+          measurementId = null;
+        } else if (
+          axial_length !== undefined &&
+          axial_length.measurement_id !== undefined
+        ) {
+          measurementId = axial_length.measurement_id;
+        }
         if (
           axial_length &&
           (axial_length.od != null || axial_length.os != null)
@@ -544,29 +584,33 @@ router.patch(
         const visit = await tx.study_visit.update({
           where: { id: visitId },
           data: {
+            // Pass values as-is: an omitted (undefined) field is skipped by
+            // Prisma so the existing value is kept, while an explicit null
+            // clears it (N.D.). Using `?? null` here would wipe every field a
+            // partial PATCH left out.
             visit_date: new Date(visitFields.visit_date),
-            va_od: visitFields.va_od ?? null,
-            va_os: visitFields.va_os ?? null,
-            bcva_od: visitFields.bcva_od ?? null,
-            bcva_os: visitFields.bcva_os ?? null,
-            refraction_method: visitFields.refraction_method ?? null,
-            ref_od_sph: visitFields.ref_od_sph ?? null,
-            ref_od_cyl: visitFields.ref_od_cyl ?? null,
-            ref_od_axis: visitFields.ref_od_axis ?? null,
-            ref_os_sph: visitFields.ref_os_sph ?? null,
-            ref_os_cyl: visitFields.ref_os_cyl ?? null,
-            ref_os_axis: visitFields.ref_os_axis ?? null,
-            slitlamp_od_normal: visitFields.slitlamp_od_normal ?? null,
-            slitlamp_od_finding: visitFields.slitlamp_od_finding ?? null,
-            slitlamp_os_normal: visitFields.slitlamp_os_normal ?? null,
-            slitlamp_os_finding: visitFields.slitlamp_os_finding ?? null,
-            iop_od: visitFields.iop_od ?? null,
-            iop_os: visitFields.iop_os ?? null,
-            accom_od: visitFields.accom_od ?? null,
-            accom_os: visitFields.accom_os ?? null,
+            va_od: visitFields.va_od,
+            va_os: visitFields.va_os,
+            bcva_od: visitFields.bcva_od,
+            bcva_os: visitFields.bcva_os,
+            refraction_method: visitFields.refraction_method,
+            ref_od_sph: visitFields.ref_od_sph,
+            ref_od_cyl: visitFields.ref_od_cyl,
+            ref_od_axis: visitFields.ref_od_axis,
+            ref_os_sph: visitFields.ref_os_sph,
+            ref_os_cyl: visitFields.ref_os_cyl,
+            ref_os_axis: visitFields.ref_os_axis,
+            slitlamp_od_normal: visitFields.slitlamp_od_normal,
+            slitlamp_od_finding: visitFields.slitlamp_od_finding,
+            slitlamp_os_normal: visitFields.slitlamp_os_normal,
+            slitlamp_os_finding: visitFields.slitlamp_os_finding,
+            iop_od: visitFields.iop_od,
+            iop_os: visitFields.iop_os,
+            accom_od: visitFields.accom_od,
+            accom_os: visitFields.accom_os,
             measurement_id: measurementId,
-            concomitant_meds: visitFields.concomitant_meds ?? null,
-            adverse_event: visitFields.adverse_event ?? null,
+            concomitant_meds: visitFields.concomitant_meds,
+            adverse_event: visitFields.adverse_event,
           },
         });
 
