@@ -445,4 +445,126 @@ router.post(
   },
 );
 
+// PATCH /study/enrollment/:enrollmentId/visit/:visitId — edit an existing visit.
+router.patch(
+  "/enrollment/:enrollmentId/visit/:visitId",
+  approvedProfessionalRequired,
+  validateRequestBody(visitSchema),
+  async (req, res) => {
+    const hospitalId = req.healthcare_professional!.hospital_id;
+    const enrollment = await authorizeEnrollment(
+      String(req.params.enrollmentId),
+      hospitalId,
+    );
+    if (!enrollment) {
+      res.sendStatus(404);
+      return;
+    }
+    const visitId = String(req.params.visitId);
+    const existing = await prisma.study_visit.findFirst({
+      where: { id: visitId, enrollment_id: enrollment.id },
+    });
+    if (!existing) {
+      res.sendStatus(404);
+      return;
+    }
+
+    const data = req.body as zod.infer<typeof visitSchema>;
+    const { axial_length, ...visitFields } = data;
+    const patientId = enrollment.patient.id;
+    const userId = req.authSession!.user_id;
+    const ctx = auditContextFromRequest(req);
+
+    try {
+      const updated = await prisma.$transaction(async (tx) => {
+        // Axial length write-back: prefer an explicitly linked measurement,
+        // else the one this visit already points at.
+        let measurementId: string | null =
+          axial_length?.measurement_id ?? existing.measurement_id ?? null;
+        if (
+          axial_length &&
+          (axial_length.od != null || axial_length.os != null)
+        ) {
+          if (measurementId) {
+            await tx.measurement.update({
+              where: { id: measurementId },
+              data: { od: axial_length.od, os: axial_length.os },
+            });
+          } else if (axial_length.instrument_id) {
+            const m = await tx.measurement.create({
+              data: {
+                patient_id: patientId,
+                date: new Date(visitFields.visit_date),
+                instrument_id: axial_length.instrument_id,
+                od: axial_length.od ?? null,
+                os: axial_length.os ?? null,
+                creator_id: userId,
+              },
+            });
+            measurementId = m.id;
+          }
+        }
+
+        const visit = await tx.study_visit.update({
+          where: { id: visitId },
+          data: {
+            visit_date: new Date(visitFields.visit_date),
+            va_od: visitFields.va_od ?? null,
+            va_os: visitFields.va_os ?? null,
+            bcva_od: visitFields.bcva_od ?? null,
+            bcva_os: visitFields.bcva_os ?? null,
+            refraction_method: visitFields.refraction_method ?? null,
+            ref_od_sph: visitFields.ref_od_sph ?? null,
+            ref_od_cyl: visitFields.ref_od_cyl ?? null,
+            ref_od_axis: visitFields.ref_od_axis ?? null,
+            ref_os_sph: visitFields.ref_os_sph ?? null,
+            ref_os_cyl: visitFields.ref_os_cyl ?? null,
+            ref_os_axis: visitFields.ref_os_axis ?? null,
+            slitlamp_od_normal: visitFields.slitlamp_od_normal ?? null,
+            slitlamp_od_finding: visitFields.slitlamp_od_finding ?? null,
+            slitlamp_os_normal: visitFields.slitlamp_os_normal ?? null,
+            slitlamp_os_finding: visitFields.slitlamp_os_finding ?? null,
+            iop_od: visitFields.iop_od ?? null,
+            iop_os: visitFields.iop_os ?? null,
+            accom_od: visitFields.accom_od ?? null,
+            accom_os: visitFields.accom_os ?? null,
+            measurement_id: measurementId,
+            concomitant_meds: visitFields.concomitant_meds ?? null,
+            adverse_event: visitFields.adverse_event ?? null,
+          },
+        });
+
+        await writeAuditLog({
+          ...ctx,
+          tableName: "study_visit",
+          recordId: visit.id,
+          action: "UPDATE",
+          hospitalId,
+          patientId,
+          oldValue: existing,
+          newValue: visit,
+          client: tx,
+        });
+        return visit;
+      });
+
+      res.json(updated);
+    } catch (error) {
+      await writeAuditFailure(
+        {
+          ...ctx,
+          tableName: "study_visit",
+          recordId: visitId,
+          action: "UPDATE",
+          hospitalId,
+          patientId,
+          newValue: data,
+        },
+        error,
+      );
+      throw error;
+    }
+  },
+);
+
 export default router;
