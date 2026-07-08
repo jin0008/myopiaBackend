@@ -279,6 +279,18 @@ async function emailAlert(
   const recipients = await getHospitalAlertRecipients(hospitalId);
   if (recipients.length === 0) return;
 
+  // Study subject numbers are de-identified (contain no registration number or
+  // DOB), so — unlike the patient's real identity — they can safely travel by
+  // mail and let the recipient recognise which subject this is.
+  const enrollments = await prisma.study_enrollment.findMany({
+    where: { patient_id: alert.patientId, subject_number: { not: null } },
+    select: { subject_number: true, study: { select: { name: true } } },
+    orderBy: { enrolled_at: "asc" },
+  });
+  const subjectLines = enrollments.map(
+    (e) => `${e.subject_number} (${e.study.name})`,
+  );
+
   const measuredDate = alert.date.toISOString().slice(0, 10);
   // Deep link to the patient record. The email itself carries NO patient
   // identifier (registration number / DOB); the recipient identifies the
@@ -295,6 +307,11 @@ async function emailAlert(
     <p>확인이 필요한 측정값이 입력되었습니다.</p>
     <ul>
       <li>측정일: ${measuredDate}</li>
+      ${
+        subjectLines.length > 0
+          ? `<li>연구번호: ${subjectLines.join(", ")}</li>`
+          : ""
+      }
     </ul>
     <p>아래 항목을 확인해주세요.</p>
     <ul>
