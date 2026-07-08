@@ -278,6 +278,76 @@ const enrollSchema = zod.object({
   patient_id: zod.string().uuid(),
 });
 
+/** Whether a P2002 is a subject-number collision (vs. already-enrolled). */
+function isSubjectNumberConflict(
+  e: Prisma.PrismaClientKnownRequestError,
+): boolean {
+  const target = e.meta?.target;
+  const s = Array.isArray(target) ? target.join(",") : String(target ?? "");
+  return s.includes("subject");
+}
+
+/**
+ * Creates an enrollment with an auto-assigned de-identified subject number
+ * ({studyCode}-{hospitalCode}-{seq}), numbered per (study, hospital) so alert
+ * emails can reference a patient without any real identifier. The sequence comes
+ * from a count outside the unique constraint, so a concurrent enrollment can
+ * collide — recompute and retry a few times before giving up.
+ */
+async function enrollWithSubjectNumber(params: {
+  study_id: string;
+  patient_id: string;
+  enrolled_by: string;
+  hospitalId: string;
+  studyCode: string | null;
+  hospitalCode: string;
+}) {
+  const codePart = (params.studyCode || "S").toUpperCase().replace(/\s+/g, "");
+  const sitePart = params.hospitalCode.toUpperCase().replace(/\s+/g, "");
+  const prefix = `${codePart}-${sitePart}-`;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    // Take the max existing sequence for this (study, hospital), not the row
+    // count: a deleted enrollment leaves a gap, and counting would re-issue an
+    // already-used number and collide forever. subject_number is zero-padded so
+    // a descending string sort yields the highest sequence.
+    const latest = await prisma.study_enrollment.findFirst({
+      where: {
+        study_id: params.study_id,
+        patient: { hospital_id: params.hospitalId },
+        subject_number: { startsWith: prefix },
+      },
+      orderBy: { subject_number: "desc" },
+      select: { subject_number: true },
+    });
+    let nextSeq = 1;
+    if (latest?.subject_number) {
+      const parsed = parseInt(latest.subject_number.split("-").pop() ?? "", 10);
+      if (!Number.isNaN(parsed)) nextSeq = parsed + 1;
+    }
+    const subject_number = `${prefix}${String(nextSeq).padStart(3, "0")}`;
+    try {
+      return await prisma.study_enrollment.create({
+        data: {
+          study_id: params.study_id,
+          patient_id: params.patient_id,
+          enrolled_by: params.enrolled_by,
+          subject_number,
+        },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002" &&
+        isSubjectNumberConflict(error)
+      ) {
+        continue; // subject-number race — recompute the sequence and retry
+      }
+      throw error;
+    }
+  }
+  throw new Error("failed to assign subject number after retries");
+}
+
 // POST /study/enrollment — enroll a patient into a study.
 router.post(
   "/enrollment",
@@ -298,21 +368,26 @@ router.post(
         active: true,
         study_hospital: { some: { hospital_id: hospitalId } },
       },
-      select: { id: true },
+      select: { id: true, code: true },
     });
     if (!allowed) {
       res.status(403).json({ message: "hospital not permitted for this study" });
       return;
     }
+    const hospital = await prisma.hospital.findUnique({
+      where: { id: hospitalId },
+      select: { code: true },
+    });
 
     const ctx = auditContextFromRequest(req);
     try {
-      const created = await prisma.study_enrollment.create({
-        data: {
-          study_id,
-          patient_id,
-          enrolled_by: req.authSession!.user_id,
-        },
+      const created = await enrollWithSubjectNumber({
+        study_id,
+        patient_id,
+        enrolled_by: req.authSession!.user_id,
+        hospitalId,
+        studyCode: allowed.code,
+        hospitalCode: hospital?.code ?? "H",
       });
       await writeAuditLog({
         ...ctx,

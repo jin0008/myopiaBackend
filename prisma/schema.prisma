@@ -558,12 +558,17 @@ model study_enrollment {
   enrolled_by String?       @db.Uuid
   enrolled_at DateTime      @default(now()) @db.Timestamptz(6)
   status      String        @default("active")
+  /// De-identified subject number shown in alert emails instead of any patient
+  /// identifier. Format: {studyCode}-{hospitalCode}-{seq}, e.g. LPTAT-OS-001,
+  /// numbered per (study, hospital). Assigned automatically at enrollment.
+  subject_number String?    @db.VarChar
   study       study         @relation(fields: [study_id], references: [id], onDelete: Cascade, map: "study_enrollment_study_fk")
   patient     patient       @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "study_enrollment_patient_fk")
   enroller    user?         @relation(fields: [enrolled_by], references: [id], map: "study_enrollment_user_fk")
   study_visit study_visit[]
 
   @@unique([study_id, patient_id], map: "study_enrollment_unique")
+  @@unique([study_id, subject_number], map: "study_enrollment_subject_unique")
   @@index([patient_id], map: "idx_study_enrollment_patient")
 }
 
