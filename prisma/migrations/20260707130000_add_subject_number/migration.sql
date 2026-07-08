@@ -7,8 +7,8 @@ ALTER TABLE "study_enrollment" ADD COLUMN "subject_number" VARCHAR;
 WITH numbered AS (
   SELECT
     e."id",
-    upper(coalesce(s."code", 'S'))
-      || '-' || upper(h."code")
+    regexp_replace(upper(coalesce(s."code", 'S')), '\s+', '', 'g')
+      || '-' || regexp_replace(upper(h."code"), '\s+', '', 'g')
       || '-' || lpad(
         (row_number() OVER (
           PARTITION BY e."study_id", p."hospital_id"

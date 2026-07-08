@@ -304,14 +304,27 @@ async function enrollWithSubjectNumber(params: {
 }) {
   const codePart = (params.studyCode || "S").toUpperCase().replace(/\s+/g, "");
   const sitePart = params.hospitalCode.toUpperCase().replace(/\s+/g, "");
+  const prefix = `${codePart}-${sitePart}-`;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const count = await prisma.study_enrollment.count({
+    // Take the max existing sequence for this (study, hospital), not the row
+    // count: a deleted enrollment leaves a gap, and counting would re-issue an
+    // already-used number and collide forever. subject_number is zero-padded so
+    // a descending string sort yields the highest sequence.
+    const latest = await prisma.study_enrollment.findFirst({
       where: {
         study_id: params.study_id,
         patient: { hospital_id: params.hospitalId },
+        subject_number: { startsWith: prefix },
       },
+      orderBy: { subject_number: "desc" },
+      select: { subject_number: true },
     });
-    const subject_number = `${codePart}-${sitePart}-${String(count + 1).padStart(3, "0")}`;
+    let nextSeq = 1;
+    if (latest?.subject_number) {
+      const parsed = parseInt(latest.subject_number.split("-").pop() ?? "", 10);
+      if (!Number.isNaN(parsed)) nextSeq = parsed + 1;
+    }
+    const subject_number = `${prefix}${String(nextSeq).padStart(3, "0")}`;
     try {
       return await prisma.study_enrollment.create({
         data: {
