@@ -635,3 +635,17 @@ enum refraction_method {
   MR
   CR
 }
+
+/// Global alert thresholds, editable by site admin. Singleton (always id=1).
+/// notification.ts reads these instead of hard-coded constants, and the chart
+/// input popup syncs to the same values via GET /alert_setting.
+model alert_setting {
+  id                         Int      @id(map: "alert_setting_pk") @default(1)
+  axial_min                  Float    @default(20.0)
+  axial_max                  Float    @default(30.0)
+  axial_decrease_mm          Float    @default(0.3)
+  axial_increase_mm_per_year Float    @default(1.0)
+  se_min                     Float    @default(-6.0)
+  se_progression_d_per_year  Float    @default(0.75)
+  updated_at                 DateTime @updatedAt @db.Timestamptz(6)
+}
