@@ -114,9 +114,29 @@ async function getAxialThreshold(
 }
 
 /**
- * Checks a new/updated axial length measurement against (1) the age-based
- * absolute threshold and (2) the myopia progression rate vs. the previous
- * measurement, and emails the hospital's admins if either is breached.
+ * Site-admin-editable global alert thresholds (singleton row). Falls back to the
+ * compiled-in constants if the row is missing (e.g. before the seed migration),
+ * so alerts never silently stop. The chart input popup reads the same values via
+ * GET /alert-setting so warnings and emails stay in sync.
+ */
+async function getAlertSettings() {
+  const row = await prisma.alert_setting.findUnique({ where: { id: 1 } });
+  return {
+    axialMin: row?.axial_min ?? AXIAL_QUERY.minNormal,
+    axialMax: row?.axial_max ?? AXIAL_QUERY.maxNormal,
+    axialDecreaseMm: row?.axial_decrease_mm ?? AXIAL_QUERY.decreaseMm,
+    axialIncreaseMmPerYear:
+      row?.axial_increase_mm_per_year ?? AXIAL_QUERY.increaseMmPerYear,
+    seMin: row?.se_min ?? SE_ALERT.min,
+    seProgressionDPerYear:
+      row?.se_progression_d_per_year ?? PROGRESSION_ALERT.seDioptersPerYear,
+  };
+}
+
+/**
+ * Checks a new/updated axial length measurement against (1) the absolute normal
+ * range and (2) the change vs. the previous measurement, and emails the
+ * hospital's admins if either is breached. Thresholds come from `alert_setting`.
  */
 export async function checkMeasurementAlerts(
   measurement: AlertMeasurement,
@@ -127,6 +147,7 @@ export async function checkMeasurementAlerts(
   });
   if (patient == null) return;
 
+  const s = await getAlertSettings();
   const reasons: string[] = [];
 
   // Most recent measurement before this one, for change-based checks.
@@ -146,9 +167,9 @@ export async function checkMeasurementAlerts(
     const label = eye.toUpperCase();
 
     // (1) Outside the normal absolute range.
-    if (value <= AXIAL_QUERY.minNormal || value >= AXIAL_QUERY.maxNormal) {
+    if (value <= s.axialMin || value >= s.axialMax) {
       reasons.push(
-        `안축장 ${label} ${value}mm — 기준 범위(${AXIAL_QUERY.minNormal.toFixed(1)}~${AXIAL_QUERY.maxNormal.toFixed(1)}mm)를 벗어났습니다.`,
+        `안축장 ${label} ${value}mm — 기준 범위(${s.axialMin.toFixed(1)}~${s.axialMax.toFixed(1)}mm)를 벗어났습니다.`,
       );
     }
 
@@ -159,7 +180,7 @@ export async function checkMeasurementAlerts(
     // (2) Decreased vs. the previous measurement (e.g. atropine effect).
     // Round to 3 decimals to avoid float error (e.g. 24.15 - 24.05 = 0.0999…).
     const decrease = Math.round((prev - value) * 1000) / 1000;
-    if (decrease >= AXIAL_QUERY.decreaseMm) {
+    if (decrease >= s.axialDecreaseMm) {
       reasons.push(
         `안축장 ${label}가 직전 측정(${prevDate}, ${prev}mm) 대비 ${decrease.toFixed(2)}mm 감소했습니다.`,
       );
@@ -176,9 +197,9 @@ export async function checkMeasurementAlerts(
       increase >= AXIAL_QUERY.minIncreaseMm
     ) {
       const rate = increase / years;
-      if (rate >= AXIAL_QUERY.increaseMmPerYear) {
+      if (rate >= s.axialIncreaseMmPerYear) {
         reasons.push(
-          `안축장 ${label} 증가 속도가 ${rate.toFixed(2)}mm/year로 기준(${AXIAL_QUERY.increaseMmPerYear.toFixed(1)}mm/year)을 초과했습니다.`,
+          `안축장 ${label} 증가 속도가 ${rate.toFixed(2)}mm/year로 기준(${s.axialIncreaseMmPerYear.toFixed(1)}mm/year)을 초과했습니다.`,
         );
       }
     }
@@ -208,6 +229,7 @@ export async function checkRefractiveErrorAlerts(
   });
   if (patient == null) return;
 
+  const s = await getAlertSettings();
   const seOd = sphericalEquivalent(
     refractiveError.od_sph,
     refractiveError.od_cyl,
@@ -220,14 +242,14 @@ export async function checkRefractiveErrorAlerts(
   const reasons: string[] = [];
 
   // (1) Absolute SE threshold (high myopia).
-  if (seOd != null && seOd <= SE_ALERT.min) {
+  if (seOd != null && seOd <= s.seMin) {
     reasons.push(
-      `SE OD ${seOd.toFixed(2)}D 가 고도근시 임계(${SE_ALERT.min}D) 이하입니다.`,
+      `SE OD ${seOd.toFixed(2)}D 가 고도근시 임계(${s.seMin}D) 이하입니다.`,
     );
   }
-  if (seOs != null && seOs <= SE_ALERT.min) {
+  if (seOs != null && seOs <= s.seMin) {
     reasons.push(
-      `SE OS ${seOs.toFixed(2)}D 가 고도근시 임계(${SE_ALERT.min}D) 이하입니다.`,
+      `SE OS ${seOs.toFixed(2)}D 가 고도근시 임계(${s.seMin}D) 이하입니다.`,
     );
   }
 
@@ -252,10 +274,10 @@ export async function checkRefractiveErrorAlerts(
         if (curr == null || prev == null) continue;
         // Myopic shift = SE decreasing; report magnitude per year.
         const shiftPerYear = (prev - curr) / years;
-        if (shiftPerYear >= PROGRESSION_ALERT.seDioptersPerYear) {
+        if (shiftPerYear >= s.seProgressionDPerYear) {
           reasons.push(
             `SE ${label} 진행속도 ${shiftPerYear.toFixed(2)}D/년 ` +
-              `(임계 ${PROGRESSION_ALERT.seDioptersPerYear}D/년)으로 빠르게 진행 중입니다.`,
+              `(임계 ${s.seProgressionDPerYear}D/년)으로 빠르게 진행 중입니다.`,
           );
         }
       }
