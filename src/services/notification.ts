@@ -117,7 +117,7 @@ async function getAxialThreshold(
  * Site-admin-editable global alert thresholds (singleton row). Falls back to the
  * compiled-in constants if the row is missing (e.g. before the seed migration),
  * so alerts never silently stop. The chart input popup reads the same values via
- * GET /alert-setting so warnings and emails stay in sync.
+ * GET /alert_setting so warnings and emails stay in sync.
  */
 async function getAlertSettings() {
   const row = await prisma.alert_setting.findUnique({ where: { id: 1 } });

@@ -55,7 +55,7 @@ async function adminAuditContext(req: express.Request) {
   return { ...base, actorName: user?.email ?? null, actorRole: "site_admin" };
 }
 
-// GET /alert-setting — read the global thresholds. Available to any logged-in
+// GET /alert_setting — read the global thresholds. Available to any logged-in
 // user (the chart input popup syncs its warning ranges to these values).
 router.get("/", loginRequired, async (_req, res) => {
   const row = await prisma.alert_setting.findUnique({
@@ -78,7 +78,7 @@ const updateSchema = zod
     path: ["axial_min"],
   });
 
-// PUT /alert-setting — site admin updates the global thresholds.
+// PUT /alert_setting — site admin updates the global thresholds.
 router.put(
   "/",
   siteAdminRequired,
@@ -96,7 +96,8 @@ router.put(
     await writeAuditLog({
       ...(await adminAuditContext(req)),
       tableName: "alert_setting",
-      recordId: String(updated.id),
+      // record_id is a UUID column; the singleton's integer id (1) isn't a valid
+      // UUID, so leave it null. The table_name alone identifies this record.
       action: "UPDATE",
       oldValue,
       newValue: updated,
