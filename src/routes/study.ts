@@ -51,7 +51,9 @@ async function adminAuditContext(req: express.Request) {
 
 const studyBodySchema = zod.object({
   name: zod.string().trim().min(1).max(200),
-  code: zod.string().trim().max(50).optional(),
+  // Required: the code drives the subject-number prefix ({code}-{hospital}-NNN),
+  // so an empty code makes different studies produce indistinguishable numbers.
+  code: zod.string().trim().min(1).max(50),
   description: zod.string().trim().optional(),
 });
 
