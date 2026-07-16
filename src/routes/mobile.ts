@@ -1,4 +1,6 @@
 import express from "express";
+import fs from "fs";
+import path from "path";
 import bcrypt from "bcrypt";
 import zod from "zod";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
@@ -641,6 +643,128 @@ router.get("/hospitals", async (_req, res) => {
       country: h.country.code,
     })),
   );
+});
+
+/* ------------------------------------------------------------------ *
+ * Facility finder (기관 찾기)                                          *
+ *                                                                    *
+ * GET /api/mobile/hospitals/search — public. Returns a unified       *
+ * `places` list the iOS "find a facility" map/list screen renders.   *
+ *                                                                    *
+ *   - type=clinic  → backed by the real partner `hospital` table     *
+ *                    (isPartner=true). The current schema only has    *
+ *                    name/code, so address/lat/lng/phone/rating are   *
+ *                    null until those columns exist.                  *
+ *   - type=optical → optical shops (안경원). No data source yet.       *
+ *   - type=lasik   → refractive-surgery clinics. No data source yet.  *
+ *                                                                    *
+ * TODO: optical/lasik data sources are pending — a future additive    *
+ * table (or an external Places API proxy) will populate them. For now *
+ * they intentionally return an empty `places` array with the same     *
+ * response shape so the client contract is stable.                    *
+ * ------------------------------------------------------------------ */
+
+type PlaceType = "clinic" | "optical" | "lasik";
+
+type PlaceDTO = {
+  id: string;
+  name: string;
+  type: PlaceType;
+  address: string | null;
+  lat: number | null;
+  lng: number | null;
+  distanceKm: number | null;
+  phone: string | null;
+  rating: number | null;
+  isPartner: boolean;
+};
+
+/** Haversine great-circle distance in kilometres. */
+function haversineKm(
+  aLat: number,
+  aLng: number,
+  bLat: number,
+  bLng: number,
+): number {
+  const R = 6371; // km
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(bLat - aLat);
+  const dLng = toRad(bLng - aLng);
+  const lat1 = toRad(aLat);
+  const lat2 = toRad(bLat);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function parseOptionalFloat(v: unknown): number | null {
+  if (typeof v !== "string" || v.trim() === "") return null;
+  const n = Number.parseFloat(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+router.get("/hospitals/search", async (req, res) => {
+  const typeParam = String(req.query.type ?? "clinic");
+  const type: PlaceType =
+    typeParam === "optical" || typeParam === "lasik" ? typeParam : "clinic";
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const lat = parseOptionalFloat(req.query.lat);
+  const lng = parseOptionalFloat(req.query.lng);
+  const limit = Math.min(
+    Math.max(
+      Number.parseInt(String(req.query.limit ?? "20"), 10) || 20,
+      1,
+    ),
+    50,
+  );
+
+  // optical / lasik have no data source yet — keep the contract stable.
+  if (type !== "clinic") {
+    res.json({ places: [] as PlaceDTO[] });
+    return;
+  }
+
+  const hospitals = await prisma.hospital.findMany({
+    where: q
+      ? { name: { contains: q, mode: "insensitive" } }
+      : undefined,
+    orderBy: { name: "asc" },
+  });
+
+  // Map real location/contact columns (nullable). `distanceKm` is computed
+  // only when both the caller and the hospital have coordinates; hospitals
+  // still lacking lat/lng return null distance and fall back to name order.
+  let places: PlaceDTO[] = hospitals.map((h) => {
+    const hLat: number | null = h.latitude ?? null;
+    const hLng: number | null = h.longitude ?? null;
+    const distanceKm =
+      lat != null && lng != null && hLat != null && hLng != null
+        ? haversineKm(lat, lng, hLat, hLng)
+        : null;
+    return {
+      id: h.id,
+      name: h.name,
+      type: "clinic" as const,
+      address: h.address ?? null,
+      lat: hLat,
+      lng: hLng,
+      distanceKm,
+      phone: h.phone ?? null,
+      rating: null,
+      isPartner: true,
+    };
+  });
+
+  // Sort by distance ascending when we actually computed it; otherwise
+  // leave the name-ordered list from the query intact.
+  if (places.some((p) => p.distanceKm != null)) {
+    places = places.sort(
+      (a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity),
+    );
+  }
+
+  res.json({ places: places.slice(0, limit) });
 });
 
 const hospitalLinkSchema = zod.object({
@@ -1832,5 +1956,845 @@ router.delete(
     res.json({ liked: false, likeCount });
   },
 );
+
+/* ================================================================== *
+ * AI chatbot (마이오닥 AI) — RAG proxy                                *
+ *                                                                    *
+ * Faithful TypeScript port of the prototype's api/chat.php. Design    *
+ * rationale (RAG, not fine-tuning): the medical Q&A corpus is small,  *
+ * changes as clinicians review it, and must be auditable ("답변의     *
+ * 근거" 배지). Retrieval-augmented generation lets us swap the corpus  *
+ * (src/assets/chat/qa_index.json) without retraining, keep the model  *
+ * grounded on reviewed text, and cite the exact source item ids —     *
+ * none of which a fine-tuned model would give us.                     *
+ *                                                                    *
+ * The endpoint keeps the API key server-side, enforces per-user +     *
+ * global daily caps (cost safety), pre-filters emergency symptoms,    *
+ * and logs conversations for the quality-improvement loop. All file   *
+ * writes are best-effort so a counter/log failure never blocks a      *
+ * reply.                                                              *
+ * ================================================================== */
+
+const CHAT_CONFIG = {
+  model: process.env.CHAT_MODEL || "gemini-3.1-flash-lite",
+  embeddingModel: process.env.CHAT_EMBEDDING_MODEL || "gemini-embedding-001",
+  // default true unless explicitly set to "false"/"0"
+  searchFallback:
+    (process.env.CHAT_SEARCH_FALLBACK ?? "true").toLowerCase() !== "false" &&
+    process.env.CHAT_SEARCH_FALLBACK !== "0",
+  ragTopK: 8,
+  perUserDailyLimit: 30,
+  totalDailyLimit: 500,
+  maxInputChars: 500,
+  maxOutputTokens: 1400,
+  maxHistoryTurns: 6,
+  dataDir:
+    process.env.CHAT_DATA_DIR || path.join(process.cwd(), "data", "chat"),
+} as const;
+
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const CHAT_MOCK_MODE = !GEMINI_API_KEY;
+
+type ChatMode =
+  | "qa"
+  | "general"
+  | "consult"
+  | "emergency"
+  | "limited"
+  | "error";
+
+type ChatSource = { title: string; url: string };
+
+type ChatResponse = {
+  mode: ChatMode;
+  answer: string;
+  refs: string[];
+  suggestions: string[];
+  sources: ChatSource[];
+};
+
+/** Fixed emergency guidance — mirrors chat.php's $EMERGENCY_ANSWER. */
+const EMERGENCY_ANSWER =
+  "말씀하신 증상은 빠른 진료가 필요할 수 있는 신호예요.\n\n" +
+  "갑작스러운 시력 저하, 심한 눈 통증, 눈앞이 번쩍이는 증상, 날파리가 갑자기 많아지는 증상, " +
+  "커튼을 친 것처럼 시야가 가려지는 증상은 망막 등에 문제가 생겼을 가능성이 있어 " +
+  "지체하지 말고 안과 진료를 받아보셔야 합니다.\n\n" +
+  "지금 증상이 있다면 이 채팅으로 시간을 보내지 마시고, 가까운 안과 또는 응급실에 바로 문의해 주세요.";
+
+/** Conservative emergency pre-filter — same keyword lists as chat.php. */
+function isEmergencyText(q: string): boolean {
+  const standalone = [
+    "광시증",
+    "번쩍임",
+    "번쩍거려",
+    "번쩍번쩍",
+    "커튼처럼",
+    "커튼을 친",
+    "피가 나",
+    "찔렀",
+    "찔려",
+  ];
+  for (const kw of standalone) {
+    if (q.includes(kw)) return true;
+  }
+  const trigger = ["갑자기", "급격히", "심하게", "심한"];
+  const symptom = [
+    "안 보",
+    "안보여",
+    "안 보여",
+    "시력",
+    "아파",
+    "아프",
+    "통증",
+    "흐려",
+    "번쩍",
+    "날파리",
+    "비문증",
+  ];
+  for (const t of trigger) {
+    if (!q.includes(t)) continue;
+    for (const s of symptom) {
+      if (q.includes(s)) return true;
+    }
+  }
+  return false;
+}
+
+/** Resolve a chat asset that lives under src/assets/chat. tsc does not
+ *  copy non-.ts files into dist/, so we probe both the compiled layout
+ *  (dist/assets/chat when running from dist/routes) and the source tree
+ *  (src/assets/chat) as a fallback. */
+function resolveChatAsset(filename: string): string | null {
+  const candidates = [
+    path.join(__dirname, "..", "assets", "chat", filename),
+    path.join(__dirname, "..", "..", "assets", "chat", filename),
+    path.join(__dirname, "..", "..", "src", "assets", "chat", filename),
+    path.join(process.cwd(), "dist", "assets", "chat", filename),
+    path.join(process.cwd(), "src", "assets", "chat", filename),
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return c;
+    } catch {
+      /* ignore and try next */
+    }
+  }
+  return null;
+}
+
+type QaIndexItem = { id: string; q: string; text: string; vec: number[] };
+type QaIndex = { embedding_model?: string; dim?: number; items: QaIndexItem[] };
+
+let qaIndexCache: QaIndex | null | undefined; // undefined = not loaded yet
+let promptBaseCache: string | null | undefined;
+
+function loadQaIndex(): QaIndex | null {
+  if (qaIndexCache !== undefined) return qaIndexCache;
+  const p = resolveChatAsset("qa_index.json");
+  if (p == null) {
+    qaIndexCache = null;
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(p, "utf8")) as QaIndex;
+    qaIndexCache = Array.isArray(parsed.items) ? parsed : null;
+  } catch {
+    qaIndexCache = null;
+  }
+  return qaIndexCache;
+}
+
+function loadPromptBase(): string | null {
+  if (promptBaseCache !== undefined) return promptBaseCache;
+  const p = resolveChatAsset("prompt_base.txt");
+  if (p == null) {
+    promptBaseCache = null;
+    return null;
+  }
+  try {
+    promptBaseCache = fs.readFileSync(p, "utf8");
+  } catch {
+    promptBaseCache = null;
+  }
+  return promptBaseCache;
+}
+
+/** Gemini REST call over global fetch (Node 18+). Returns decoded body. */
+async function geminiHttp(
+  model: string,
+  method: string,
+  payload: unknown,
+): Promise<{ data: any | null; httpCode: number; err: string | null; ms: number }> {
+  const t0 = Date.now();
+  const url =
+    "https://generativelanguage.googleapis.com/v1beta/models/" +
+    encodeURIComponent(model) +
+    ":" +
+    method;
+  try {
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+      },
+      body: JSON.stringify(payload),
+    });
+    const ms = Date.now() - t0;
+    let data: any = null;
+    try {
+      data = await resp.json();
+    } catch {
+      data = null;
+    }
+    return { data, httpCode: resp.status, err: null, ms };
+  } catch (e) {
+    return {
+      data: null,
+      httpCode: 0,
+      err: e instanceof Error ? e.message : String(e),
+      ms: Date.now() - t0,
+    };
+  }
+}
+
+/**
+ * RAG retrieval: embed the question and pick the top-k Q&A items by
+ * cosine similarity. Falls back to all items on any embedding failure
+ * (identical behaviour to chat.php's retrieveItems).
+ */
+async function retrieveItems(
+  question: string,
+  index: QaIndex,
+): Promise<{ items: QaIndexItem[]; ids: string[]; fallback: boolean }> {
+  const items = index.items ?? [];
+  const all = { items, ids: ["*all*"], fallback: true };
+  if (items.length === 0) return all;
+
+  const { data, httpCode } = await geminiHttp(
+    CHAT_CONFIG.embeddingModel,
+    "embedContent",
+    {
+      content: { parts: [{ text: question }] },
+      taskType: "RETRIEVAL_QUERY",
+      outputDimensionality: index.dim ?? 768,
+    },
+  );
+  const qv: unknown = data?.embedding?.values;
+  if (httpCode !== 200 || !Array.isArray(qv)) return all;
+  const queryVec = qv as number[];
+
+  // Reduced-dimensionality embeddings are not unit-normalised, so we
+  // normalise the query vector here (item vectors are normalised at
+  // build time).
+  const norm =
+    Math.sqrt(queryVec.reduce((acc, v) => acc + v * v, 0)) || 1.0;
+
+  const scored = items.map((it, i) => {
+    let dot = 0;
+    const vec = it.vec;
+    for (let j = 0; j < vec.length; j++) dot += vec[j] * (queryVec[j] ?? 0);
+    return { i, score: dot / norm };
+  });
+  scored.sort((a, b) => b.score - a.score);
+  const topK = scored.slice(0, Math.max(1, CHAT_CONFIG.ragTopK));
+
+  return {
+    items: topK.map((s) => items[s.i]),
+    ids: topK.map((s) => `${items[s.i].id}:${s.score.toFixed(3)}`),
+    fallback: false,
+  };
+}
+
+type GeminiTurn = { role: "user" | "model"; parts: { text: string }[] };
+
+/**
+ * generateContent call + JSON parse. When withSearch is true the Google
+ * search grounding tool is enabled (paid tier only). Mirrors
+ * chat.php's callGemini.
+ */
+async function callGemini(
+  systemPrompt: string,
+  contents: GeminiTurn[],
+  withSearch: boolean,
+): Promise<{
+  out: any | null;
+  sources: ChatSource[];
+  tokIn: number;
+  tokOut: number;
+  ms: number;
+  err: string | null;
+  errType: "network" | "api" | "parse" | null;
+}> {
+  const payload: any = {
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents,
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: CHAT_CONFIG.maxOutputTokens,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: {
+          mode: {
+            type: "STRING",
+            enum: ["qa", "general", "consult", "emergency"],
+          },
+          answer: { type: "STRING" },
+          refs: { type: "ARRAY", items: { type: "STRING" } },
+          suggestions: { type: "ARRAY", items: { type: "STRING" } },
+        },
+        required: ["mode", "answer"],
+      },
+    },
+  };
+  if (withSearch) {
+    payload.tools = [{ google_search: {} }];
+  }
+
+  const ret: {
+    out: any | null;
+    sources: ChatSource[];
+    tokIn: number;
+    tokOut: number;
+    ms: number;
+    err: string | null;
+    errType: "network" | "api" | "parse" | null;
+  } = { out: null, sources: [], tokIn: 0, tokOut: 0, ms: 0, err: null, errType: null };
+
+  const { data, httpCode, err, ms } = await geminiHttp(
+    CHAT_CONFIG.model,
+    "generateContent",
+    payload,
+  );
+  ret.ms = ms;
+
+  if (data === null) {
+    ret.err = "fetch: " + (err ?? "no response");
+    ret.errType = "network";
+    return ret;
+  }
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (httpCode !== 200 || typeof text !== "string") {
+    ret.err = data?.error?.message ?? "HTTP " + httpCode;
+    ret.errType = "api";
+    return ret;
+  }
+
+  ret.tokIn = data?.usageMetadata?.promptTokenCount ?? 0;
+  ret.tokOut = data?.usageMetadata?.candidatesTokenCount ?? 0;
+
+  // Collect grounding sources (max 3, dedupe by uri).
+  const chunks: any[] =
+    data?.candidates?.[0]?.groundingMetadata?.groundingChunks ?? [];
+  const seen = new Set<string>();
+  for (const c of chunks) {
+    const uri: string = c?.web?.uri ?? "";
+    if (uri === "" || seen.has(uri) || seen.size >= 3) continue;
+    seen.add(uri);
+    ret.sources.push({ title: c?.web?.title ?? uri, url: uri });
+  }
+
+  // Parse model JSON — strip code fences on retry.
+  let out: any = null;
+  try {
+    out = JSON.parse(text);
+  } catch {
+    const stripped = text.replace(/^```(json)?|```$/gm, "").trim();
+    try {
+      out = JSON.parse(stripped);
+    } catch {
+      out = null;
+    }
+  }
+  if (out == null || typeof out !== "object" || out.answer == null) {
+    ret.err = "json_parse: " + text.slice(0, 300);
+    ret.errType = "parse";
+    return ret;
+  }
+  ret.out = out;
+  return ret;
+}
+
+/** Per-user + global daily usage cap, file-backed (usage-YYYY-MM-DD.json).
+ *  Keyed by authenticated user id (not IP). Any fs failure returns "ok"
+ *  so a counter problem never blocks a reply. */
+function checkAndCountUsage(
+  today: string,
+  userId: string,
+): "ok" | "user_limit" | "total_limit" {
+  try {
+    if (!fs.existsSync(CHAT_CONFIG.dataDir)) {
+      fs.mkdirSync(CHAT_CONFIG.dataDir, { recursive: true });
+    }
+    const file = path.join(CHAT_CONFIG.dataDir, `usage-${today}.json`);
+    let data: { total: number; users: Record<string, number> } = {
+      total: 0,
+      users: {},
+    };
+    if (fs.existsSync(file)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+        if (parsed && typeof parsed === "object") {
+          data = {
+            total: Number(parsed.total) || 0,
+            users:
+              parsed.users && typeof parsed.users === "object"
+                ? parsed.users
+                : {},
+          };
+        }
+      } catch {
+        /* corrupt file — start fresh */
+      }
+    }
+    const userCount = data.users[userId] ?? 0;
+    if (data.total >= CHAT_CONFIG.totalDailyLimit) return "total_limit";
+    if (userCount >= CHAT_CONFIG.perUserDailyLimit) return "user_limit";
+    data.total += 1;
+    data.users[userId] = userCount + 1;
+    fs.writeFileSync(file, JSON.stringify(data));
+    return "ok";
+  } catch {
+    return "ok";
+  }
+}
+
+/** Append a jsonl conversation log line (best-effort). */
+function chatLogLine(entry: Record<string, unknown>): void {
+  try {
+    if (!fs.existsSync(CHAT_CONFIG.dataDir)) {
+      fs.mkdirSync(CHAT_CONFIG.dataDir, { recursive: true });
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const file = path.join(CHAT_CONFIG.dataDir, `chat-${today}.jsonl`);
+    fs.appendFileSync(file, JSON.stringify(entry) + "\n");
+  } catch {
+    /* logging must never break a reply */
+  }
+}
+
+/** Mock response (no API key) — lets the app UI work without a key.
+ *  Mirrors chat.php's mockAnswer. */
+function mockAnswer(q: string): ChatResponse {
+  if (q.includes("아트로핀")) {
+    return {
+      mode: "qa",
+      answer:
+        "저농도 아트로핀 점안 후 눈부심은 흔히 나타나는 반응으로, 대부분 수 주 안에 적응됩니다.\n\n안약이 동공을 평소보다 크게 만들어 눈에 빛이 많이 들어오기 때문이에요. 외출할 때 모자나 선글라스를 쓰면 도움이 되고, 안약을 임의로 중단하지는 마세요.\n\n다만 눈부심이 심해 일상생활이 어렵거나 눈 통증·충혈이 함께 있다면 진료가 필요합니다.",
+      refs: ["atropine-02"],
+      suggestions: [
+        "아트로핀은 언제까지 넣어야 하나요?",
+        "안약 넣는 걸 하루 잊었으면 어떻게 하나요?",
+        "아트로핀 농도는 어떻게 정해지나요?",
+      ],
+      sources: [],
+    };
+  }
+  if (q.includes("드림렌즈")) {
+    return {
+      mode: "qa",
+      answer:
+        "드림렌즈(각막굴절교정렌즈)는 자는 동안 착용해 각막 모양을 살짝 눌러주는 렌즈로, 낮 동안 안경 없이 지낼 수 있게 해주고 근시 진행을 늦추는 효과가 있습니다.\n\n보통 매일 밤 6~8시간 이상 착용해야 효과가 유지됩니다. 착용을 중단하면 각막은 원래 모양으로 돌아옵니다.",
+      refs: ["orthok-01"],
+      suggestions: [
+        "드림렌즈는 몇 살부터 할 수 있나요?",
+        "드림렌즈 관리는 어떻게 하나요?",
+        "드림렌즈 끼다 눈이 충혈되면 어떡하죠?",
+      ],
+      sources: [],
+    };
+  }
+  return {
+    mode: "general",
+    answer:
+      "(목업 모드) 실제 배포 시에는 이 자리에 AI가 감수 자료를 근거로 생성한 답변이 표시됩니다.\n\n지금은 API 키 없이 화면 흐름을 확인하는 시연 모드입니다.",
+    refs: [],
+    suggestions: [
+      "아트로핀 넣고 눈부셔하는데 괜찮은가요?",
+      "드림렌즈는 어떤 원리인가요?",
+      "야외활동은 하루 얼마나 해야 하나요?",
+    ],
+    sources: [],
+  };
+}
+
+const chatSchema = zod.object({
+  question: zod.string(),
+  history: zod
+    .array(
+      zod.object({
+        role: zod.enum(["user", "model"]),
+        text: zod.string(),
+      }),
+    )
+    .optional(),
+});
+
+router.post(
+  "/chat",
+  requireMobileAuth,
+  validateRequestBody(chatSchema),
+  async (req, res) => {
+    const userId = req.mobileUser!.sub;
+    const body = req.body as zod.infer<typeof chatSchema>;
+    const today = new Date().toISOString().slice(0, 10);
+
+    const reply = (r: Partial<ChatResponse> & { mode: ChatMode; answer: string }) =>
+      res.json({
+        mode: r.mode,
+        answer: r.answer,
+        refs: r.refs ?? [],
+        suggestions: r.suggestions ?? [],
+        sources: r.sources ?? [],
+      } satisfies ChatResponse);
+
+    // ── Question validation ──────────────────────────────────────────
+    const question = body.question.trim();
+    if (question === "") {
+      return reply({ mode: "error", answer: "질문을 입력해 주세요." });
+    }
+    if (question.length > CHAT_CONFIG.maxInputChars) {
+      return reply({
+        mode: "error",
+        answer:
+          "질문이 너무 깁니다. " +
+          CHAT_CONFIG.maxInputChars +
+          "자 이내로 나누어 질문해 주세요.",
+      });
+    }
+
+    // ── Per-user / global daily cap ─────────────────────────────────
+    const usage = checkAndCountUsage(today, userId);
+    if (usage === "user_limit") {
+      return reply({
+        mode: "limited",
+        answer:
+          "오늘 이용 가능한 질문 횟수를 모두 사용하셨어요. 내일 다시 이용해 주세요. 급한 증상이 있다면 가까운 안과에 문의해 주세요.",
+      });
+    }
+    if (usage === "total_limit") {
+      return reply({
+        mode: "limited",
+        answer:
+          "오늘 상담량이 많아 잠시 쉬어갑니다. 내일 다시 이용해 주세요. 급한 증상이 있다면 가까운 안과에 문의해 주세요.",
+      });
+    }
+
+    // ── Emergency keyword pre-filter (before any LLM call) ──────────
+    if (isEmergencyText(question)) {
+      chatLogLine({
+        ts: new Date().toISOString(),
+        user: userId,
+        mode: "emergency",
+        filter: "keyword",
+        q: question,
+      });
+      return reply({
+        mode: "emergency",
+        answer: EMERGENCY_ANSWER,
+        refs: [],
+        suggestions: [],
+        sources: [],
+      });
+    }
+
+    // ── Mock mode (no API key) — keeps the UI working without a key ──
+    if (CHAT_MOCK_MODE) {
+      return reply(mockAnswer(question));
+    }
+
+    // ── RAG: build systemInstruction from top-k reviewed items ──────
+    const index = loadQaIndex();
+    const promptBase = loadPromptBase();
+    if (index == null || promptBase == null) {
+      return reply({
+        mode: "error",
+        answer: "지금은 답변을 만들 수 없어요. 잠시 후 다시 시도해 주세요.",
+      });
+    }
+    const rag = await retrieveItems(question, index);
+    const systemPrompt =
+      promptBase +
+      "\n\n# 감수 자료 발췌 (질문 관련 상위 문항)\n\n" +
+      rag.items.map((it) => it.text).join("\n\n---\n\n");
+
+    // ── Build conversation contents (recent history + question) ─────
+    const history = Array.isArray(body.history) ? body.history : [];
+    const trimmed = history.slice(-(CHAT_CONFIG.maxHistoryTurns * 2));
+    const contents: GeminiTurn[] = [];
+    for (const turn of trimmed) {
+      const role = turn.role === "model" ? "model" : "user";
+      const text = turn.text.trim().slice(0, 2000);
+      if (text === "") continue;
+      contents.push({ role, parts: [{ text }] });
+    }
+    contents.push({ role: "user", parts: [{ text: question }] });
+
+    // ── First pass: reviewed-corpus grounded ────────────────────────
+    const r = await callGemini(systemPrompt, contents, false);
+    if (r.err !== null) {
+      chatLogLine({
+        ts: new Date().toISOString(),
+        user: userId,
+        mode: "error",
+        q: question,
+        err: r.err.slice(0, 300),
+        ms: r.ms,
+      });
+      return reply({
+        mode: "error",
+        answer:
+          r.errType === "network"
+            ? "AI 서버와 연결하지 못했어요. 잠시 후 다시 시도해 주세요."
+            : r.errType === "parse"
+              ? "답변 생성 중 문제가 있었어요. 질문을 조금 바꿔 다시 시도해 주세요."
+              : "지금은 답변을 만들 수 없어요. 잠시 후 다시 시도해 주세요.",
+      });
+    }
+
+    let out = r.out;
+    let mode: ChatMode = ["qa", "general", "consult", "emergency"].includes(
+      out.mode,
+    )
+      ? out.mode
+      : "general";
+    let sources: ChatSource[] = [];
+    let searchUsed = false;
+    let tokIn = r.tokIn;
+    let tokOut = r.tokOut;
+    let ms = r.ms;
+
+    // ── Second pass: Google search grounding for out-of-corpus qs ───
+    // On the free tier the search tool has no quota and fails; we then
+    // keep the first-pass answer. Skips gracefully on any failure.
+    if (mode === "general" && CHAT_CONFIG.searchFallback) {
+      const r2 = await callGemini(systemPrompt, contents, true);
+      if (r2.err === null && String(r2.out?.answer ?? "").trim() !== "") {
+        const m2 = r2.out.mode ?? "general";
+        if (["general", "consult", "emergency"].includes(m2)) {
+          out = r2.out;
+          mode = m2;
+          sources = r2.sources;
+          searchUsed = true;
+          tokIn += r2.tokIn;
+          tokOut += r2.tokOut;
+          ms += r2.ms;
+        }
+      }
+    }
+
+    let answer = String(out.answer).trim();
+    const refs = Array.isArray(out.refs)
+      ? out.refs.map((x: unknown) => String(x)).filter((x: string) => x !== "")
+      : [];
+    let suggestions = Array.isArray(out.suggestions)
+      ? out.suggestions
+          .map((x: unknown) => String(x))
+          .filter((x: string) => x !== "")
+          .slice(0, 3)
+      : [];
+
+    // Emergency mode always overrides the model answer (safety double-up).
+    if (mode === "emergency") {
+      answer = EMERGENCY_ANSWER;
+      suggestions = [];
+      sources = [];
+    }
+
+    chatLogLine({
+      ts: new Date().toISOString(),
+      user: userId,
+      mode,
+      q: question,
+      a: answer.slice(0, 800),
+      refs,
+      rag: rag.ids,
+      rag_fallback: rag.fallback,
+      search: searchUsed,
+      tok_in: tokIn,
+      tok_out: tokOut,
+      ms,
+    });
+
+    return reply({ mode, answer, refs, suggestions, sources });
+  },
+);
+
+/* ================================================================== *
+ * Expert columns (전문가 칼럼)                                        *
+ *                                                                    *
+ * SEED DATA: there is no article/column table in the schema (the      *
+ * existing /news route proxies PubMed live and has no persistence),   *
+ * so these endpoints serve a small, self-contained set of columns     *
+ * derived from the reviewed Q&A source docs shipped under             *
+ * src/assets/chat/columns/*.md — one column per topic. When a real    *
+ * columns table (or CMS) lands later, swap loadSeedColumns() for a    *
+ * prisma query; the response shapes below are the client contract.    *
+ * ================================================================== */
+
+type ColumnListItem = {
+  id: string;
+  title: string;
+  excerpt: string;
+  category: string;
+  author: string;
+  authorRole: string;
+  thumbnailEmoji: string;
+  likeCount: number;
+  commentCount: number;
+  publishedAt: string;
+};
+
+type ColumnDetail = {
+  id: string;
+  title: string;
+  body: string;
+  category: string;
+  author: string;
+  authorRole: string;
+  likeCount: number;
+  commentCount: number;
+  publishedAt: string;
+};
+
+// Presentation metadata per topic (order defines the feed order).
+const COLUMN_TOPIC_META: {
+  file: string;
+  id: string;
+  emoji: string;
+}[] = [
+  { file: "01_atropine.md", id: "atropine", emoji: "💧" },
+  { file: "02_orthok.md", id: "orthok", emoji: "🌙" },
+  { file: "03_myopia_lenses.md", id: "myopia_lenses", emoji: "👓" },
+  { file: "04_lifestyle.md", id: "lifestyle", emoji: "☀️" },
+  { file: "05_basics.md", id: "basics", emoji: "👁️" },
+  { file: "06_checkup.md", id: "checkup", emoji: "📏" },
+  { file: "07_emergency.md", id: "emergency", emoji: "🚨" },
+];
+
+type SeedColumn = ColumnDetail & { excerpt: string; thumbnailEmoji: string };
+
+let seedColumnsCache: SeedColumn[] | undefined;
+
+/** Parse the reviewed Q&A markdown docs into seed columns. */
+function loadSeedColumns(): SeedColumn[] {
+  if (seedColumnsCache !== undefined) return seedColumnsCache;
+  const columns: SeedColumn[] = [];
+  for (const meta of COLUMN_TOPIC_META) {
+    const p = resolveChatAsset(path.join("columns", meta.file));
+    if (p == null) continue;
+    let raw: string;
+    try {
+      raw = fs.readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+    // Split YAML-ish frontmatter (--- ... ---) from the body.
+    let title = meta.id;
+    let updated = "2026-07-05";
+    let body = raw;
+    const fm = raw.match(/^---\s*\n([\s\S]*?)\n---\s*\n?([\s\S]*)$/);
+    if (fm) {
+      const front = fm[1];
+      body = fm[2].trim();
+      const titleMatch = front.match(/^title:\s*(.+)$/m);
+      if (titleMatch) title = titleMatch[1].trim();
+      const updatedMatch = front.match(/^updated:\s*(.+)$/m);
+      if (updatedMatch) updated = updatedMatch[1].trim();
+    }
+    // Excerpt: first non-heading, non-note paragraph, trimmed to ~120 chars.
+    const firstPara =
+      body
+        .split(/\n{2,}/)
+        .map((s) => s.trim())
+        .find((s) => s !== "" && !s.startsWith("#") && !s.startsWith("*")) ??
+      "";
+    const excerpt =
+      firstPara.length > 120 ? firstPara.slice(0, 120) + "…" : firstPara;
+    const publishedAt = new Date(updated + "T00:00:00.000Z").toISOString();
+    columns.push({
+      id: meta.id,
+      title,
+      body,
+      excerpt,
+      category: meta.id,
+      author: "마이오닥 의료진",
+      authorRole: "안과 감수",
+      thumbnailEmoji: meta.emoji,
+      likeCount: 0,
+      commentCount: 0,
+      publishedAt,
+    });
+  }
+  seedColumnsCache = columns;
+  return columns;
+}
+
+/** GET /api/mobile/columns?category=&cursor=&pageSize= — public.
+ *  Index-based keyset cursor over the (stable-ordered) seed columns. */
+router.get("/columns", (req, res) => {
+  const category =
+    typeof req.query.category === "string" && req.query.category.trim() !== ""
+      ? req.query.category.trim()
+      : null;
+  const pageSize = Math.min(
+    Math.max(Number.parseInt(String(req.query.pageSize ?? "20"), 10) || 20, 1),
+    50,
+  );
+
+  let all = loadSeedColumns();
+  if (category) all = all.filter((c) => c.category === category);
+
+  // cursor is the id of the last item returned on the previous page.
+  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
+  let startIdx = 0;
+  if (cursor) {
+    const idx = all.findIndex((c) => c.id === cursor);
+    startIdx = idx >= 0 ? idx + 1 : 0;
+  }
+
+  const slice = all.slice(startIdx, startIdx + pageSize);
+  const nextCursor =
+    startIdx + pageSize < all.length && slice.length > 0
+      ? slice[slice.length - 1].id
+      : null;
+
+  const items: ColumnListItem[] = slice.map((c) => ({
+    id: c.id,
+    title: c.title,
+    excerpt: c.excerpt,
+    category: c.category,
+    author: c.author,
+    authorRole: c.authorRole,
+    thumbnailEmoji: c.thumbnailEmoji,
+    likeCount: c.likeCount,
+    commentCount: c.commentCount,
+    publishedAt: c.publishedAt,
+  }));
+
+  res.json({ items, nextCursor });
+});
+
+/** GET /api/mobile/columns/:id — public. */
+router.get("/columns/:id", (req, res) => {
+  const col = loadSeedColumns().find((c) => c.id === String(req.params.id));
+  if (col == null) {
+    res.status(404).json({ error: "column not found", code: "not_found" });
+    return;
+  }
+  const detail: ColumnDetail = {
+    id: col.id,
+    title: col.title,
+    body: col.body,
+    category: col.category,
+    author: col.author,
+    authorRole: col.authorRole,
+    likeCount: col.likeCount,
+    commentCount: col.commentCount,
+    publishedAt: col.publishedAt,
+  };
+  res.json(detail);
+});
 
 export default router;
