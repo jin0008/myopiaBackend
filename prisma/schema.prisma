@@ -46,6 +46,12 @@ model hospital {
   name                    String                    @unique(map: "hospital_unique")
   country_id              String                    @db.Uuid
   code                    String                    @unique(map: "hospital_unique_1") @db.VarChar
+  // Optional public-facing location/contact info for the 기관 찾기 (finder)
+  // feature. All nullable + additive; existing rows are unaffected.
+  address                 String?
+  phone                   String?
+  latitude                Float?
+  longitude               Float?
   healthcare_professional healthcare_professional[]
   country                 country                   @relation(fields: [country_id], references: [id], map: "hospital_country_fk")
   patient                 patient[]
