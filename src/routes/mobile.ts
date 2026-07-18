@@ -1350,7 +1350,7 @@ router.put(
 type ActivityKind = "nearwork" | "outdoor";
 
 const lifestyleEntrySchema = zod.object({
-  hours: zod.number().int().min(0).max(24),
+  hours: zod.number().int().min(0).max(24).nullable(),
   recordedAt: zod.string().datetime().optional(),
 });
 
@@ -1389,7 +1389,7 @@ async function listActivity(
 async function createActivity(
   kind: ActivityKind,
   links: { patientId: string }[],
-  hours: number,
+  hours: number | null,
   recordedAt: Date,
 ) {
   const data = links.map((l) => ({
