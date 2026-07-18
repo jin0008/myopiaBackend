@@ -2731,9 +2731,50 @@ function loadSeedColumns(): SeedColumn[] {
   return columns;
 }
 
-/** GET /api/mobile/columns?category=&cursor=&pageSize= — public.
- *  Index-based keyset cursor over the (stable-ordered) seed columns. */
-router.get("/columns", (req, res) => {
+/** Import the file-based seed columns into the DB once, if the table is empty. */
+let seedColumnsImported = false;
+async function ensureSeedColumns(): Promise<void> {
+  if (seedColumnsImported) return;
+  try {
+    const count = await prisma.expert_column.count();
+    if (count === 0) {
+      for (const s of loadSeedColumns()) {
+        await prisma.expert_column
+          .create({
+            data: {
+              slug: s.id,
+              title: s.title,
+              body: s.body,
+              category: s.category,
+              author: s.author,
+              author_role: s.authorRole,
+              thumbnail_emoji: s.thumbnailEmoji,
+              published: true,
+              published_at: new Date(s.publishedAt),
+            },
+          })
+          .catch(() => {});
+      }
+    }
+    seedColumnsImported = true;
+  } catch {
+    // Table may not exist yet (pre-migration) — skip silently.
+  }
+}
+
+/** First non-heading/non-note paragraph, trimmed to ~120 chars. */
+function excerptOf(body: string): string {
+  const firstPara =
+    body
+      .split(/\n{2,}/)
+      .map((x) => x.trim())
+      .find((x) => x !== "" && !x.startsWith("#") && !x.startsWith("*")) ?? "";
+  return firstPara.length > 120 ? firstPara.slice(0, 120) + "\u2026" : firstPara;
+}
+
+/** GET /api/mobile/columns?category=&cursor=&pageSize= - public. DB-backed. */
+router.get("/columns", async (req, res) => {
+  await ensureSeedColumns();
   const category =
     typeof req.query.category === "string" && req.query.category.trim() !== ""
       ? req.query.category.trim()
@@ -2743,17 +2784,17 @@ router.get("/columns", (req, res) => {
     50,
   );
 
-  let all = loadSeedColumns();
-  if (category) all = all.filter((c) => c.category === category);
+  const all = await prisma.expert_column.findMany({
+    where: { published: true, ...(category ? { category } : {}) },
+    orderBy: [{ published_at: "desc" }, { id: "asc" }],
+  });
 
-  // cursor is the id of the last item returned on the previous page.
   const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
   let startIdx = 0;
   if (cursor) {
     const idx = all.findIndex((c) => c.id === cursor);
     startIdx = idx >= 0 ? idx + 1 : 0;
   }
-
   const slice = all.slice(startIdx, startIdx + pageSize);
   const nextCursor =
     startIdx + pageSize < all.length && slice.length > 0
@@ -2763,22 +2804,25 @@ router.get("/columns", (req, res) => {
   const items: ColumnListItem[] = slice.map((c) => ({
     id: c.id,
     title: c.title,
-    excerpt: c.excerpt,
+    excerpt: excerptOf(c.body),
     category: c.category,
     author: c.author,
-    authorRole: c.authorRole,
-    thumbnailEmoji: c.thumbnailEmoji,
-    likeCount: c.likeCount,
-    commentCount: c.commentCount,
-    publishedAt: c.publishedAt,
+    authorRole: c.author_role,
+    thumbnailEmoji: c.thumbnail_emoji,
+    likeCount: 0,
+    commentCount: 0,
+    publishedAt: c.published_at.toISOString(),
   }));
 
   res.json({ items, nextCursor });
 });
 
-/** GET /api/mobile/columns/:id — public. */
-router.get("/columns/:id", (req, res) => {
-  const col = loadSeedColumns().find((c) => c.id === String(req.params.id));
+/** GET /api/mobile/columns/:id - public. DB-backed. */
+router.get("/columns/:id", async (req, res) => {
+  await ensureSeedColumns();
+  const col = await prisma.expert_column
+    .findFirst({ where: { id: String(req.params.id), published: true } })
+    .catch(() => null);
   if (col == null) {
     res.status(404).json({ error: "column not found", code: "not_found" });
     return;
@@ -2789,10 +2833,10 @@ router.get("/columns/:id", (req, res) => {
     body: col.body,
     category: col.category,
     author: col.author,
-    authorRole: col.authorRole,
-    likeCount: col.likeCount,
-    commentCount: col.commentCount,
-    publishedAt: col.publishedAt,
+    authorRole: col.author_role,
+    likeCount: 0,
+    commentCount: 0,
+    publishedAt: col.published_at.toISOString(),
   };
   res.json(detail);
 });
