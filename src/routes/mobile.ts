@@ -1350,7 +1350,7 @@ router.put(
 type ActivityKind = "nearwork" | "outdoor";
 
 const lifestyleEntrySchema = zod.object({
-  hours: zod.number().int().min(0).max(24).nullable(),
+  hours: zod.number().int().min(0).max(24),
   recordedAt: zod.string().datetime().optional(),
 });
 
@@ -1389,7 +1389,7 @@ async function listActivity(
 async function createActivity(
   kind: ActivityKind,
   links: { patientId: string }[],
-  hours: number | null,
+  hours: number,
   recordedAt: Date,
 ) {
   const data = links.map((l) => ({
@@ -2731,50 +2731,9 @@ function loadSeedColumns(): SeedColumn[] {
   return columns;
 }
 
-/** Import the file-based seed columns into the DB once, if the table is empty. */
-let seedColumnsImported = false;
-async function ensureSeedColumns(): Promise<void> {
-  if (seedColumnsImported) return;
-  try {
-    const count = await prisma.expert_column.count();
-    if (count === 0) {
-      for (const s of loadSeedColumns()) {
-        await prisma.expert_column
-          .create({
-            data: {
-              slug: s.id,
-              title: s.title,
-              body: s.body,
-              category: s.category,
-              author: s.author,
-              author_role: s.authorRole,
-              thumbnail_emoji: s.thumbnailEmoji,
-              published: true,
-              published_at: new Date(s.publishedAt),
-            },
-          })
-          .catch(() => {});
-      }
-    }
-    seedColumnsImported = true;
-  } catch {
-    // Table may not exist yet (pre-migration) — skip silently.
-  }
-}
-
-/** First non-heading/non-note paragraph, trimmed to ~120 chars. */
-function excerptOf(body: string): string {
-  const firstPara =
-    body
-      .split(/\n{2,}/)
-      .map((x) => x.trim())
-      .find((x) => x !== "" && !x.startsWith("#") && !x.startsWith("*")) ?? "";
-  return firstPara.length > 120 ? firstPara.slice(0, 120) + "\u2026" : firstPara;
-}
-
-/** GET /api/mobile/columns?category=&cursor=&pageSize= - public. DB-backed. */
-router.get("/columns", async (req, res) => {
-  await ensureSeedColumns();
+/** GET /api/mobile/columns?category=&cursor=&pageSize= — public.
+ *  Index-based keyset cursor over the (stable-ordered) seed columns. */
+router.get("/columns", (req, res) => {
   const category =
     typeof req.query.category === "string" && req.query.category.trim() !== ""
       ? req.query.category.trim()
@@ -2784,17 +2743,17 @@ router.get("/columns", async (req, res) => {
     50,
   );
 
-  const all = await prisma.expert_column.findMany({
-    where: { published: true, ...(category ? { category } : {}) },
-    orderBy: [{ published_at: "desc" }, { id: "asc" }],
-  });
+  let all = loadSeedColumns();
+  if (category) all = all.filter((c) => c.category === category);
 
+  // cursor is the id of the last item returned on the previous page.
   const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
   let startIdx = 0;
   if (cursor) {
     const idx = all.findIndex((c) => c.id === cursor);
     startIdx = idx >= 0 ? idx + 1 : 0;
   }
+
   const slice = all.slice(startIdx, startIdx + pageSize);
   const nextCursor =
     startIdx + pageSize < all.length && slice.length > 0
@@ -2804,25 +2763,22 @@ router.get("/columns", async (req, res) => {
   const items: ColumnListItem[] = slice.map((c) => ({
     id: c.id,
     title: c.title,
-    excerpt: excerptOf(c.body),
+    excerpt: c.excerpt,
     category: c.category,
     author: c.author,
-    authorRole: c.author_role,
-    thumbnailEmoji: c.thumbnail_emoji,
-    likeCount: 0,
-    commentCount: 0,
-    publishedAt: c.published_at.toISOString(),
+    authorRole: c.authorRole,
+    thumbnailEmoji: c.thumbnailEmoji,
+    likeCount: c.likeCount,
+    commentCount: c.commentCount,
+    publishedAt: c.publishedAt,
   }));
 
   res.json({ items, nextCursor });
 });
 
-/** GET /api/mobile/columns/:id - public. DB-backed. */
-router.get("/columns/:id", async (req, res) => {
-  await ensureSeedColumns();
-  const col = await prisma.expert_column
-    .findFirst({ where: { id: String(req.params.id), published: true } })
-    .catch(() => null);
+/** GET /api/mobile/columns/:id — public. */
+router.get("/columns/:id", (req, res) => {
+  const col = loadSeedColumns().find((c) => c.id === String(req.params.id));
   if (col == null) {
     res.status(404).json({ error: "column not found", code: "not_found" });
     return;
@@ -2833,12 +2789,189 @@ router.get("/columns/:id", async (req, res) => {
     body: col.body,
     category: col.category,
     author: col.author,
-    authorRole: col.author_role,
-    likeCount: 0,
-    commentCount: 0,
-    publishedAt: col.published_at.toISOString(),
+    authorRole: col.authorRole,
+    likeCount: col.likeCount,
+    commentCount: col.commentCount,
+    publishedAt: col.publishedAt,
   };
   res.json(detail);
+});
+
+/* ------------------------------------------------------------------ *
+ * Facility map (병원 찾기)                                             *
+ *                                                                    *
+ * GET /api/mobile/facilities?lat=&lng=&radius=                        *
+ *                                                                    *
+ * Public. Proxies the Kakao Local "keyword" API so we can surface     *
+ * ONLY the eye-care facilities the product cares about:               *
+ *   - 대학병원   → category "university"                               *
+ *   - 종합병원   → category "general"                                  *
+ *   - 안과의원   → category "clinic"                                   *
+ *   - 안경점     → category "optical"                                  *
+ *                                                                    *
+ * The Naver map SDK renders the map on the client; Kakao supplies the *
+ * place DATA (Naver's place search is not openly available). The REST *
+ * key lives server-side in KAKAO_REST_API_KEY so it is never shipped  *
+ * in the app bundle.                                                  *
+ * ------------------------------------------------------------------ */
+
+const KAKAO_REST_KEY = process.env.KAKAO_REST_API_KEY ?? "";
+
+type FacilityCategory = "university" | "general" | "clinic" | "optical";
+
+type FacilityDTO = {
+  id: string;
+  name: string;
+  category: FacilityCategory;
+  address: string | null;
+  roadAddress: string | null;
+  lat: number;
+  lng: number;
+  phone: string | null;
+  distanceKm: number | null;
+  placeUrl: string | null;
+};
+
+/** One raw Kakao keyword-search document (only the fields we use). */
+type KakaoDoc = {
+  id: string;
+  place_name: string;
+  category_name: string;
+  category_group_code: string;
+  phone: string;
+  address_name: string;
+  road_address_name: string;
+  x: string; // longitude
+  y: string; // latitude
+  place_url: string;
+  distance: string; // metres from (x,y) query centre, "" when not provided
+};
+
+/**
+ * Classify a Kakao medical `category_name` (e.g.
+ * "의료,건강 > 병원 > 종합병원 > 대학병원") into the finder categories.
+ * Returns null for anything that is not an eye-care facility so generic
+ * hospitals are filtered out. Order matters: 대학병원 is also a 종합병원.
+ */
+function classifyMedical(categoryName: string): FacilityCategory | null {
+  if (categoryName.includes("대학병원")) return "university";
+  if (categoryName.includes("종합병원")) return "general";
+  if (categoryName.includes("안과")) return "clinic";
+  return null;
+}
+
+async function kakaoKeywordSearch(
+  query: string,
+  lat: number,
+  lng: number,
+  radius: number,
+  categoryGroupCode?: string,
+): Promise<KakaoDoc[]> {
+  const params = new URLSearchParams({
+    query,
+    x: String(lng),
+    y: String(lat),
+    radius: String(radius),
+    sort: "distance",
+    size: "15",
+  });
+  if (categoryGroupCode) params.set("category_group_code", categoryGroupCode);
+
+  const resp = await fetch(
+    `https://dapi.kakao.com/v2/local/search/keyword.json?${params.toString()}`,
+    { headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` } },
+  );
+  if (!resp.ok) {
+    throw new Error(`kakao ${resp.status}`);
+  }
+  const data = (await resp.json()) as { documents?: KakaoDoc[] };
+  return data.documents ?? [];
+}
+
+router.get("/facilities", async (req, res) => {
+  if (!KAKAO_REST_KEY) {
+    res
+      .status(503)
+      .json({ error: "facility search unavailable", code: "no_kakao_key" });
+    return;
+  }
+
+  const lat = parseOptionalFloat(req.query.lat);
+  const lng = parseOptionalFloat(req.query.lng);
+  if (lat == null || lng == null) {
+    res.status(400).json({ error: "lat and lng are required", code: "bad_request" });
+    return;
+  }
+  // Kakao caps radius at 20 km. Hospitals are sparse, so default wide.
+  const radius = Math.min(
+    Math.max(parseOptionalFloat(req.query.radius) ?? 10000, 500),
+    20000,
+  );
+
+  const byId = new Map<string, FacilityDTO>();
+  const add = (doc: KakaoDoc, category: FacilityCategory) => {
+    const dLat = Number.parseFloat(doc.y);
+    const dLng = Number.parseFloat(doc.x);
+    if (!Number.isFinite(dLat) || !Number.isFinite(dLng)) return;
+    const existing = byId.get(doc.id);
+    // Prefer the more specific medical class (university > general > clinic)
+    // if the same place shows up in multiple queries. optical never collides.
+    if (existing) return;
+    const distM = Number.parseFloat(doc.distance);
+    byId.set(doc.id, {
+      id: doc.id,
+      name: doc.place_name,
+      category,
+      address: doc.address_name || null,
+      roadAddress: doc.road_address_name || null,
+      lat: dLat,
+      lng: dLng,
+      phone: doc.phone || null,
+      distanceKm: Number.isFinite(distM)
+        ? Math.round((distM / 1000) * 100) / 100
+        : haversineKm(lat, lng, dLat, dLng),
+      placeUrl: doc.place_url || null,
+    });
+  };
+
+  try {
+    // Run the medical searches (HP8 = 병원) and the optical search together.
+    // Medical results are classified by category_name; 안경점 is optical.
+    const [univ, general, eye, optical] = await Promise.all([
+      kakaoKeywordSearch("대학병원 안과", lat, lng, radius, "HP8"),
+      kakaoKeywordSearch("종합병원 안과", lat, lng, radius, "HP8"),
+      kakaoKeywordSearch("안과", lat, lng, radius, "HP8"),
+      kakaoKeywordSearch("안경점", lat, lng, radius),
+    ]);
+
+    // Insert most-specific first so classify precedence holds on dedup.
+    for (const d of univ) {
+      const cls = classifyMedical(d.category_name);
+      if (cls === "university") add(d, "university");
+    }
+    for (const d of general) {
+      const cls = classifyMedical(d.category_name);
+      if (cls === "university") add(d, "university");
+      else if (cls === "general") add(d, "general");
+    }
+    for (const d of eye) {
+      const cls = classifyMedical(d.category_name);
+      if (cls) add(d, cls);
+    }
+    for (const d of optical) {
+      // Kakao tags these as "... > 안경,콘택트렌즈 > 안경점". Guard against
+      // unrelated keyword hits by requiring 안경 in the category.
+      if (d.category_name.includes("안경")) add(d, "optical");
+    }
+
+    const places = Array.from(byId.values()).sort(
+      (a, b) => (a.distanceKm ?? Infinity) - (b.distanceKm ?? Infinity),
+    );
+    res.json({ places });
+  } catch (err) {
+    console.error("[facilities] kakao search failed", err);
+    res.status(502).json({ error: "facility search failed", code: "upstream_error" });
+  }
 });
 
 export default router;
