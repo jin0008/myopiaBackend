@@ -465,6 +465,25 @@ model oauth_identity {
 /// signed-in regular users can post threads, comment, reply, and like.
 /// Posts and comments are soft-deleted (deleted_at) so reply chains
 /// stay intact and moderation actions are reversible.
+/// Admin-authored reading material ("전문가 칼럼"). Matches the
+/// 20260718120000_expert_column migration. `created_by` is a plain UUID
+/// (no FK), and `updated_at` is set explicitly in code (no @updatedAt).
+model expert_column {
+  id              String   @id(map: "expert_column_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  slug            String   @unique(map: "expert_column_slug_key")
+  title           String
+  body            String
+  category        String
+  author          String   @default("마이오닥 의료진")
+  author_role     String   @default("안과 감수")
+  thumbnail_emoji String   @default("📄")
+  published       Boolean  @default(true)
+  published_at    DateTime @default(now()) @db.Timestamptz(6)
+  created_by      String?  @db.Uuid
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime @default(now()) @db.Timestamptz(6)
+}
+
 model community_post {
   id         String                @id(map: "community_post_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id    String                @db.Uuid
