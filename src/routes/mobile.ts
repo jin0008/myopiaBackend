@@ -1560,6 +1560,12 @@ router.get("/community/posts", requireMobileAuth, async (req, res) => {
     50,
   );
   const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
+  const categoryParam = String(req.query.category ?? "");
+  const category: PostCategory | null = POST_CATEGORIES.includes(
+    categoryParam as PostCategory,
+  )
+    ? (categoryParam as PostCategory)
+    : null;
 
   const cursorRow = cursor
     ? await prisma.community_post.findUnique({ where: { id: cursor } })
@@ -1568,6 +1574,7 @@ router.get("/community/posts", requireMobileAuth, async (req, res) => {
   const rows = await prisma.community_post.findMany({
     where: {
       deleted_at: null,
+      ...(category != null && { category }),
       ...(cursorRow != null && {
         OR: [
           { created_at: { lt: cursorRow.created_at } },
@@ -1595,6 +1602,7 @@ router.get("/community/posts", requireMobileAuth, async (req, res) => {
     posts: slice.map((p) => ({
       id: p.id,
       title: p.title,
+      category: p.category,
       bodyPreview: p.body.length > 200 ? p.body.slice(0, 200) + "…" : p.body,
       author: {
         id: p.user_id,
@@ -1611,9 +1619,13 @@ router.get("/community/posts", requireMobileAuth, async (req, res) => {
   });
 });
 
+const POST_CATEGORIES = ["review", "general"] as const;
+type PostCategory = (typeof POST_CATEGORIES)[number];
+
 const createPostSchema = zod.object({
   title: zod.string().trim().min(1).max(200),
   body: zod.string().trim().min(1).max(20_000),
+  category: zod.enum(POST_CATEGORIES).optional(),
 });
 
 /** POST /api/mobile/community/posts */
@@ -1623,14 +1635,17 @@ router.post(
   validateRequestBody(createPostSchema),
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const { title, body } = req.body as zod.infer<typeof createPostSchema>;
+    const { title, body, category } = req.body as zod.infer<
+      typeof createPostSchema
+    >;
     const post = await prisma.community_post.create({
-      data: { user_id: userId, title, body },
+      data: { user_id: userId, title, body, category: category ?? "general" },
     });
     res.status(201).json({
       id: post.id,
       title: post.title,
       body: post.body,
+      category: post.category,
       author: await authorDTO(userId, userId),
       createdAt: post.created_at.toISOString(),
       updatedAt: post.updated_at.toISOString(),
@@ -1659,6 +1674,7 @@ router.get("/community/posts/:id", requireMobileAuth, async (req, res) => {
     id: post.id,
     title: post.title,
     body: post.body,
+    category: post.category,
     author: {
       id: post.user_id,
       username: post.user.password_auth?.username ?? null,

@@ -470,6 +470,9 @@ model community_post {
   user_id    String                @db.Uuid
   title      String
   body       String
+  // Board category: "review" (치료후기) | "general" (일반). Defaults to
+  // general so existing rows and older clients keep working.
+  category   String                @default("general")
   created_at DateTime              @default(now()) @db.Timestamptz(6)
   updated_at DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
   deleted_at DateTime?             @db.Timestamptz(6)
@@ -479,6 +482,7 @@ model community_post {
 
   @@index([created_at(sort: Desc)], map: "idx_community_post_created_at")
   @@index([user_id], map: "idx_community_post_user")
+  @@index([category, created_at(sort: Desc)], map: "idx_community_post_category")
 }
 
 /// One row per comment OR reply. A reply is just a comment with
@@ -654,22 +658,4 @@ model alert_setting {
   se_min                     Float    @default(-6.0)
   se_progression_d_per_year  Float    @default(0.75)
   updated_at                 DateTime @updatedAt @db.Timestamptz(6)
-}
-
-/// Admin-authored expert columns (전문가 칼럼). Read publicly via
-/// /api/mobile/columns; created/edited by site admins via /column.
-model expert_column {
-  id              String   @id(map: "expert_column_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  slug            String   @unique(map: "expert_column_slug_key")
-  title           String
-  body            String
-  category        String
-  author          String   @default("마이오닥 의료진")
-  author_role     String   @default("안과 감수")
-  thumbnail_emoji String   @default("📄")
-  published       Boolean  @default(true)
-  published_at    DateTime @default(now()) @db.Timestamptz(6)
-  created_by      String?  @db.Uuid
-  created_at      DateTime @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime @default(now()) @db.Timestamptz(6)
 }
