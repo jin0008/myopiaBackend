@@ -5,6 +5,16 @@ import { sex } from "@prisma/client";
 
 const router = express.Router();
 
+// Display order for the chart's "reference data" selector. Asian references are
+// listed first because the primary users are Korean. Any ethnicity not listed
+// here is appended afterwards in alphabetical order.
+const ETHNICITY_ORDER = [
+  "Asian",
+  "EastAsian-CREAMkids",
+  "Caucasian",
+  "EuropeAus-CREAMkids",
+];
+
 router.get("/ethnicity_list", async (req, res) => {
   const data = await prisma.growth_data.findMany({
     select: {
@@ -12,7 +22,12 @@ router.get("/ethnicity_list", async (req, res) => {
     },
     distinct: ["ethnicity"],
   });
-  res.status(200).json(data.map((d) => d.ethnicity));
+  const all = data.map((d) => d.ethnicity);
+  const ordered = [
+    ...ETHNICITY_ORDER.filter((e) => all.includes(e)),
+    ...all.filter((e) => !ETHNICITY_ORDER.includes(e)).sort(),
+  ];
+  res.status(200).json(ordered);
 });
 
 router.get("/", async (req, res) => {
