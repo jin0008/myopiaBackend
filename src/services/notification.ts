@@ -316,7 +316,7 @@ async function emailAlert(
   const measuredDate = alert.date.toISOString().slice(0, 10);
   // Deep link to the patient record. The email itself carries NO patient
   // identifier (registration number / DOB); the recipient identifies the
-  // patient inside EYELOG after logging in, so no personal data travels by mail.
+  // patient inside Myopia Management after logging in, so no personal data travels by mail.
   // `||` (not `??`) so an empty APP_BASE_URL="" falls back too; strip any
   // trailing slash to avoid a double slash in the link.
   const baseUrl = (process.env.APP_BASE_URL || "https://myopiamanage.org").replace(
@@ -340,9 +340,9 @@ async function emailAlert(
       ${alert.reasons.map((r) => `<li>${r}</li>`).join("\n      ")}
     </ul>
     <p>환자 정보는 아래 링크에서 로그인 후 확인해주세요.</p>
-    <p><a href="${chartUrl}">▶ EYELOG에서 환자 기록 확인하기</a></p>
+    <p><a href="${chartUrl}">▶ Myopia Management에서 환자 기록 확인하기</a></p>
     <p style="color:#888;font-size:12px;">본 메일에는 개인정보 보호를 위해 환자 식별정보(등록번호 등)가 포함되어 있지 않습니다.</p>
   `;
 
-  await sendEmail(recipients, `[EYELOG] ${alert.title}`, html);
+  await sendEmail(recipients, `[Myopia Management] ${alert.title}`, html);
 }
