@@ -4,6 +4,7 @@ import express, { ErrorRequestHandler } from "express";
 import bodyParser from "body-parser";
 import cookieParser from "cookie-parser";
 import cors from "cors";
+import helmet from "helmet";
 
 import authRoutes from "./routes/auth";
 import healthcareProfessionalRoutes from "./routes/healthcare_professional";
@@ -24,11 +25,17 @@ import alertSettingRoutes from "./routes/alert_setting";
 import mobileRoutes from "./routes/mobile";
 import columnRoutes from "./routes/column";
 
+import { authLimiter } from "./lib/security";
+
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Prisma } from "@prisma/client";
 import { decryptSymmetric, encryptSymmetric } from "./services/encrpytion";
 
 const app = express();
+
+// Behind the nginx reverse proxy: trust the first proxy hop so req.ip is the
+// real client IP (from X-Forwarded-For). Required for per-client rate limiting.
+app.set("trust proxy", 1);
 
 declare global {
   namespace Express {
@@ -42,6 +49,20 @@ declare global {
 app.use(cookieParser());
 app.use(bodyParser.json());
 app.use(cors());
+app.use(
+  helmet({
+    // The API is consumed cross-origin (mobile app + myopiamanage.org web),
+    // so relax only CORP; all other helmet headers (HSTS, noSniff, frameguard,
+    // Referrer-Policy, hidePoweredBy, …) stay at their secure defaults.
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  }),
+);
+
+// Brute-force protection on authentication endpoints (see lib/security.ts).
+// Mounted before the routers so they run first for these specific paths.
+app.use("/auth/passwordLogin", authLimiter);
+app.use("/auth/googleLogin", authLimiter);
+app.use("/api/mobile/auth/login", authLimiter);
 
 app.use("/auth", authRoutes);
 app.use("/healthcare_professional", healthcareProfessionalRoutes);
