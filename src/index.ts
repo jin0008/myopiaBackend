@@ -52,9 +52,20 @@ app.use(cors());
 app.use(
   helmet({
     // The API is consumed cross-origin (mobile app + myopiamanage.org web),
-    // so relax only CORP; all other helmet headers (HSTS, noSniff, frameguard,
-    // Referrer-Policy, hidePoweredBy, …) stay at their secure defaults.
+    // so relax CORP.
     crossOriginResourcePolicy: { policy: "cross-origin" },
+
+    // nginx already adds these four headers to every response, including
+    // /api (see docs/nginx-security-headers.conf). Leaving them enabled here
+    // sent each one twice and produced two conflicting Referrer-Policy values
+    // (helmet "no-referrer" vs nginx "strict-origin-when-cross-origin").
+    // nginx is the single source of truth for them. Every other helmet header
+    // (COOP, Origin-Agent-Cluster, X-Download-Options, hidePoweredBy, ...)
+    // stays at its secure default.
+    strictTransportSecurity: false,
+    xFrameOptions: false,
+    xContentTypeOptions: false,
+    referrerPolicy: false,
   }),
 );
 
@@ -73,7 +84,7 @@ app.use("/patient", patientRoutes);
 app.use("/user", userRoutes);
 app.use("/hospital", hospitalRoutes);
 app.use("/patient_treatment", patientTreatmentRoutes);
-app.use("/growth_Data", growthDataRoutes);
+app.use("/growth_data", growthDataRoutes);
 app.use("/static", staticRoutes);
 app.use("/news", newsRoutes);
 app.use("/audit_log", auditLogRoutes);
