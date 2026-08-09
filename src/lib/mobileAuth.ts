@@ -139,3 +139,22 @@ export const requireMobileAuth: RequestHandler = (req, res, next) => {
     res.status(401).json({ error: "invalid token", code: "unauthorized" });
   }
 };
+
+/**
+ * Like requireMobileAuth, but for public-read endpoints that personalize
+ * their response when a caller happens to be logged in (e.g. `likedByMe`,
+ * `isMe`) without requiring it. A missing or invalid token is treated as an
+ * anonymous request rather than a 401 — `req.mobileUser` is simply left
+ * unset.
+ */
+export const optionalMobileAuth: RequestHandler = (req, _res, next) => {
+  const header = req.get("Authorization");
+  if (header && header.startsWith("Bearer ")) {
+    try {
+      req.mobileUser = verifyAccessToken(header.slice("Bearer ".length).trim());
+    } catch {
+      // invalid/expired token on an optional-auth route — proceed as a guest
+    }
+  }
+  next();
+};
