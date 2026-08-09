@@ -1,9 +1,38 @@
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 import express from "express";
+import multer from "multer";
 import zod from "zod";
 import prisma from "../lib/prisma";
 import { siteAdminRequired } from "../lib/middlewares";
 
 const router = express.Router();
+
+// Banner images live on local disk (low volume — a handful of banners at a
+// time — so no need for a separate GCS bucket). Persists across deploys since
+// `uploads/` is gitignored, not part of the checked-out source tree.
+const UPLOAD_DIR = path.join(__dirname, "../../uploads/banners");
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+// Hardcoded like the other prod-domain references in this codebase
+// (docs/nginx-security-headers.conf, myodoc's app.json `origin`) — there's no
+// per-environment PUBLIC_ORIGIN config yet.
+const PUBLIC_ORIGIN = "https://myopiamanage.org";
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, `${crypto.randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (_req, file, cb) => {
+    cb(null, /^image\//.test(file.mimetype));
+  },
+});
 
 const createSchema = zod.object({
   title: zod.string().min(1),
@@ -18,6 +47,26 @@ const createSchema = zod.object({
   end_at: zod.string().datetime().nullable().optional(),
 });
 const patchSchema = createSchema.partial();
+
+// POST /banner/upload — admin, multipart/form-data field "image".
+// Returns { url } for use as image_url in create/update.
+router.post("/upload", siteAdminRequired, upload.single("image"), (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ message: "no image file (or not an image)" });
+    return;
+  }
+  res.status(201).json({
+    url: `${PUBLIC_ORIGIN}/api/banner/uploads/${req.file.filename}`,
+  });
+});
+
+// GET /banner/uploads/:filename — public, serves uploaded banner images.
+router.get("/uploads/:filename", (req, res) => {
+  const filePath = path.join(UPLOAD_DIR, path.basename(req.params.filename));
+  res.sendFile(filePath, (err) => {
+    if (err) res.sendStatus(404);
+  });
+});
 
 // GET /banner — admin list (includes inactive/expired).
 router.get("/", siteAdminRequired, async (_req, res) => {
