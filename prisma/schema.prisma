@@ -484,6 +484,23 @@ model expert_column {
   updated_at      DateTime @default(now()) @db.Timestamptz(6)
 }
 
+model ad_banner {
+  id          String    @id(map: "ad_banner_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title       String
+  subtitle    String?
+  badge_text  String?
+  image_url   String
+  link_url    String
+  placement   String    @default("home")
+  sort_order  Int       @default(0)
+  active      Boolean   @default(true)
+  start_at    DateTime? @db.Timestamptz(6)
+  end_at      DateTime? @db.Timestamptz(6)
+  created_by  String?   @db.Uuid
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @db.Timestamptz(6)
+}
+
 model community_post {
   id         String                @id(map: "community_post_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id    String                @db.Uuid

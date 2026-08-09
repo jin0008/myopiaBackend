@@ -2747,6 +2747,36 @@ function loadSeedColumns(): SeedColumn[] {
   return columns;
 }
 
+/** GET /api/mobile/banners?placement=home — public.
+ *  Active banners (within their start/end window, if set) for a placement,
+ *  admin-managed via /banner (siteAdminRequired). */
+router.get("/banners", async (req, res) => {
+  const placement =
+    typeof req.query.placement === "string" && req.query.placement.trim() !== ""
+      ? req.query.placement.trim()
+      : "home";
+  const now = new Date();
+  const rows = await prisma.ad_banner.findMany({
+    where: {
+      placement,
+      active: true,
+      OR: [{ start_at: null }, { start_at: { lte: now } }],
+      AND: [{ OR: [{ end_at: null }, { end_at: { gte: now } }] }],
+    },
+    orderBy: [{ sort_order: "asc" }],
+  });
+  res.json({
+    items: rows.map((b) => ({
+      id: b.id,
+      title: b.title,
+      subtitle: b.subtitle,
+      badgeText: b.badge_text,
+      imageUrl: b.image_url,
+      linkUrl: b.link_url,
+    })),
+  });
+});
+
 /** GET /api/mobile/columns?category=&cursor=&pageSize= — public.
  *  Index-based keyset cursor over the (stable-ordered) seed columns. */
 router.get("/columns", (req, res) => {
