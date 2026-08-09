@@ -12,6 +12,7 @@ import {
   issueRefreshToken,
   rotateRefreshToken,
   requireMobileAuth,
+  optionalMobileAuth,
   revokeAllRefreshTokens,
   signAccessToken,
   MobileJWTPayload,
@@ -1529,6 +1530,13 @@ router.get(
 const POST_LIST_PAGE_SIZE = 20;
 const COMMENT_PAGE_SIZE = 200; // realistically a single post won't exceed this
 
+// Guests can read the community (optionalMobileAuth), but likedByMe/isMe are
+// per-viewer. Rather than making the `likes` include conditional (messy
+// Prisma/TS typing), a guest's viewerId falls back to this sentinel — a
+// well-formed UUID that can never match a real user row — so the "did this
+// viewer like it" filter always resolves to "no" instead of "any user".
+const NO_VIEWER = "00000000-0000-0000-0000-000000000000";
+
 type CommunityAuthorDTO = {
   id: string;
   username: string | null;
@@ -1552,8 +1560,8 @@ async function authorDTO(userId: string, viewerId: string): Promise<CommunityAut
  * Reverse-chronological feed. Pagination uses created_at + id as a
  * keyset cursor so it survives concurrent inserts without dupes/gaps.
  */
-router.get("/community/posts", requireMobileAuth, async (req, res) => {
-  const viewerId = req.mobileUser!.sub;
+router.get("/community/posts", optionalMobileAuth, async (req, res) => {
+  const viewerId = req.mobileUser?.sub ?? NO_VIEWER;
   const pageSize = Math.min(
     Number.parseInt(String(req.query.pageSize ?? POST_LIST_PAGE_SIZE), 10) ||
       POST_LIST_PAGE_SIZE,
@@ -1657,8 +1665,8 @@ router.post(
 );
 
 /** GET /api/mobile/community/posts/:id */
-router.get("/community/posts/:id", requireMobileAuth, async (req, res) => {
-  const viewerId = req.mobileUser!.sub;
+router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
+  const viewerId = req.mobileUser?.sub ?? NO_VIEWER;
   const post = await prisma.community_post.findUnique({
     where: { id: String(req.params.id) },
     include: {
@@ -1757,9 +1765,9 @@ router.delete("/community/posts/:id", requireMobileAuth, async (req, res) => {
  */
 router.get(
   "/community/posts/:id/comments",
-  requireMobileAuth,
+  optionalMobileAuth,
   async (req, res) => {
-    const viewerId = req.mobileUser!.sub;
+    const viewerId = req.mobileUser?.sub ?? NO_VIEWER;
     const postExists = await prisma.community_post.findFirst({
       where: { id: String(req.params.id), deleted_at: null },
       select: { id: true },
