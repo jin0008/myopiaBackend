@@ -501,6 +501,22 @@ model ad_banner {
   updated_at  DateTime  @default(now()) @db.Timestamptz(6)
 }
 
+model hospital_profile {
+  id               String   @id(map: "hospital_profile_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  kakao_place_id   String   @unique(map: "hospital_profile_kakao_place_id_key")
+  name             String
+  description      String?
+  banner_image_url String?
+  images           String[]
+  phone            String?
+  address          String?
+  status           String   @default("published")
+  owner_account_id String?  @db.Uuid
+  created_by       String?  @db.Uuid
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @default(now()) @db.Timestamptz(6)
+}
+
 model community_post {
   id         String                @id(map: "community_post_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id    String                @db.Uuid
