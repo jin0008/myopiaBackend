@@ -3104,6 +3104,29 @@ router.get("/facilities/search", async (req, res) => {
   }
 });
 
+/** GET /api/mobile/hospital-profile/:kakaoPlaceId — public.
+ *  Returns the admin/partner-managed marketing profile (banner, description,
+ *  gallery) for a finder hospital, keyed to its Kakao place id. 404 when the
+ *  hospital hasn't set one up (the app then just shows the basic info). */
+router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
+  const profile = await prisma.hospital_profile.findUnique({
+    where: { kakao_place_id: String(req.params.kakaoPlaceId) },
+  });
+  if (profile == null || profile.status !== "published") {
+    res.status(404).json({ error: "no profile", code: "not_found" });
+    return;
+  }
+  res.json({
+    kakaoPlaceId: profile.kakao_place_id,
+    name: profile.name,
+    description: profile.description,
+    bannerImageUrl: profile.banner_image_url,
+    images: profile.images,
+    phone: profile.phone,
+    address: profile.address,
+  });
+});
+
 /* ------------------------------------------------------------------ *
  * Treatment comparison (근시 치료법 비교)                              *
  *                                                                    *
