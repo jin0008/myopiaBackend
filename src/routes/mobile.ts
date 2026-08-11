@@ -3028,6 +3028,82 @@ router.get("/facilities", async (req, res) => {
   }
 });
 
+/** Kakao keyword search without an origin point — used when the caller gave
+ * a region NAME (e.g. "서울 강남구") rather than resolved coordinates, so
+ * there's nothing to search "near". Results are relevance-ranked, not
+ * distance-ranked. */
+async function kakaoKeywordSearchByText(query: string): Promise<KakaoDoc[]> {
+  const params = new URLSearchParams({ query, size: "15" });
+  const resp = await fetch(
+    `https://dapi.kakao.com/v2/local/search/keyword.json?${params.toString()}`,
+    { headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` } },
+  );
+  if (!resp.ok) throw new Error(`kakao ${resp.status}`);
+  const data = (await resp.json()) as { documents?: KakaoDoc[] };
+  return data.documents ?? [];
+}
+
+/* ------------------------------------------------------------------ *
+ * Treatment finder (치료 항목별 병원 찾기)                              *
+ *                                                                    *
+ * GET /api/mobile/facilities/search?keyword=&region=                  *
+ *                                                                    *
+ * Public. Companion to /facilities above, for the "pick a treatment,  *
+ * then a region" flow instead of GPS-radius search — there's no       *
+ * origin point, so this queries Kakao by region NAME + treatment      *
+ * keyword text instead of x/y/radius. `region` and `keyword` are both *
+ * free text (e.g. region="서울 강남구", keyword="드림렌즈") since       *
+ * neither the app nor this backend has a persisted region/treatment   *
+ * taxonomy — the client sends whatever label it showed the user.      *
+ * ------------------------------------------------------------------ */
+router.get("/facilities/search", async (req, res) => {
+  if (!KAKAO_REST_KEY) {
+    res
+      .status(503)
+      .json({ error: "facility search unavailable", code: "no_kakao_key" });
+    return;
+  }
+
+  const keyword =
+    typeof req.query.keyword === "string" ? req.query.keyword.trim() : "";
+  if (!keyword) {
+    res.status(400).json({ error: "keyword is required", code: "bad_request" });
+    return;
+  }
+  const region =
+    typeof req.query.region === "string" ? req.query.region.trim() : "";
+
+  const query = [region, keyword, "안과"].filter(Boolean).join(" ");
+
+  try {
+    const docs = await kakaoKeywordSearchByText(query);
+    const places: FacilityDTO[] = [];
+    for (const d of docs) {
+      const cls = classifyMedical(d.category_name);
+      if (!cls) continue; // not an eye-care result — drop it
+      const lat = Number.parseFloat(d.y);
+      const lng = Number.parseFloat(d.x);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+      places.push({
+        id: d.id,
+        name: d.place_name,
+        category: cls,
+        address: d.address_name || null,
+        roadAddress: d.road_address_name || null,
+        lat,
+        lng,
+        phone: d.phone || null,
+        distanceKm: null, // no origin point to measure distance from
+        placeUrl: d.place_url || null,
+      });
+    }
+    res.json({ places });
+  } catch (err) {
+    console.error("[facilities/search] kakao search failed", err);
+    res.status(502).json({ error: "facility search failed", code: "upstream_error" });
+  }
+});
+
 /* ------------------------------------------------------------------ *
  * Treatment comparison (근시 치료법 비교)                              *
  *                                                                    *
