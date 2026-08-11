@@ -26,6 +26,7 @@ import mobileRoutes from "./routes/mobile";
 import columnRoutes from "./routes/column";
 import bannerRoutes from "./routes/banner";
 import hospitalProfileRoutes from "./routes/hospital_profile";
+import partnerRoutes from "./routes/partner";
 
 import { authLimiter } from "./lib/security";
 
@@ -96,6 +97,7 @@ app.use("/alert_setting", alertSettingRoutes);
 app.use("/column", columnRoutes);
 app.use("/banner", bannerRoutes);
 app.use("/hospital-profile", hospitalProfileRoutes);
+app.use("/partner", partnerRoutes);
 app.use("/api/mobile", mobileRoutes);
 
 const prismaErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
