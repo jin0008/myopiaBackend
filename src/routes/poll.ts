@@ -119,6 +119,7 @@ router.get("/polls/:id", optionalMobileAuth, async (req, res) => {
     id: poll.id,
     question: poll.question,
     authorName: author,
+    isMine: poll.user_id === viewerId,
     closesAt: poll.closes_at?.toISOString() ?? null,
     closed: poll.closes_at != null && poll.closes_at <= now,
     totalVotes: total,
