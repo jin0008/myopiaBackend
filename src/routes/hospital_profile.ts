@@ -15,6 +15,10 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const PUBLIC_ORIGIN = "https://myopiamanage.org";
 
+// Raster extensions only — mimetype is spoofable and these are served back by
+// extension, so allowing .svg/.html would enable stored XSS.
+const ALLOWED_EXT = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: UPLOAD_DIR,
@@ -25,7 +29,8 @@ const upload = multer({
   }),
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    cb(null, /^image\//.test(file.mimetype));
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, /^image\//.test(file.mimetype) && ALLOWED_EXT.has(ext));
   },
 });
 
