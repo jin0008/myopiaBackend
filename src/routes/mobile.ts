@@ -3104,6 +3104,44 @@ router.get("/facilities/search", async (req, res) => {
   }
 });
 
+/** GET /api/mobile/hospital-profiles/summary?placeIds=a,b,c — public batch.
+ *  Card-summary data for the results list (thumbnail, keywords, rating,
+ *  treatment items) keyed by kakao place id, so the list enriches every card
+ *  in one round-trip instead of N. Only published profiles are returned. */
+router.get("/hospital-profiles/summary", async (req, res) => {
+  const raw = typeof req.query.placeIds === "string" ? req.query.placeIds : "";
+  const ids = raw.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 50);
+  if (ids.length === 0) {
+    res.json({ profiles: {} });
+    return;
+  }
+  const [profiles, ratings] = await Promise.all([
+    prisma.hospital_profile.findMany({
+      where: { kakao_place_id: { in: ids }, status: "published" },
+    }),
+    prisma.hospital_review.groupBy({
+      by: ["kakao_place_id"],
+      where: { kakao_place_id: { in: ids }, status: "visible" },
+      _avg: { rating: true },
+      _count: { _all: true },
+    }),
+  ]);
+  const ratingByPlace = new Map(ratings.map((r) => [r.kakao_place_id, r]));
+  const out: Record<string, unknown> = {};
+  for (const p of profiles) {
+    const r = ratingByPlace.get(p.kakao_place_id);
+    out[p.kakao_place_id] = {
+      thumbnailUrl: p.thumbnail_url,
+      keywords: p.keywords,
+      treatmentItems: p.treatment_items ?? [],
+      verified: p.verified,
+      ratingAvg: r?._avg.rating ?? null,
+      reviewCount: r?._count._all ?? 0,
+    };
+  }
+  res.json({ profiles: out });
+});
+
 /** GET /api/mobile/hospital-profile/:kakaoPlaceId — public.
  *  Returns the admin/partner-managed marketing profile (banner, description,
  *  gallery) for a finder hospital, keyed to its Kakao place id. 404 when the
