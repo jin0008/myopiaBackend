@@ -52,18 +52,40 @@ router.get("/polls", optionalMobileAuth, async (req, res) => {
     },
   });
 
+  // Per-option tallies for every listed poll in one query, so the list cards
+  // can render results (똑닥-style) without an extra round-trip per poll.
+  const tallies = await prisma.poll_vote.groupBy({
+    by: ["option_id"],
+    where: { poll_id: { in: polls.map((p) => p.id) } },
+    _count: { _all: true },
+  });
+  const countByOption = new Map(tallies.map((t) => [t.option_id, t._count._all]));
+
   res.json({
-    polls: polls.map((p) => ({
-      id: p.id,
-      question: p.question,
-      closesAt: p.closes_at?.toISOString() ?? null,
-      closed: p.closes_at != null && p.closes_at <= now,
-      optionCount: p.options.length,
-      totalVotes: p._count.votes,
-      commentCount: p._count.comments,
-      votedByMe: p.votes.length > 0,
-      createdAt: p.created_at.toISOString(),
-    })),
+    polls: polls.map((p) => {
+      const total = p._count.votes;
+      return {
+        id: p.id,
+        question: p.question,
+        closesAt: p.closes_at?.toISOString() ?? null,
+        closed: p.closes_at != null && p.closes_at <= now,
+        optionCount: p.options.length,
+        totalVotes: total,
+        commentCount: p._count.comments,
+        votedByMe: p.votes.length > 0,
+        myOptionId: p.votes[0]?.option_id ?? null,
+        createdAt: p.created_at.toISOString(),
+        options: p.options.map((o) => {
+          const count = countByOption.get(o.id) ?? 0;
+          return {
+            id: o.id,
+            label: o.label,
+            count,
+            percent: total > 0 ? Math.round((count / total) * 100) : 0,
+          };
+        }),
+      };
+    }),
   });
 });
 
