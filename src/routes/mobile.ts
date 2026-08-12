@@ -3243,8 +3243,9 @@ router.post(
       return;
     }
     const d = parsed.data;
-    const review = await prisma.hospital_review
-      .create({
+    let review;
+    try {
+      review = await prisma.hospital_review.create({
         data: {
           kakao_place_id: placeId,
           user_id: userId,
@@ -3253,11 +3254,15 @@ router.post(
           content: d.content,
           images: d.images ?? [],
         },
-      })
-      .catch(() => null);
-    if (review == null) {
-      res.status(409).json({ error: "already reviewed", code: "duplicate" });
-      return;
+      });
+    } catch (e) {
+      // Only a unique-constraint hit means "already reviewed" — anything else
+      // is a real failure and must not be masked as a 409.
+      if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
+        res.status(409).json({ error: "already reviewed", code: "duplicate" });
+        return;
+      }
+      throw e;
     }
     res.status(201).json({ id: review.id });
   },
