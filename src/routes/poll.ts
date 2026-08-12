@@ -46,7 +46,8 @@ router.get("/polls", optionalMobileAuth, async (req, res) => {
     take: 30,
     include: {
       options: { orderBy: { position: "asc" } },
-      _count: { select: { votes: true, comments: true } },
+      // Soft-deleted comments must not inflate the count (same as community).
+      _count: { select: { votes: true, comments: { where: { deleted_at: null } } } },
       votes: { where: { user_id: viewerId }, take: 1 },
     },
   });
@@ -95,7 +96,7 @@ router.get("/polls/:id", optionalMobileAuth, async (req, res) => {
     where: { id, deleted_at: null },
     include: {
       options: { orderBy: { position: "asc" } },
-      _count: { select: { comments: true } },
+      _count: { select: { comments: { where: { deleted_at: null } } } },
     },
   });
   if (poll == null) {
