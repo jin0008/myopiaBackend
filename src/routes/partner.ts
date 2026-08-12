@@ -119,6 +119,16 @@ router.get("/profile", partnerRequired, async (req, res) => {
   res.json(profile);
 });
 
+const treatmentItemSchema = zod.object({
+  category: zod.string().min(1),
+  name: zod.string().min(1),
+  normalPrice: zod.number().nullable().optional(),
+  eventPrice: zod.number().nullable().optional(),
+  description: zod.string().optional(),
+});
+
+// Partners set their own marketing fields, but NOT hospital_id or verified —
+// those gate review eligibility and the trust badge, so they stay admin-only.
 const profileSchema = zod.object({
   kakao_place_id: zod.string().min(1),
   name: zod.string().min(1),
@@ -127,6 +137,10 @@ const profileSchema = zod.object({
   images: zod.array(zod.string().url()).optional(),
   phone: zod.string().optional(),
   address: zod.string().optional(),
+  thumbnail_url: zod.string().url().nullable().optional(),
+  keywords: zod.array(zod.string()).optional(),
+  treatment_items: zod.array(treatmentItemSchema).optional(),
+  booking_url: zod.string().url().nullable().optional(),
 });
 
 // Upsert the partner's single profile. Published only once the account is
@@ -158,6 +172,10 @@ router.put("/profile", partnerRequired, async (req, res) => {
       images: d.images ?? [],
       phone: d.phone,
       address: d.address,
+      thumbnail_url: d.thumbnail_url ?? null,
+      keywords: d.keywords ?? [],
+      treatment_items: d.treatment_items ?? undefined,
+      booking_url: d.booking_url ?? null,
       status,
       owner_account_id: account.id,
       updated_at: new Date(),
