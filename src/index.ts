@@ -77,6 +77,8 @@ app.use(
 app.use("/auth/passwordLogin", authLimiter);
 app.use("/auth/googleLogin", authLimiter);
 app.use("/api/mobile/auth/login", authLimiter);
+app.use("/partner/login", authLimiter);
+app.use("/partner/signup", authLimiter);
 
 app.use("/auth", authRoutes);
 app.use("/healthcare_professional", healthcareProfessionalRoutes);

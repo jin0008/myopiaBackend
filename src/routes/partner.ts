@@ -18,6 +18,11 @@ const UPLOAD_DIR = path.join(__dirname, "../../uploads/hospital-profiles");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 const PUBLIC_ORIGIN = "https://myopiamanage.org";
 
+// Whitelist raster extensions only. mimetype is client-spoofable, and these
+// files are served back by extension (res.sendFile) — allowing e.g. .svg/.html
+// would let a spoofed upload be served as renderable content (stored XSS).
+const ALLOWED_EXT = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: UPLOAD_DIR,
@@ -26,7 +31,10 @@ const upload = multer({
     },
   }),
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (_req, file, cb) => cb(null, /^image\//.test(file.mimetype)),
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, /^image\//.test(file.mimetype) && ALLOWED_EXT.has(ext));
+  },
 });
 
 /* ---- partner-facing auth ---------------------------------------------- */
@@ -170,15 +178,28 @@ router.get("/accounts", siteAdminRequired, async (_req, res) => {
   const rows = await prisma.hospital_account.findMany({
     orderBy: [{ created_at: "desc" }],
   });
+  // Attach the profile each account claimed so the admin can verify the
+  // claimed hospital (kakao place) actually matches the applicant before
+  // approving — a partner can put any place_id on their profile, so this
+  // manual check is the real guard against impersonation.
+  const profiles = await prisma.hospital_profile.findMany({
+    where: { owner_account_id: { in: rows.map((a) => a.id) } },
+  });
+  const byOwner = new Map(profiles.map((p) => [p.owner_account_id, p]));
   res.json(
-    rows.map((a) => ({
-      id: a.id,
-      email: a.email,
-      contactName: a.contact_name,
-      hospitalName: a.hospital_name,
-      status: a.status,
-      createdAt: a.created_at.toISOString(),
-    })),
+    rows.map((a) => {
+      const p = byOwner.get(a.id);
+      return {
+        id: a.id,
+        email: a.email,
+        contactName: a.contact_name,
+        hospitalName: a.hospital_name,
+        status: a.status,
+        createdAt: a.created_at.toISOString(),
+        claimedPlaceId: p?.kakao_place_id ?? null,
+        claimedName: p?.name ?? null,
+      };
+    }),
   );
 });
 
