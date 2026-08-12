@@ -3276,7 +3276,13 @@ router.patch(
     const id = String(req.params.id);
     const userId = req.mobileUser!.sub;
     const existing = await prisma.hospital_review.findUnique({ where: { id } });
-    if (existing == null || existing.user_id !== userId) {
+    // The place id in the path must match the review's, so a review can't be
+    // edited through an unrelated hospital's URL.
+    if (
+      existing == null ||
+      existing.user_id !== userId ||
+      existing.kakao_place_id !== String(req.params.kakaoPlaceId)
+    ) {
       res.sendStatus(404);
       return;
     }
@@ -3296,7 +3302,11 @@ router.delete(
     const id = String(req.params.id);
     const userId = req.mobileUser!.sub;
     const existing = await prisma.hospital_review.findUnique({ where: { id } });
-    if (existing == null || existing.user_id !== userId) {
+    if (
+      existing == null ||
+      existing.user_id !== userId ||
+      existing.kakao_place_id !== String(req.params.kakaoPlaceId)
+    ) {
       res.sendStatus(404);
       return;
     }
