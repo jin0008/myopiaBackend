@@ -722,3 +722,73 @@ model alert_setting {
   se_progression_d_per_year  Float    @default(0.75)
   updated_at                 DateTime @updatedAt @db.Timestamptz(6)
 }
+
+// Community polls (똑닥-style 설문). user_id columns are plain (no Prisma
+// relation to `user`) to avoid touching the large user model — author
+// usernames are resolved separately, mirroring authorDTO() in mobile.ts.
+model poll {
+  id         String         @id(map: "poll_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String         @db.Uuid
+  question   String
+  closes_at  DateTime?      @db.Timestamptz(6)
+  created_at DateTime       @default(now()) @db.Timestamptz(6)
+  updated_at DateTime       @default(now()) @updatedAt @db.Timestamptz(6)
+  deleted_at DateTime?      @db.Timestamptz(6)
+  options    poll_option[]
+  votes      poll_vote[]
+  comments   poll_comment[]
+
+  @@index([created_at(sort: Desc)], map: "idx_poll_created_at")
+}
+
+model poll_option {
+  id       String      @id(map: "poll_option_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  poll_id  String      @db.Uuid
+  label    String
+  position Int         @default(0)
+  poll     poll        @relation(fields: [poll_id], references: [id], onDelete: Cascade, map: "poll_option_poll_fk")
+  votes    poll_vote[]
+
+  @@index([poll_id], map: "idx_poll_option_poll")
+}
+
+model poll_vote {
+  user_id    String      @db.Uuid
+  poll_id    String      @db.Uuid
+  option_id  String      @db.Uuid
+  created_at DateTime    @default(now()) @db.Timestamptz(6)
+  poll       poll        @relation(fields: [poll_id], references: [id], onDelete: Cascade, map: "poll_vote_poll_fk")
+  option     poll_option @relation(fields: [option_id], references: [id], onDelete: Cascade, map: "poll_vote_option_fk")
+
+  @@id([user_id, poll_id], map: "poll_vote_pk")
+  @@index([poll_id], map: "idx_poll_vote_poll")
+  @@index([option_id], map: "idx_poll_vote_option")
+}
+
+model poll_comment {
+  id                String              @id(map: "poll_comment_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  poll_id           String              @db.Uuid
+  user_id           String              @db.Uuid
+  parent_comment_id String?             @db.Uuid
+  body              String
+  created_at        DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime            @default(now()) @updatedAt @db.Timestamptz(6)
+  deleted_at        DateTime?           @db.Timestamptz(6)
+  poll              poll                @relation(fields: [poll_id], references: [id], onDelete: Cascade, map: "poll_comment_poll_fk")
+  parent            poll_comment?       @relation("poll_comment_replies", fields: [parent_comment_id], references: [id], onDelete: Cascade, map: "poll_comment_parent_fk")
+  replies           poll_comment[]      @relation("poll_comment_replies")
+  likes             poll_comment_like[]
+
+  @@index([poll_id, created_at], map: "idx_poll_comment_poll")
+  @@index([parent_comment_id], map: "idx_poll_comment_parent")
+}
+
+model poll_comment_like {
+  user_id    String       @db.Uuid
+  comment_id String       @db.Uuid
+  created_at DateTime     @default(now()) @db.Timestamptz(6)
+  comment    poll_comment @relation(fields: [comment_id], references: [id], onDelete: Cascade, map: "poll_comment_like_comment_fk")
+
+  @@id([user_id, comment_id], map: "poll_comment_like_pk")
+  @@index([comment_id], map: "idx_poll_comment_like_comment")
+}

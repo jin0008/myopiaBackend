@@ -23,6 +23,7 @@ import alertRecipientRoutes from "./routes/alert_recipient";
 import studyRoutes from "./routes/study";
 import alertSettingRoutes from "./routes/alert_setting";
 import mobileRoutes from "./routes/mobile";
+import pollRoutes from "./routes/poll";
 import columnRoutes from "./routes/column";
 import bannerRoutes from "./routes/banner";
 import hospitalProfileRoutes from "./routes/hospital_profile";
@@ -100,6 +101,7 @@ app.use("/column", columnRoutes);
 app.use("/banner", bannerRoutes);
 app.use("/hospital-profile", hospitalProfileRoutes);
 app.use("/partner", partnerRoutes);
+app.use("/api/mobile", pollRoutes);
 app.use("/api/mobile", mobileRoutes);
 
 const prismaErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
