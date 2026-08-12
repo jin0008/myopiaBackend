@@ -3109,23 +3109,163 @@ router.get("/facilities/search", async (req, res) => {
  *  gallery) for a finder hospital, keyed to its Kakao place id. 404 when the
  *  hospital hasn't set one up (the app then just shows the basic info). */
 router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
+  const placeId = String(req.params.kakaoPlaceId);
   const profile = await prisma.hospital_profile.findUnique({
-    where: { kakao_place_id: String(req.params.kakaoPlaceId) },
+    where: { kakao_place_id: placeId },
   });
   if (profile == null || profile.status !== "published") {
     res.status(404).json({ error: "no profile", code: "not_found" });
     return;
   }
+  const agg = await prisma.hospital_review.aggregate({
+    where: { kakao_place_id: placeId, status: "visible" },
+    _avg: { rating: true },
+    _count: { _all: true },
+  });
   res.json({
     kakaoPlaceId: profile.kakao_place_id,
     name: profile.name,
     description: profile.description,
     bannerImageUrl: profile.banner_image_url,
+    thumbnailUrl: profile.thumbnail_url,
     images: profile.images,
     phone: profile.phone,
     address: profile.address,
+    keywords: profile.keywords,
+    treatmentItems: profile.treatment_items ?? [],
+    verified: profile.verified,
+    bookingUrl: profile.booking_url,
+    // reviewable only when linked to an internal hospital
+    reviewable: profile.hospital_id != null,
+    ratingAvg: agg._avg.rating,
+    reviewCount: agg._count._all,
   });
 });
+
+/** GET /api/mobile/hospital-profile/:kakaoPlaceId/reviews — public list. */
+router.get("/hospital-profile/:kakaoPlaceId/reviews", optionalMobileAuth, async (req, res) => {
+  const placeId = String(req.params.kakaoPlaceId);
+  const reviews = await prisma.hospital_review.findMany({
+    where: { kakao_place_id: placeId, status: "visible" },
+    orderBy: [{ created_at: "desc" }],
+    take: 100,
+  });
+  const me = req.mobileUser?.sub;
+  res.json({
+    reviews: reviews.map((r) => ({
+      id: r.id,
+      rating: r.rating,
+      content: r.content,
+      images: r.images,
+      createdAt: r.created_at.toISOString(),
+      isMine: me != null && r.user_id === me,
+    })),
+  });
+});
+
+const reviewBodySchema = zod.object({
+  rating: zod.number().int().min(1).max(5),
+  content: zod.string().min(1).max(2000),
+  images: zod.array(zod.string().url()).max(10).optional(),
+});
+
+/** Verify the logged-in user was actually a patient at the hospital this
+ *  profile is linked to (the only way we can trust "진료 환자만"). Returns the
+ *  internal hospital_id on success, or null when not eligible. */
+async function eligibleHospitalId(placeId: string, userId: string): Promise<string | null> {
+  const profile = await prisma.hospital_profile.findUnique({
+    where: { kakao_place_id: placeId },
+  });
+  if (profile == null || profile.hospital_id == null) return null;
+  const link = await prisma.child_hospital_link.findFirst({
+    where: {
+      hospital_id: profile.hospital_id,
+      status: "active",
+      parent_child_link: { user_id: userId },
+    },
+  });
+  return link == null ? null : profile.hospital_id;
+}
+
+/** POST /api/mobile/hospital-profile/:kakaoPlaceId/reviews — patients only. */
+router.post(
+  "/hospital-profile/:kakaoPlaceId/reviews",
+  requireMobileAuth,
+  async (req, res) => {
+    const placeId = String(req.params.kakaoPlaceId);
+    const parsed = reviewBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid body", code: "bad_request" });
+      return;
+    }
+    const userId = req.mobileUser!.sub;
+    const hospitalId = await eligibleHospitalId(placeId, userId);
+    if (hospitalId == null) {
+      res.status(403).json({ error: "not a verified patient", code: "not_eligible" });
+      return;
+    }
+    const d = parsed.data;
+    const review = await prisma.hospital_review
+      .create({
+        data: {
+          kakao_place_id: placeId,
+          user_id: userId,
+          hospital_id: hospitalId,
+          rating: d.rating,
+          content: d.content,
+          images: d.images ?? [],
+        },
+      })
+      .catch(() => null);
+    if (review == null) {
+      res.status(409).json({ error: "already reviewed", code: "duplicate" });
+      return;
+    }
+    res.status(201).json({ id: review.id });
+  },
+);
+
+/** PATCH /api/mobile/hospital-profile/:kakaoPlaceId/reviews/:id — own review. */
+router.patch(
+  "/hospital-profile/:kakaoPlaceId/reviews/:id",
+  requireMobileAuth,
+  async (req, res) => {
+    const parsed = reviewBodySchema.partial().safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "invalid body", code: "bad_request" });
+      return;
+    }
+    const id = String(req.params.id);
+    const userId = req.mobileUser!.sub;
+    const existing = await prisma.hospital_review.findUnique({ where: { id } });
+    if (existing == null || existing.user_id !== userId) {
+      res.sendStatus(404);
+      return;
+    }
+    const updated = await prisma.hospital_review.update({
+      where: { id },
+      data: { ...parsed.data, updated_at: new Date() },
+    });
+    res.json({ id: updated.id });
+  },
+);
+
+/** DELETE /api/mobile/hospital-profile/:kakaoPlaceId/reviews/:id — own review. */
+router.delete(
+  "/hospital-profile/:kakaoPlaceId/reviews/:id",
+  requireMobileAuth,
+  async (req, res) => {
+    const id = String(req.params.id);
+    const userId = req.mobileUser!.sub;
+    const existing = await prisma.hospital_review.findUnique({ where: { id } });
+    if (existing == null || existing.user_id !== userId) {
+      res.sendStatus(404);
+      return;
+    }
+    await prisma.hospital_review.delete({ where: { id } });
+    res.sendStatus(204);
+  },
+);
 
 /* ------------------------------------------------------------------ *
  * Treatment comparison (근시 치료법 비교)                              *

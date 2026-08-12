@@ -36,6 +36,14 @@ const upload = multer({
 
 const STATUSES = ["draft", "pending", "published"] as const;
 
+const treatmentItemSchema = zod.object({
+  category: zod.string().min(1),
+  name: zod.string().min(1),
+  normalPrice: zod.number().nullable().optional(),
+  eventPrice: zod.number().nullable().optional(),
+  description: zod.string().optional(),
+});
+
 const createSchema = zod.object({
   kakao_place_id: zod.string().min(1),
   name: zod.string().min(1),
@@ -45,6 +53,12 @@ const createSchema = zod.object({
   phone: zod.string().optional(),
   address: zod.string().optional(),
   status: zod.enum(STATUSES).optional(),
+  hospital_id: zod.string().uuid().nullable().optional(),
+  thumbnail_url: zod.string().url().nullable().optional(),
+  keywords: zod.array(zod.string()).optional(),
+  treatment_items: zod.array(treatmentItemSchema).optional(),
+  verified: zod.boolean().optional(),
+  booking_url: zod.string().url().nullable().optional(),
 });
 const patchSchema = createSchema.partial();
 
@@ -65,6 +79,39 @@ router.get("/uploads/:filename", (req, res) => {
   res.sendFile(filePath, (err) => {
     if (err) res.sendStatus(404);
   });
+});
+
+/* ---- review moderation (site admin) ----------------------------------- *
+ * Under /moderation/* so it never collides with the /:id profile routes. */
+
+// GET /hospital-profile/moderation/:kakaoPlaceId/reviews — all statuses.
+router.get("/moderation/:kakaoPlaceId/reviews", siteAdminRequired, async (req, res) => {
+  const rows = await prisma.hospital_review.findMany({
+    where: { kakao_place_id: String(req.params.kakaoPlaceId) },
+    orderBy: [{ created_at: "desc" }],
+  });
+  res.json(rows);
+});
+
+// PATCH /hospital-profile/moderation/reviews/:id — hide/unhide a review.
+const moderateSchema = zod.object({ status: zod.enum(["visible", "hidden"]) });
+router.patch("/moderation/reviews/:id", siteAdminRequired, async (req, res) => {
+  const parsed = moderateSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "invalid body" });
+    return;
+  }
+  const row = await prisma.hospital_review
+    .update({
+      where: { id: String(req.params.id) },
+      data: { status: parsed.data.status, updated_at: new Date() },
+    })
+    .catch(() => null);
+  if (row == null) {
+    res.sendStatus(404);
+    return;
+  }
+  res.json({ id: row.id, status: row.status });
 });
 
 // GET /hospital-profile — admin list (all statuses).
@@ -106,6 +153,12 @@ router.post("/", siteAdminRequired, async (req, res) => {
         phone: d.phone,
         address: d.address,
         status: d.status ?? "published",
+        hospital_id: d.hospital_id ?? null,
+        thumbnail_url: d.thumbnail_url ?? null,
+        keywords: d.keywords ?? [],
+        treatment_items: d.treatment_items ?? undefined,
+        verified: d.verified ?? false,
+        booking_url: d.booking_url ?? null,
         created_by: req.authSession!.user_id,
       },
     })

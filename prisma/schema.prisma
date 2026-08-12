@@ -524,8 +524,39 @@ model hospital_profile {
   status           String   @default("published")
   owner_account_id String?  @db.Uuid
   created_by       String?  @db.Uuid
+  // Link to an internal participating hospital. When set, app users with an
+  // active child_hospital_link to this hospital may leave reviews (the only
+  // way we can verify someone was actually a patient). Null = review-disabled.
+  hospital_id      String?  @db.Uuid
+  // 모두닥-style card fields (all additive/optional).
+  thumbnail_url    String?
+  keywords         String[]
+  // [{ category, name, normalPrice, eventPrice, description }] — category is a
+  // treatment-finder key (dreamLens, visionCorrection, ...).
+  treatment_items  Json?
+  verified         Boolean  @default(false)
+  booking_url      String?
   created_at       DateTime @default(now()) @db.Timestamptz(6)
   updated_at       DateTime @default(now()) @db.Timestamptz(6)
+}
+
+// App-user reviews of a hospital, keyed to the profile's kakao_place_id.
+// Eligibility (real patient) is enforced at write time via child_hospital_link
+// against the profile's hospital_id; hospital_id is stamped here for audit.
+model hospital_review {
+  id             String   @id(map: "hospital_review_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  kakao_place_id String
+  user_id        String   @db.Uuid
+  hospital_id    String   @db.Uuid
+  rating         Int
+  content        String
+  images         String[]
+  status         String   @default("visible") // visible | hidden
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([kakao_place_id, user_id], map: "hospital_review_place_user_unique")
+  @@index([kakao_place_id], map: "idx_hospital_review_place")
 }
 
 model community_post {
