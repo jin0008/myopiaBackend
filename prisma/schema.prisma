@@ -823,3 +823,35 @@ model poll_comment_like {
   @@id([user_id, comment_id], map: "poll_comment_like_pk")
   @@index([comment_id], map: "idx_poll_comment_like_comment")
 }
+
+// UGC moderation. App Store guideline 1.2 requires a way to report content
+// and block abusive users for any app carrying user-generated content.
+// user ids are plain columns (no relation) to keep the large `user` model
+// untouched, matching how poll/* and hospital_review already do it.
+model content_report {
+  id               String   @id(map: "content_report_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reporter_user_id String   @db.Uuid
+  // post | comment | poll | poll_comment | review
+  target_type      String
+  target_id        String
+  // Author of the reported content, kept so admins can act on repeat offenders.
+  target_user_id   String?  @db.Uuid
+  reason           String
+  detail           String?
+  // pending | resolved | dismissed
+  status           String   @default("pending")
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([reporter_user_id, target_type, target_id], map: "content_report_once_unique")
+  @@index([status, created_at(sort: Desc)], map: "idx_content_report_status")
+}
+
+model user_block {
+  blocker_user_id String   @db.Uuid
+  blocked_user_id String   @db.Uuid
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([blocker_user_id, blocked_user_id], map: "user_block_pk")
+  @@index([blocker_user_id], map: "idx_user_block_blocker")
+}

@@ -3,6 +3,7 @@ import zod from "zod";
 import prisma from "../lib/prisma";
 import { requireMobileAuth, optionalMobileAuth } from "../lib/mobileAuth";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
+import { blockedUserIds } from "../lib/blocks";
 
 const router = express.Router();
 
@@ -40,8 +41,9 @@ router.get("/polls", optionalMobileAuth, async (req, res) => {
         ? { closes_at: { lte: now } }
         : {};
 
+  const hiddenAuthors = await blockedUserIds(req.mobileUser?.sub);
   const polls = await prisma.poll.findMany({
-    where: { deleted_at: null, ...closesFilter },
+    where: { deleted_at: null, user_id: { notIn: hiddenAuthors }, ...closesFilter },
     orderBy: [{ created_at: "desc" }],
     take: 30,
     include: {
@@ -234,8 +236,9 @@ router.get("/polls/:id/comments", optionalMobileAuth, async (req, res) => {
     res.status(404).json({ error: "poll not found", code: "not_found" });
     return;
   }
+  const hiddenAuthors = await blockedUserIds(req.mobileUser?.sub);
   const rows = await prisma.poll_comment.findMany({
-    where: { poll_id: pollId },
+    where: { poll_id: pollId, user_id: { notIn: hiddenAuthors } },
     orderBy: [{ created_at: "asc" }, { id: "asc" }],
     take: COMMENT_PAGE_SIZE,
     include: {
