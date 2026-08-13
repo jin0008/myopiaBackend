@@ -5,6 +5,7 @@ import { requireMobileAuth, optionalMobileAuth } from "../lib/mobileAuth";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { authorBlockFilter } from "../lib/blocks";
 import { notify } from "../lib/notify";
+import { hotScore, popularSince } from "../lib/ranking";
 
 const router = express.Router();
 
@@ -111,6 +112,78 @@ router.post("/polls", requireMobileAuth, async (req, res) => {
     },
   });
   res.status(201).json({ id: poll.id });
+});
+
+/**
+ * GET /polls/popular — the home screen's 투표 인기.
+ *
+ * Same scoring as the community 인기글 (shared in lib/ranking), so a poll and a
+ * post are ranked on comparable terms even though they're shown as separate
+ * sections. Returns the list DTO so the client renders it with the same poll
+ * card it already uses.
+ *
+ * Registered before /polls/:id — the other way round, ":id" swallows "popular".
+ */
+router.get("/polls/popular", optionalMobileAuth, async (req, res) => {
+  const viewerId = req.mobileUser?.sub ?? NO_VIEWER;
+  const limit = Math.min(Math.max(Number.parseInt(String(req.query.limit ?? "1"), 10) || 1, 1), 5);
+  const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
+  const now = new Date();
+
+  const polls = await prisma.poll.findMany({
+    where: { deleted_at: null, created_at: { gte: popularSince() }, ...notBlocked },
+    orderBy: [{ created_at: "desc" }],
+    take: 200,
+    include: {
+      options: { orderBy: { position: "asc" } },
+      _count: { select: { votes: true, comments: { where: { deleted_at: null } } } },
+      votes: { where: { user_id: viewerId }, take: 1 },
+    },
+  });
+
+  const ranked = [...polls].sort(
+    (a, b) =>
+      hotScore(b.view_count, b._count.votes, b._count.comments, b.created_at, now.getTime()) -
+      hotScore(a.view_count, a._count.votes, a._count.comments, a.created_at, now.getTime()),
+  );
+  // No engagement filter here, unlike posts: the section shows a single poll,
+  // and hiding it on a quiet week leaves a labelled gap on the home screen.
+  // The newest poll is a reasonable thing to show when nothing is hot yet.
+  const chosen = ranked.slice(0, limit);
+
+  const tallies = await prisma.poll_vote.groupBy({
+    by: ["option_id"],
+    where: { poll_id: { in: chosen.map((p) => p.id) } },
+    _count: { _all: true },
+  });
+  const countByOption = new Map(tallies.map((t) => [t.option_id, t._count._all]));
+
+  res.json({
+    polls: chosen.map((p) => {
+      const total = p._count.votes;
+      return {
+        id: p.id,
+        question: p.question,
+        closesAt: p.closes_at?.toISOString() ?? null,
+        closed: p.closes_at != null && p.closes_at <= now,
+        optionCount: p.options.length,
+        totalVotes: total,
+        commentCount: p._count.comments,
+        votedByMe: p.votes.length > 0,
+        myOptionId: p.votes[0]?.option_id ?? null,
+        createdAt: p.created_at.toISOString(),
+        options: p.options.map((o) => {
+          const count = countByOption.get(o.id) ?? 0;
+          return {
+            id: o.id,
+            label: o.label,
+            count,
+            percent: total > 0 ? Math.round((count / total) * 100) : 0,
+          };
+        }),
+      };
+    }),
+  });
 });
 
 /** GET /polls/:id — options with vote counts/percent + my vote. */

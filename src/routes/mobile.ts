@@ -22,6 +22,7 @@ import { decryptSymmetric } from "../services/encrpytion";
 import { hashRegistrationNumber } from "../lib/hash";
 import { authorBlockFilter } from "../lib/blocks";
 import { notify } from "../lib/notify";
+import { hotScore, popularSince } from "../lib/ranking";
 import { CONSENT_VERSION } from "../lib/consent";
 
 /**
@@ -1678,10 +1679,9 @@ router.post(
  * something. Views alone would reward clickbait titles; likes alone put a post
  * with two hearts above one people are actually reading.
  *
- * Posts and polls compete in one list. The community tab already mixes them, so
- * ranking only posts here would mean the hottest thing on the board can't reach
- * the home screen just because it happens to be a poll. A vote counts as a like:
- * both are one tap of agreement.
+ * Posts only. Polls are ranked by /polls/popular and shown as their own section,
+ * because a poll and a post aren't the same thing to read — mixed into one list
+ * the poll just looks like a post with a strange title.
  *
  * Then it decays with age, so the section answers "what's live today" instead
  * of showing the same all-time winners forever. The candidate window is a week
@@ -1700,22 +1700,10 @@ async function usernameMapFor(userIds: string[]): Promise<Map<string, string | n
   return new Map(rows.map((r) => [r.user_id, r.username]));
 }
 
-const POPULAR_WINDOW_DAYS = 7;
-const WEIGHT = { view: 3, like: 4, comment: 7 } as const;
-/**
- * Steep on purpose, because the section is meant to answer "what's live today":
- * a day-old post needs roughly 14x the engagement of a fresh one to tie it.
- * The `+2` keeps a brand-new post from dividing by ~0 and scoring infinity.
- *
- * The 7-day candidate window is therefore a floor, not a real window — posts
- * past a couple of days only surface when almost nothing else has any
- * engagement, which is exactly the quiet-day fallback it exists for.
- */
-const DECAY_EXPONENT = 1.4;
 
 router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
   const limit = Math.min(Math.max(Number.parseInt(String(req.query.limit ?? "3"), 10) || 3, 1), 10);
-  const since = new Date(Date.now() - POPULAR_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const since = popularSince();
   const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
 
   const rows = await prisma.community_post.findMany({
@@ -1733,29 +1721,11 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
     take: 200,
   });
 
-  const pollRows = await prisma.poll.findMany({
-    where: { deleted_at: null, created_at: { gte: since }, ...notBlocked },
-    include: { _count: { select: { comments: { where: { deleted_at: null } }, votes: true } } },
-    orderBy: { created_at: "desc" },
-    take: 200,
-  });
-  const pollAuthors = await usernameMapFor(pollRows.map((p) => p.user_id));
-
   const viewerId = req.mobileUser?.sub ?? NO_VIEWER;
   const now = Date.now();
 
-  /**
-   * Views are damped logarithmically. Left linear, a title that pulls clicks but
-   * no reaction outranks something people actually engaged with — the
-   * 200-views / 0-comments case beats 40-views / 3-comments outright. Log keeps
-   * views meaningful while capping how far they alone can carry.
-   */
-  const score = (views: number, taps: number, comments: number, createdAt: Date) => {
-    const engagement =
-      Math.log2(1 + views) * WEIGHT.view + taps * WEIGHT.like + comments * WEIGHT.comment;
-    const ageHours = Math.max(0, (now - createdAt.getTime()) / 3_600_000);
-    return engagement / Math.pow(ageHours + 2, DECAY_EXPONENT);
-  };
+  const score = (views: number, taps: number, comments: number, createdAt: Date) =>
+    hotScore(views, taps, comments, createdAt, now);
 
   type Item = { createdAt: Date; score: number; dto: Record<string, unknown> };
 
@@ -1763,7 +1733,6 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
     createdAt: p.created_at,
     score: score(p.view_count, p._count.likes, p._count.comments, p.created_at),
     dto: {
-      kind: "post",
       id: p.id,
       title: p.title,
       category: p.category,
@@ -1780,28 +1749,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
     },
   }));
 
-  const pollItems: Item[] = pollRows.map((p) => ({
-    createdAt: p.created_at,
-    score: score(p.view_count, p._count.votes, p._count.comments, p.created_at),
-    dto: {
-      kind: "poll",
-      id: p.id,
-      title: p.question,
-      category: "poll",
-      bodyPreview: "",
-      author: {
-        id: p.user_id,
-        username: pollAuthors.get(p.user_id) ?? null,
-        isMe: p.user_id === viewerId,
-      },
-      createdAt: p.created_at.toISOString(),
-      viewCount: p.view_count,
-      likeCount: p._count.votes,
-      commentCount: p._count.comments,
-    },
-  }));
-
-  const all = [...postItems, ...pollItems];
+  const all = postItems;
   const ranked = all
     // Something nobody has touched isn't "popular", however new it is.
     .filter((x) => x.score > 0)
