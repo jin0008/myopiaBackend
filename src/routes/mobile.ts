@@ -21,6 +21,7 @@ import { verifySocialToken, SocialProvider } from "../lib/socialAuth";
 import { decryptSymmetric } from "../services/encrpytion";
 import { hashRegistrationNumber } from "../lib/hash";
 import { authorBlockFilter } from "../lib/blocks";
+import { notify } from "../lib/notify";
 import { CONSENT_VERSION } from "../lib/consent";
 
 /**
@@ -1862,6 +1863,40 @@ router.post(
       },
     });
 
+    // A reply pings the person replied to; a top-level comment pings the post
+    // author. Both, when they're the same person, would be one ping too many.
+    const postRow = await prisma.community_post.findUnique({
+      where: { id: postId },
+      select: { user_id: true, title: true },
+    });
+    if (resolvedParentId != null) {
+      const parent = await prisma.community_comment.findUnique({
+        where: { id: resolvedParentId },
+        select: { user_id: true },
+      });
+      if (parent != null) {
+        await notify({
+          userId: parent.user_id,
+          actorUserId: userId,
+          type: "post_reply",
+          targetType: "post",
+          targetId: postId,
+          title: postRow?.title,
+          preview: body,
+        });
+      }
+    } else if (postRow != null) {
+      await notify({
+        userId: postRow.user_id,
+        actorUserId: userId,
+        type: "post_comment",
+        targetType: "post",
+        targetId: postId,
+        title: postRow.title,
+        preview: body,
+      });
+    }
+
     res.status(201).json({
       id: comment.id,
       postId: comment.post_id,
@@ -1950,6 +1985,20 @@ router.post("/community/posts/:id/like", requireMobileAuth, async (req, res) => 
   const likeCount = await prisma.community_post_like.count({
     where: { post_id: post.id },
   });
+  const likedPost = await prisma.community_post.findUnique({
+    where: { id: post.id },
+    select: { user_id: true, title: true },
+  });
+  if (likedPost != null) {
+    await notify({
+      userId: likedPost.user_id,
+      actorUserId: userId,
+      type: "post_like",
+      targetType: "post",
+      targetId: post.id,
+      title: likedPost.title,
+    });
+  }
   res.json({ liked: true, likeCount });
 });
 
@@ -1995,6 +2044,20 @@ router.post(
     const likeCount = await prisma.community_comment_like.count({
       where: { comment_id: comment.id },
     });
+    const likedComment = await prisma.community_comment.findUnique({
+      where: { id: comment.id },
+      select: { user_id: true, body: true, post_id: true },
+    });
+    if (likedComment != null) {
+      await notify({
+        userId: likedComment.user_id,
+        actorUserId: userId,
+        type: "comment_like",
+        targetType: "post",
+        targetId: likedComment.post_id,
+        preview: likedComment.body,
+      });
+    }
     res.json({ liked: true, likeCount });
   },
 );

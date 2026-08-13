@@ -25,6 +25,8 @@ import alertSettingRoutes from "./routes/alert_setting";
 import mobileRoutes from "./routes/mobile";
 import pollRoutes from "./routes/poll";
 import moderationRoutes, { moderationAdminRouter } from "./routes/moderation";
+import notificationRoutes from "./routes/notification";
+import searchRoutes from "./routes/search";
 import columnRoutes from "./routes/column";
 import bannerRoutes from "./routes/banner";
 import hospitalProfileRoutes from "./routes/hospital_profile";
@@ -104,6 +106,8 @@ app.use("/hospital-profile", hospitalProfileRoutes);
 app.use("/partner", partnerRoutes);
 app.use("/moderation", moderationAdminRouter);
 app.use("/api/mobile", moderationRoutes);
+app.use("/api/mobile", notificationRoutes);
+app.use("/api/mobile", searchRoutes);
 app.use("/api/mobile", pollRoutes);
 app.use("/api/mobile", mobileRoutes);
 
