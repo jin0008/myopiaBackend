@@ -1627,7 +1627,8 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
   });
 });
 
-const POST_CATEGORIES = ["review", "general"] as const;
+// "general" is 시술/수술 질문; "chat" is 자유수다 (free talk).
+const POST_CATEGORIES = ["review", "general", "chat"] as const;
 type PostCategory = (typeof POST_CATEGORIES)[number];
 
 const createPostSchema = zod.object({
