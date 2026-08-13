@@ -570,6 +570,10 @@ model community_post {
   created_at DateTime              @default(now()) @db.Timestamptz(6)
   updated_at DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
   deleted_at DateTime?             @db.Timestamptz(6)
+  // Read count. Drives the home "인기글" ranking together with likes and
+  // comments — likes alone put a post with two hearts above one people are
+  // actually reading.
+  view_count Int                   @default(0)
   user       user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "community_post_user_fk")
   comments   community_comment[]
   likes      community_post_like[]

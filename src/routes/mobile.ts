@@ -1670,6 +1670,77 @@ router.post(
   },
 );
 
+/**
+ * GET /api/mobile/community/posts/popular — the home screen's 인기글.
+ *
+ * Ranking, not raw counts. Three signals, weighted by how much effort each one
+ * takes: a view is a glance, a like is a tap, a comment is someone writing
+ * something. Views alone would reward clickbait titles; likes alone put a post
+ * with two hearts above one people are actually reading.
+ *
+ * Then it decays with age, so the section answers "what's live today" instead
+ * of showing the same all-time winners forever. The candidate window is a week
+ * rather than a calendar day on purpose — on a quiet day, "today only" leaves
+ * the home screen with an empty section, which looks broken rather than quiet.
+ */
+const POPULAR_WINDOW_DAYS = 7;
+const WEIGHT = { view: 3, like: 4, comment: 7 } as const;
+/** Halves roughly every day; +2 keeps a brand-new post from dividing by ~0. */
+const DECAY_EXPONENT = 1.4;
+
+router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
+  const limit = Math.min(Math.max(Number.parseInt(String(req.query.limit ?? "3"), 10) || 3, 1), 10);
+  const since = new Date(Date.now() - POPULAR_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
+
+  const rows = await prisma.community_post.findMany({
+    where: { deleted_at: null, created_at: { gte: since }, ...notBlocked },
+    include: {
+      _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
+      user: { include: { password_auth: true } },
+    },
+    // Bounded so the scoring below stays cheap; a week of posts is small.
+    take: 200,
+  });
+
+  const now = Date.now();
+  const scored = rows
+    .map((p) => {
+      // Views are damped logarithmically. Left linear, a title that pulls
+      // clicks but no reaction outranks a post people actually engaged with —
+      // the 200-views / 0-comments case beats 40-views / 3-comments outright.
+      // Log keeps views meaningful while capping how far they alone can carry.
+      const engagement =
+        Math.log2(1 + p.view_count) * WEIGHT.view +
+        p._count.likes * WEIGHT.like +
+        p._count.comments * WEIGHT.comment;
+      const ageHours = Math.max(0, (now - p.created_at.getTime()) / 3_600_000);
+      return { p, score: engagement / Math.pow(ageHours + 2, DECAY_EXPONENT) };
+    })
+    // A post nobody has touched isn't "popular", however new it is.
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  res.json({
+    posts: scored.map(({ p }) => ({
+      id: p.id,
+      title: p.title,
+      category: p.category,
+      bodyPreview: p.body.replace(/\s+/g, " ").trim().slice(0, 120),
+      author: {
+        id: p.user_id,
+        username: p.user.password_auth?.username ?? null,
+        isMe: p.user_id === (req.mobileUser?.sub ?? NO_VIEWER),
+      },
+      createdAt: p.created_at.toISOString(),
+      viewCount: p.view_count,
+      likeCount: p._count.likes,
+      commentCount: p._count.comments,
+    })),
+  });
+});
+
 /** GET /api/mobile/community/posts/:id */
 router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
   const viewerId = req.mobileUser?.sub ?? NO_VIEWER;
@@ -1684,11 +1755,22 @@ router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
   if (post == null || post.deleted_at != null) {
     return res.status(404).json({ error: "post not found" });
   }
+
+  // Count the read, but not the author re-reading their own post — otherwise
+  // "인기글" rewards whoever refreshes their own thread the most. Fire and
+  // forget: a failed counter must never fail the read.
+  if (post.user_id !== viewerId) {
+    prisma.community_post
+      .update({ where: { id: post.id }, data: { view_count: { increment: 1 } } })
+      .catch((err) => console.error("[views] increment failed", err));
+  }
+
   res.json({
     id: post.id,
     title: post.title,
     body: post.body,
     category: post.category,
+    viewCount: post.view_count,
     author: {
       id: post.user_id,
       username: post.user.password_auth?.username ?? null,
