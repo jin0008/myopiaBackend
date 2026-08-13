@@ -7,8 +7,28 @@ const router = express.Router();
 
 const PER_SECTION = 10;
 
-function snippet(s: string, q: string, max = 100): string {
-  const flat = s.replace(/\s+/g, " ").trim();
+/**
+ * Strip the markdown the column bodies are authored in, plus the `[orthok-01]`
+ * style source ids the corpus carries. Excerpts are read as plain sentences, so
+ * leaking `### [lens-06] **...**` into the result list just looks broken.
+ */
+function plain(s: string): string {
+  return s
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[[a-z0-9_-]+-\d+\]/gi, " ")
+    .replace(/^#{1,6}\s*/gm, " ")
+    .replace(/^\s*[-*+]\s+/gm, " ")
+    .replace(/^\s*>\s?/gm, " ")
+    .replace(/\*\*([^*]*)\*\*/g, "$1")
+    .replace(/(^|\W)\*([^*]+)\*(?=\W|$)/g, "$1$2")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function snippet(raw: string, q: string, max = 100): string {
+  const flat = plain(raw);
   // Open the excerpt near the match so the user can see why it matched.
   const at = flat.toLowerCase().indexOf(q.toLowerCase());
   if (at <= 0) return flat.length > max ? flat.slice(0, max) + "…" : flat;
