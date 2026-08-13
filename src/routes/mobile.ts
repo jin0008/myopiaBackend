@@ -1685,7 +1685,15 @@ router.post(
  */
 const POPULAR_WINDOW_DAYS = 7;
 const WEIGHT = { view: 3, like: 4, comment: 7 } as const;
-/** Halves roughly every day; +2 keeps a brand-new post from dividing by ~0. */
+/**
+ * Steep on purpose, because the section is meant to answer "what's live today":
+ * a day-old post needs roughly 14x the engagement of a fresh one to tie it.
+ * The `+2` keeps a brand-new post from dividing by ~0 and scoring infinity.
+ *
+ * The 7-day candidate window is therefore a floor, not a real window — posts
+ * past a couple of days only surface when almost nothing else has any
+ * engagement, which is exactly the quiet-day fallback it exists for.
+ */
 const DECAY_EXPONENT = 1.4;
 
 router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
@@ -1699,7 +1707,12 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
       _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
       user: { include: { password_auth: true } },
     },
-    // Bounded so the scoring below stays cheap; a week of posts is small.
+    // Bounded so the scoring below stays cheap; a week of posts is small today.
+    // The ordering matters even so: without it the 200 rows we keep are an
+    // arbitrary slice once a week exceeds that, and a genuinely popular post
+    // could be dropped before scoring ever sees it. Newest-first also lines up
+    // with the decay, which already favours recent posts.
+    orderBy: { created_at: "desc" },
     take: 200,
   });
 
