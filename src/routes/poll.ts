@@ -128,6 +128,15 @@ router.get("/polls/:id", optionalMobileAuth, async (req, res) => {
     res.status(404).json({ error: "poll not found", code: "not_found" });
     return;
   }
+
+  // Same rule as posts: count the read, but not the author re-reading their
+  // own poll. Fire and forget — a failed counter must not fail the read.
+  if (poll.user_id !== viewerId) {
+    prisma.poll
+      .update({ where: { id: poll.id }, data: { view_count: { increment: 1 } } })
+      .catch((err) => console.error("[views] poll increment failed", err));
+  }
+
   const counts = await prisma.poll_vote.groupBy({
     by: ["option_id"],
     where: { poll_id: id },

@@ -1674,15 +1674,32 @@ router.post(
  * GET /api/mobile/community/posts/popular — the home screen's 인기글.
  *
  * Ranking, not raw counts. Three signals, weighted by how much effort each one
- * takes: a view is a glance, a like is a tap, a comment is someone writing
+ * takes: a view is a glance, a like/vote is a tap, a comment is someone writing
  * something. Views alone would reward clickbait titles; likes alone put a post
  * with two hearts above one people are actually reading.
+ *
+ * Posts and polls compete in one list. The community tab already mixes them, so
+ * ranking only posts here would mean the hottest thing on the board can't reach
+ * the home screen just because it happens to be a poll. A vote counts as a like:
+ * both are one tap of agreement.
  *
  * Then it decays with age, so the section answers "what's live today" instead
  * of showing the same all-time winners forever. The candidate window is a week
  * rather than a calendar day on purpose — on a quiet day, "today only" leaves
  * the home screen with an empty section, which looks broken rather than quiet.
  */
+/** Display names for a set of user ids in one query. Polls carry no `user`
+ *  relation, so their authors have to be resolved separately from posts'. */
+async function usernameMapFor(userIds: string[]): Promise<Map<string, string | null>> {
+  const unique = [...new Set(userIds)];
+  if (unique.length === 0) return new Map();
+  const rows = await prisma.password_auth.findMany({
+    where: { user_id: { in: unique } },
+    select: { user_id: true, username: true },
+  });
+  return new Map(rows.map((r) => [r.user_id, r.username]));
+}
+
 const POPULAR_WINDOW_DAYS = 7;
 const WEIGHT = { view: 3, like: 4, comment: 7 } as const;
 /**
@@ -1716,41 +1733,37 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
     take: 200,
   });
 
+  const pollRows = await prisma.poll.findMany({
+    where: { deleted_at: null, created_at: { gte: since }, ...notBlocked },
+    include: { _count: { select: { comments: { where: { deleted_at: null } }, votes: true } } },
+    orderBy: { created_at: "desc" },
+    take: 200,
+  });
+  const pollAuthors = await usernameMapFor(pollRows.map((p) => p.user_id));
+
+  const viewerId = req.mobileUser?.sub ?? NO_VIEWER;
   const now = Date.now();
-  const ranked = rows
-    .map((p) => {
-      // Views are damped logarithmically. Left linear, a title that pulls
-      // clicks but no reaction outranks a post people actually engaged with —
-      // the 200-views / 0-comments case beats 40-views / 3-comments outright.
-      // Log keeps views meaningful while capping how far they alone can carry.
-      const engagement =
-        Math.log2(1 + p.view_count) * WEIGHT.view +
-        p._count.likes * WEIGHT.like +
-        p._count.comments * WEIGHT.comment;
-      const ageHours = Math.max(0, (now - p.created_at.getTime()) / 3_600_000);
-      return { p, score: engagement / Math.pow(ageHours + 2, DECAY_EXPONENT) };
-    })
-    // A post nobody has touched isn't "popular", however new it is.
-    .filter((x) => x.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
 
-  // Top up with the newest posts when too few have any engagement yet.
-  // A young board has almost nothing liked or commented on, and a home section
-  // headed "인기글" showing a single row reads as broken rather than quiet.
-  // Ranked posts keep their order and always come first; the filler is only
-  // ever what's left over.
-  const chosen = [...ranked.map((x) => x.p)];
-  if (chosen.length < limit) {
-    const taken = new Set(chosen.map((p) => p.id));
-    for (const p of rows) {
-      if (chosen.length >= limit) break;
-      if (!taken.has(p.id)) chosen.push(p);
-    }
-  }
+  /**
+   * Views are damped logarithmically. Left linear, a title that pulls clicks but
+   * no reaction outranks something people actually engaged with — the
+   * 200-views / 0-comments case beats 40-views / 3-comments outright. Log keeps
+   * views meaningful while capping how far they alone can carry.
+   */
+  const score = (views: number, taps: number, comments: number, createdAt: Date) => {
+    const engagement =
+      Math.log2(1 + views) * WEIGHT.view + taps * WEIGHT.like + comments * WEIGHT.comment;
+    const ageHours = Math.max(0, (now - createdAt.getTime()) / 3_600_000);
+    return engagement / Math.pow(ageHours + 2, DECAY_EXPONENT);
+  };
 
-  res.json({
-    posts: chosen.map((p) => ({
+  type Item = { createdAt: Date; score: number; dto: Record<string, unknown> };
+
+  const postItems: Item[] = rows.map((p) => ({
+    createdAt: p.created_at,
+    score: score(p.view_count, p._count.likes, p._count.comments, p.created_at),
+    dto: {
+      kind: "post",
       id: p.id,
       title: p.title,
       category: p.category,
@@ -1758,14 +1771,58 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
       author: {
         id: p.user_id,
         username: p.user.password_auth?.username ?? null,
-        isMe: p.user_id === (req.mobileUser?.sub ?? NO_VIEWER),
+        isMe: p.user_id === viewerId,
       },
       createdAt: p.created_at.toISOString(),
       viewCount: p.view_count,
       likeCount: p._count.likes,
       commentCount: p._count.comments,
-    })),
-  });
+    },
+  }));
+
+  const pollItems: Item[] = pollRows.map((p) => ({
+    createdAt: p.created_at,
+    score: score(p.view_count, p._count.votes, p._count.comments, p.created_at),
+    dto: {
+      kind: "poll",
+      id: p.id,
+      title: p.question,
+      category: "poll",
+      bodyPreview: "",
+      author: {
+        id: p.user_id,
+        username: pollAuthors.get(p.user_id) ?? null,
+        isMe: p.user_id === viewerId,
+      },
+      createdAt: p.created_at.toISOString(),
+      viewCount: p.view_count,
+      likeCount: p._count.votes,
+      commentCount: p._count.comments,
+    },
+  }));
+
+  const all = [...postItems, ...pollItems];
+  const ranked = all
+    // Something nobody has touched isn't "popular", however new it is.
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+
+  // Top up with the newest items when too few have any engagement yet.
+  // A young board has almost nothing liked or commented on, and a home section
+  // headed "인기글" showing a single row reads as broken rather than quiet.
+  // Ranked items keep their order and always come first; the filler is only
+  // ever what's left over.
+  const chosen = [...ranked];
+  if (chosen.length < limit) {
+    const taken = new Set(chosen.map((x) => x.dto.id));
+    for (const x of [...all].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
+      if (chosen.length >= limit) break;
+      if (!taken.has(x.dto.id)) chosen.push(x);
+    }
+  }
+
+  res.json({ posts: chosen.map((x) => x.dto) });
 });
 
 /** GET /api/mobile/community/posts/:id */

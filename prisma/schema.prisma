@@ -769,6 +769,9 @@ model poll {
   created_at DateTime       @default(now()) @db.Timestamptz(6)
   updated_at DateTime       @default(now()) @updatedAt @db.Timestamptz(6)
   deleted_at DateTime?      @db.Timestamptz(6)
+  // Read count, same role as community_post.view_count — polls compete with
+  // posts in the home 인기글 ranking and need the same three signals.
+  view_count Int            @default(0)
   options    poll_option[]
   votes      poll_vote[]
   comments   poll_comment[]
