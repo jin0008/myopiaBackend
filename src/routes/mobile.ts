@@ -20,7 +20,7 @@ import {
 import { verifySocialToken, SocialProvider } from "../lib/socialAuth";
 import { decryptSymmetric } from "../services/encrpytion";
 import { hashRegistrationNumber } from "../lib/hash";
-import { blockedUserIds } from "../lib/blocks";
+import { authorBlockFilter } from "../lib/blocks";
 import { CONSENT_VERSION } from "../lib/consent";
 
 /**
@@ -1580,12 +1580,12 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
     ? await prisma.community_post.findUnique({ where: { id: cursor } })
     : null;
 
-  const hidden = await blockedUserIds(req.mobileUser?.sub);
+  const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
 
   const rows = await prisma.community_post.findMany({
     where: {
       deleted_at: null,
-      user_id: { notIn: hidden },
+      ...notBlocked,
       ...(category != null && { category }),
       ...(cursorRow != null && {
         OR: [
@@ -1779,9 +1779,9 @@ router.get(
     });
     if (postExists == null) return res.status(404).json({ error: "post not found" });
 
-    const hiddenAuthors = await blockedUserIds(req.mobileUser?.sub);
+    const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
     const rows = await prisma.community_comment.findMany({
-      where: { post_id: String(req.params.id), user_id: { notIn: hiddenAuthors } },
+      where: { post_id: String(req.params.id), ...notBlocked },
       orderBy: [{ created_at: "asc" }, { id: "asc" }],
       take: COMMENT_PAGE_SIZE,
       include: {
@@ -3189,12 +3189,12 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
 /** GET /api/mobile/hospital-profile/:kakaoPlaceId/reviews — public list. */
 router.get("/hospital-profile/:kakaoPlaceId/reviews", optionalMobileAuth, async (req, res) => {
   const placeId = String(req.params.kakaoPlaceId);
-  const hiddenReviewers = await blockedUserIds(req.mobileUser?.sub);
+  const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
   const reviews = await prisma.hospital_review.findMany({
     where: {
       kakao_place_id: placeId,
       status: "visible",
-      user_id: { notIn: hiddenReviewers },
+      ...notBlocked,
     },
     orderBy: [{ created_at: "desc" }],
     take: 100,
