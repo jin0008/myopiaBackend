@@ -1717,7 +1717,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
   });
 
   const now = Date.now();
-  const scored = rows
+  const ranked = rows
     .map((p) => {
       // Views are damped logarithmically. Left linear, a title that pulls
       // clicks but no reaction outranks a post people actually engaged with —
@@ -1735,8 +1735,22 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
     .sort((a, b) => b.score - a.score)
     .slice(0, limit);
 
+  // Top up with the newest posts when too few have any engagement yet.
+  // A young board has almost nothing liked or commented on, and a home section
+  // headed "인기글" showing a single row reads as broken rather than quiet.
+  // Ranked posts keep their order and always come first; the filler is only
+  // ever what's left over.
+  const chosen = [...ranked.map((x) => x.p)];
+  if (chosen.length < limit) {
+    const taken = new Set(chosen.map((p) => p.id));
+    for (const p of rows) {
+      if (chosen.length >= limit) break;
+      if (!taken.has(p.id)) chosen.push(p);
+    }
+  }
+
   res.json({
-    posts: scored.map(({ p }) => ({
+    posts: chosen.map((p) => ({
       id: p.id,
       title: p.title,
       category: p.category,
