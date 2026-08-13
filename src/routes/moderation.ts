@@ -104,13 +104,29 @@ router.post("/reports", requireMobileAuth, async (req, res) => {
 
 /* ---- blocking ---------------------------------------------------------- */
 
-/** GET /blocks — ids the caller has blocked. */
+/** GET /blocks — users the caller has blocked, newest first.
+ *  Usernames come along so the manage screen can show who each row is; a list
+ *  of bare uuids would be impossible to unblock from. */
 router.get("/blocks", requireMobileAuth, async (req, res) => {
   const rows = await prisma.user_block.findMany({
     where: { blocker_user_id: req.mobileUser!.sub },
-    select: { blocked_user_id: true },
+    orderBy: [{ created_at: "desc" }],
   });
-  res.json({ blockedUserIds: rows.map((r) => r.blocked_user_id) });
+  const names = new Map(
+    (
+      await prisma.password_auth.findMany({
+        where: { user_id: { in: rows.map((r) => r.blocked_user_id) } },
+        select: { user_id: true, username: true },
+      })
+    ).map((r) => [r.user_id, r.username]),
+  );
+  res.json({
+    blocked: rows.map((r) => ({
+      userId: r.blocked_user_id,
+      username: names.get(r.blocked_user_id) ?? null,
+      createdAt: r.created_at.toISOString(),
+    })),
+  });
 });
 
 /** POST /blocks/:userId — hide this user's content from the caller. */
