@@ -311,6 +311,32 @@ router.post("/polls/:id/comments", requireMobileAuth, async (req, res) => {
   });
 });
 
+/** PATCH /polls/comments/:id — author only. */
+router.patch("/polls/comments/:id", requireMobileAuth, async (req, res) => {
+  const parsed = zod
+    .object({ body: zod.string().trim().min(1).max(5_000) })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid body", code: "bad_request" });
+    return;
+  }
+  const userId = req.mobileUser!.sub;
+  const comment = await prisma.poll_comment.findUnique({ where: { id: String(req.params.id) } });
+  if (comment == null || comment.deleted_at != null) {
+    res.status(404).json({ error: "comment not found", code: "not_found" });
+    return;
+  }
+  if (comment.user_id !== userId) {
+    res.status(403).json({ error: "not your comment", code: "forbidden" });
+    return;
+  }
+  const updated = await prisma.poll_comment.update({
+    where: { id: comment.id },
+    data: { body: parsed.data.body },
+  });
+  res.json({ id: updated.id, body: updated.body });
+});
+
 /** DELETE /polls/comments/:id — soft-delete; author only. */
 router.delete("/polls/comments/:id", requireMobileAuth, async (req, res) => {
   const userId = req.mobileUser!.sub;

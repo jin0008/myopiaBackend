@@ -23,6 +23,76 @@ const REASONS = [
   "other",
 ] as const;
 
+/** Public web build of the app — reported content is linkable there. */
+const APP_WEB_ORIGIN = process.env.MYODOC_WEB_ORIGIN ?? "https://myodoc.co.kr";
+
+/** What the admin queue needs to judge a report without guessing: a snippet of
+ *  the content and a link that opens it. Comments resolve to their parent
+ *  thread, since a comment has no page of its own. */
+interface TargetContext {
+  preview: string | null;
+  url: string | null;
+  /** Content already hidden (soft-deleted) — the admin may have nothing to do. */
+  gone: boolean;
+}
+
+function snippet(s: string | null | undefined): string | null {
+  if (s == null) return null;
+  const flat = s.replace(/\s+/g, " ").trim();
+  return flat.length > 140 ? flat.slice(0, 140) + "…" : flat;
+}
+
+async function targetContext(type: TargetType, id: string): Promise<TargetContext> {
+  switch (type) {
+    case "post": {
+      const r = await prisma.community_post.findUnique({ where: { id } });
+      if (r == null) return { preview: null, url: null, gone: true };
+      return {
+        preview: snippet(`${r.title} — ${r.body}`),
+        url: `${APP_WEB_ORIGIN}/community/${r.id}`,
+        gone: r.deleted_at != null,
+      };
+    }
+    case "comment": {
+      const r = await prisma.community_comment.findUnique({ where: { id } });
+      if (r == null) return { preview: null, url: null, gone: true };
+      return {
+        preview: snippet(r.body),
+        // No page per comment — link the thread it lives in.
+        url: `${APP_WEB_ORIGIN}/community/${r.post_id}`,
+        gone: r.deleted_at != null,
+      };
+    }
+    case "poll": {
+      const r = await prisma.poll.findUnique({ where: { id } });
+      if (r == null) return { preview: null, url: null, gone: true };
+      return {
+        preview: snippet(r.question),
+        url: `${APP_WEB_ORIGIN}/community/poll/${r.id}`,
+        gone: r.deleted_at != null,
+      };
+    }
+    case "poll_comment": {
+      const r = await prisma.poll_comment.findUnique({ where: { id } });
+      if (r == null) return { preview: null, url: null, gone: true };
+      return {
+        preview: snippet(r.body),
+        url: `${APP_WEB_ORIGIN}/community/poll/${r.poll_id}`,
+        gone: r.deleted_at != null,
+      };
+    }
+    case "review": {
+      const r = await prisma.hospital_review.findUnique({ where: { id } });
+      if (r == null) return { preview: null, url: null, gone: true };
+      return {
+        preview: snippet(r.content),
+        url: `${APP_WEB_ORIGIN}/treatment-finder/hospital?id=${encodeURIComponent(r.kakao_place_id)}`,
+        gone: r.status !== "visible",
+      };
+    }
+  }
+}
+
 /** Look up the author of the reported content so admins can see repeat
  *  offenders. Returns null when the target no longer exists. */
 async function targetAuthorId(type: TargetType, id: string): Promise<string | null> {
@@ -171,15 +241,23 @@ moderationAdminRouter.get("/reports", siteAdminRequired, async (req, res) => {
     take: 200,
   });
   res.json(
-    rows.map((r) => ({
-      id: r.id,
-      targetType: r.target_type,
-      targetId: r.target_id,
-      reason: r.reason,
-      detail: r.detail,
-      status: r.status,
-      createdAt: r.created_at.toISOString(),
-    })),
+    await Promise.all(
+      rows.map(async (r) => {
+        const ctx = await targetContext(r.target_type as TargetType, r.target_id);
+        return {
+          id: r.id,
+          targetType: r.target_type,
+          targetId: r.target_id,
+          reason: r.reason,
+          detail: r.detail,
+          status: r.status,
+          createdAt: r.created_at.toISOString(),
+          preview: ctx.preview,
+          contentUrl: ctx.url,
+          contentGone: ctx.gone,
+        };
+      }),
+    ),
   );
 });
 

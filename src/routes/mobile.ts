@@ -1877,6 +1877,34 @@ router.post(
   },
 );
 
+const updateCommentSchema = zod.object({
+  body: zod.string().trim().min(1).max(5_000),
+});
+
+/** PATCH /api/mobile/community/comments/:id — author only */
+router.patch(
+  "/community/comments/:id",
+  requireMobileAuth,
+  validateRequestBody(updateCommentSchema),
+  async (req, res) => {
+    const userId = req.mobileUser!.sub;
+    const comment = await prisma.community_comment.findUnique({
+      where: { id: String(req.params.id) },
+    });
+    if (comment == null || comment.deleted_at != null) {
+      return res.status(404).json({ error: "comment not found" });
+    }
+    if (comment.user_id !== userId) {
+      return res.status(403).json({ error: "not your comment" });
+    }
+    const updated = await prisma.community_comment.update({
+      where: { id: comment.id },
+      data: { body: (req.body as zod.infer<typeof updateCommentSchema>).body },
+    });
+    res.json({ id: updated.id, body: updated.body });
+  },
+);
+
 /** DELETE /api/mobile/community/comments/:id — soft-delete; author only */
 router.delete(
   "/community/comments/:id",
