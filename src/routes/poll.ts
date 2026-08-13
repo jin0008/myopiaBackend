@@ -4,6 +4,7 @@ import prisma from "../lib/prisma";
 import { requireMobileAuth, optionalMobileAuth } from "../lib/mobileAuth";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { authorBlockFilter } from "../lib/blocks";
+import { notify } from "../lib/notify";
 
 const router = express.Router();
 
@@ -297,6 +298,41 @@ router.post("/polls/:id/comments", requireMobileAuth, async (req, res) => {
   const comment = await prisma.poll_comment.create({
     data: { poll_id: pollId, user_id: userId, parent_comment_id: resolvedParentId, body },
   });
+
+  // A reply pings the person replied to; a top-level comment pings the poll's
+  // author.
+  const pollRow = await prisma.poll.findUnique({
+    where: { id: pollId },
+    select: { user_id: true, question: true },
+  });
+  if (resolvedParentId != null) {
+    const parentRow = await prisma.poll_comment.findUnique({
+      where: { id: resolvedParentId },
+      select: { user_id: true },
+    });
+    if (parentRow != null) {
+      await notify({
+        userId: parentRow.user_id,
+        actorUserId: userId,
+        type: "poll_reply",
+        targetType: "poll",
+        targetId: pollId,
+        title: pollRow?.question,
+        preview: body,
+      });
+    }
+  } else if (pollRow != null) {
+    await notify({
+      userId: pollRow.user_id,
+      actorUserId: userId,
+      type: "poll_comment",
+      targetType: "poll",
+      targetId: pollId,
+      title: pollRow.question,
+      preview: body,
+    });
+  }
+
   const names = await usernameMap([userId]);
   res.status(201).json({
     id: comment.id,
@@ -368,12 +404,32 @@ router.post("/polls/comments/:id/like", requireMobileAuth, async (req, res) => {
     res.status(404).json({ error: "comment not found", code: "not_found" });
     return;
   }
+  // The endpoint is idempotent, so only a genuinely new like should notify —
+  // otherwise a relike cycle pings the author over and over.
+  let newlyLiked = false;
   try {
     await prisma.poll_comment_like.create({ data: { comment_id: commentId, user_id: userId } });
+    newlyLiked = true;
   } catch (e) {
     if (!(e instanceof PrismaClientKnownRequestError && e.code === "P2002")) throw e;
   }
   const likeCount = await prisma.poll_comment_like.count({ where: { comment_id: commentId } });
+  const liked = newlyLiked
+    ? await prisma.poll_comment.findUnique({
+        where: { id: commentId },
+        select: { user_id: true, body: true, poll_id: true },
+      })
+    : null;
+  if (liked != null) {
+    await notify({
+      userId: liked.user_id,
+      actorUserId: userId,
+      type: "poll_comment_like",
+      targetType: "poll",
+      targetId: liked.poll_id,
+      preview: liked.body,
+    });
+  }
   res.json({ liked: true, likeCount });
 });
 
