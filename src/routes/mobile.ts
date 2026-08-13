@@ -1971,10 +1971,15 @@ router.post("/community/posts/:id/like", requireMobileAuth, async (req, res) => 
     select: { id: true },
   });
   if (post == null) return res.status(404).json({ error: "post not found" });
+  // Track whether this call actually added a like. The endpoint is idempotent,
+  // so without this a repeat POST — or an unlike/relike cycle — would notify the
+  // author again every time.
+  let newlyLiked = false;
   try {
     await prisma.community_post_like.create({
       data: { post_id: post.id, user_id: userId },
     });
+    newlyLiked = true;
   } catch (e) {
     if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
       /* already liked — fall through */
@@ -1985,10 +1990,12 @@ router.post("/community/posts/:id/like", requireMobileAuth, async (req, res) => 
   const likeCount = await prisma.community_post_like.count({
     where: { post_id: post.id },
   });
-  const likedPost = await prisma.community_post.findUnique({
-    where: { id: post.id },
-    select: { user_id: true, title: true },
-  });
+  const likedPost = newlyLiked
+    ? await prisma.community_post.findUnique({
+        where: { id: post.id },
+        select: { user_id: true, title: true },
+      })
+    : null;
   if (likedPost != null) {
     await notify({
       userId: likedPost.user_id,
@@ -2030,10 +2037,12 @@ router.post(
     });
     if (comment == null)
       return res.status(404).json({ error: "comment not found" });
+    let newlyLiked = false;
     try {
       await prisma.community_comment_like.create({
         data: { comment_id: comment.id, user_id: userId },
       });
+      newlyLiked = true;
     } catch (e) {
       if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
         /* already liked — fall through */
@@ -2044,10 +2053,12 @@ router.post(
     const likeCount = await prisma.community_comment_like.count({
       where: { comment_id: comment.id },
     });
-    const likedComment = await prisma.community_comment.findUnique({
-      where: { id: comment.id },
-      select: { user_id: true, body: true, post_id: true },
-    });
+    const likedComment = newlyLiked
+      ? await prisma.community_comment.findUnique({
+          where: { id: comment.id },
+          select: { user_id: true, body: true, post_id: true },
+        })
+      : null;
     if (likedComment != null) {
       await notify({
         userId: likedComment.user_id,

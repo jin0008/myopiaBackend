@@ -404,16 +404,22 @@ router.post("/polls/comments/:id/like", requireMobileAuth, async (req, res) => {
     res.status(404).json({ error: "comment not found", code: "not_found" });
     return;
   }
+  // The endpoint is idempotent, so only a genuinely new like should notify —
+  // otherwise a relike cycle pings the author over and over.
+  let newlyLiked = false;
   try {
     await prisma.poll_comment_like.create({ data: { comment_id: commentId, user_id: userId } });
+    newlyLiked = true;
   } catch (e) {
     if (!(e instanceof PrismaClientKnownRequestError && e.code === "P2002")) throw e;
   }
   const likeCount = await prisma.poll_comment_like.count({ where: { comment_id: commentId } });
-  const liked = await prisma.poll_comment.findUnique({
-    where: { id: commentId },
-    select: { user_id: true, body: true, poll_id: true },
-  });
+  const liked = newlyLiked
+    ? await prisma.poll_comment.findUnique({
+        where: { id: commentId },
+        select: { user_id: true, body: true, poll_id: true },
+      })
+    : null;
   if (liked != null) {
     await notify({
       userId: liked.user_id,
