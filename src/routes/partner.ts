@@ -6,7 +6,11 @@ import bcrypt from "bcrypt";
 import multer from "multer";
 import zod from "zod";
 import prisma from "../lib/prisma";
-import { KakaoLookupError, hasKakaoKey, searchPlaces } from "../lib/kakaoPlaces";
+import {
+  KakaoLookupError,
+  hasKakaoKey,
+  searchEyeClinics,
+} from "../lib/kakaoPlaces";
 import { validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
@@ -352,7 +356,7 @@ router.get("/place-search", partnerRequired, async (req, res) => {
     return;
   }
   try {
-    const docs = await searchPlaces(q);
+    const docs = await searchEyeClinics(q);
     res.json({
       places: docs.map((d) => ({
         id: d.id,
