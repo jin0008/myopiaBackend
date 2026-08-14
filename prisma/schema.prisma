@@ -536,8 +536,36 @@ model hospital_profile {
   treatment_items  Json?
   verified         Boolean  @default(false)
   booking_url      String?
+  // Weekly opening hours, entered by the clinic. Kakao doesn't supply these
+  // and neither does any map API, so it's ours to collect.
+  // { mon: { open, close, lunchStart?, lunchEnd? } | null, ... , note?: string }
+  // A null day means closed; the whole field null means "not provided yet",
+  // which the app renders by hiding the section rather than showing blanks.
+  opening_hours    Json?
   created_at       DateTime @default(now()) @db.Timestamptz(6)
   updated_at       DateTime @default(now()) @db.Timestamptz(6)
+
+  notices          hospital_notice[]
+}
+
+/// Clinic-authored notices ("소식"): reopening dates, doctor changes, events.
+/// Separate from the profile because they come and go, are ordered by time, and
+/// a clinic may keep several at once.
+model hospital_notice {
+  id               String           @id(map: "hospital_notice_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  hospital_profile hospital_profile @relation(fields: [profile_id], references: [id], onDelete: Cascade, map: "hospital_notice_profile_fk")
+  profile_id       String           @db.Uuid
+  title            String
+  body             String
+  /// notice | event — drives the badge colour only.
+  kind             String           @default("notice")
+  /// Pinned notices sort above the rest regardless of date.
+  pinned           Boolean          @default(false)
+  published        Boolean          @default(true)
+  created_at       DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime         @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([profile_id, pinned, created_at(sort: Desc)], map: "idx_hospital_notice_profile")
 }
 
 // App-user reviews of a hospital, keyed to the profile's kakao_place_id.
