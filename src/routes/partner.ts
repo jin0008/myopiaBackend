@@ -185,6 +185,15 @@ const openingHoursSchema = zod.object({
   note: zod.string().max(200).optional(),
 });
 
+/** 의사 한 명. 이름만 필수 — 사진과 소개는 나중에 채워도 섹션이 성립한다. */
+const doctorSchema = zod.object({
+  name: zod.string().min(1).max(40),
+  title: zod.string().max(60).nullable().optional(),
+  photoUrl: zod.string().url().nullable().optional(),
+  bio: zod.string().max(2000).nullable().optional(),
+});
+const MAX_DOCTORS = 20;
+
 /** A blog-style body block: a paragraph or a picture, in order. */
 const detailBlockSchema = zod.discriminatedUnion("type", [
   zod.object({ type: zod.literal("text"), text: zod.string().max(5000) }),
@@ -206,6 +215,7 @@ const profileSchema = zod.object({
   treatment_items: zod.array(treatmentItemSchema).optional(),
   booking_url: zod.string().url().nullable().optional(),
   opening_hours: openingHoursSchema.nullable().optional(),
+  doctors: zod.array(doctorSchema).max(MAX_DOCTORS).nullable().optional(),
 });
 
 // Upsert the partner's single profile. Published only once the account is
@@ -241,6 +251,7 @@ router.put("/profile", partnerRequired, async (req, res) => {
       keywords: d.keywords ?? [],
       treatment_items: d.treatment_items ?? undefined,
       opening_hours: d.opening_hours ?? undefined,
+      doctors: d.doctors ?? undefined,
       tagline: d.tagline ?? null,
       detail_blocks: d.detail_blocks ?? undefined,
       booking_url: d.booking_url ?? null,

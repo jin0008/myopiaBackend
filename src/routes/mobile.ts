@@ -3549,6 +3549,7 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
     // Null when the clinic hasn't filled them in; the app hides the section
     // rather than showing an empty table.
     openingHours: profile.opening_hours ?? null,
+    doctors: profile.doctors ?? null,
     notices: profile.notices.map((n) => ({
       id: n.id,
       title: n.title,
