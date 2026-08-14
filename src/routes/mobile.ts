@@ -3136,6 +3136,59 @@ function classifyMedical(categoryName: string): FacilityCategory | null {
   return null;
 }
 
+/**
+ * Kakao's own status, kept rather than flattened into a generic failure.
+ *
+ * Which number it is decides who has to fix it, and they mean very different
+ * things: 401 is a bad or expired REST key, 403 is the server's IP not being on
+ * the app's allow-list, 429 is quota. Collapsing all three into "upstream
+ * error" meant every outage looked identical from the outside and had to be
+ * diagnosed by reading server logs.
+ */
+class KakaoError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: string,
+  ) {
+    super(`kakao ${status}: ${body.slice(0, 200)}`);
+    this.name = "KakaoError";
+  }
+}
+
+/** What a given status means for whoever has to act on it. */
+function kakaoHint(status: number): string {
+  switch (status) {
+    case 401:
+      return "REST key rejected — wrong or expired key";
+    case 403:
+      return "forbidden — the server IP is probably not on the Kakao app's allow-list";
+    case 429:
+      return "quota exceeded for today";
+    default:
+      return "unexpected response from Kakao";
+  }
+}
+
+/** Shared 502 body so both search endpoints report a failure the same way. */
+function respondKakaoFailure(res: express.Response, err: unknown, where: string): void {
+  if (err instanceof KakaoError) {
+    console.error(
+      `[${where}] kakao ${err.status} — ${kakaoHint(err.status)} :: ${err.body.slice(0, 300)}`,
+    );
+    res.status(502).json({
+      error: "facility search failed",
+      code: "upstream_error",
+      // The upstream status and hint, not the key or the request. Enough to
+      // tell whether this is ours to fix or the Kakao app owner's.
+      upstreamStatus: err.status,
+      hint: kakaoHint(err.status),
+    });
+    return;
+  }
+  console.error(`[${where}] kakao search failed`, err);
+  res.status(502).json({ error: "facility search failed", code: "upstream_error" });
+}
+
 async function kakaoKeywordSearch(
   query: string,
   lat: number,
@@ -3158,7 +3211,7 @@ async function kakaoKeywordSearch(
     { headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` } },
   );
   if (!resp.ok) {
-    throw new Error(`kakao ${resp.status}`);
+    throw new KakaoError(resp.status, await resp.text().catch(() => ""));
   }
   const data = (await resp.json()) as { documents?: KakaoDoc[] };
   return data.documents ?? [];
@@ -3245,8 +3298,7 @@ router.get("/facilities", async (req, res) => {
     );
     res.json({ places });
   } catch (err) {
-    console.error("[facilities] kakao search failed", err);
-    res.status(502).json({ error: "facility search failed", code: "upstream_error" });
+    respondKakaoFailure(res, err, "facilities");
   }
 });
 
@@ -3260,7 +3312,7 @@ async function kakaoKeywordSearchByText(query: string): Promise<KakaoDoc[]> {
     `https://dapi.kakao.com/v2/local/search/keyword.json?${params.toString()}`,
     { headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` } },
   );
-  if (!resp.ok) throw new Error(`kakao ${resp.status}`);
+  if (!resp.ok) throw new KakaoError(resp.status, await resp.text().catch(() => ""));
   const data = (await resp.json()) as { documents?: KakaoDoc[] };
   return data.documents ?? [];
 }
@@ -3321,8 +3373,7 @@ router.get("/facilities/search", async (req, res) => {
     }
     res.json({ places });
   } catch (err) {
-    console.error("[facilities/search] kakao search failed", err);
-    res.status(502).json({ error: "facility search failed", code: "upstream_error" });
+    respondKakaoFailure(res, err, "facilities/search");
   }
 });
 
