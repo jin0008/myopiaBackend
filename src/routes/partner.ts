@@ -6,6 +6,7 @@ import bcrypt from "bcrypt";
 import multer from "multer";
 import zod from "zod";
 import prisma from "../lib/prisma";
+import { validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
 
@@ -56,7 +57,7 @@ const signupSchema = zod.object({
 router.post("/signup", async (req, res) => {
   const parsed = signupSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const d = parsed.data;
@@ -207,7 +208,7 @@ const profileSchema = zod.object({
 router.put("/profile", partnerRequired, async (req, res) => {
   const parsed = profileSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const account = await prisma.hospital_account.findUnique({
@@ -288,7 +289,7 @@ const statusSchema = zod.object({ status: zod.enum(["approved", "rejected", "pen
 router.patch("/accounts/:id", siteAdminRequired, async (req, res) => {
   const parsed = statusSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const id = String(req.params.id);
@@ -360,7 +361,7 @@ router.get("/notices", partnerRequired, async (req, res) => {
 router.post("/notices", partnerRequired, async (req, res) => {
   const parsed = noticeSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const profile = await ownProfile(req.partner!.sub);
@@ -378,7 +379,7 @@ router.post("/notices", partnerRequired, async (req, res) => {
 router.patch("/notices/:id", partnerRequired, async (req, res) => {
   const parsed = noticeSchema.partial().safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const profile = await ownProfile(req.partner!.sub);

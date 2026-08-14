@@ -6,6 +6,7 @@ import multer from "multer";
 import zod from "zod";
 import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
+import { validationMessage } from "../lib/validationError";
 import { siteAdminRequired } from "../lib/middlewares";
 
 const router = express.Router();
@@ -156,7 +157,7 @@ const moderateSchema = zod.object({ status: zod.enum(["visible", "hidden"]) });
 router.patch("/moderation/reviews/:id", siteAdminRequired, async (req, res) => {
   const parsed = moderateSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const row = await prisma.hospital_review
@@ -186,7 +187,7 @@ router.get("/", siteAdminRequired, async (_req, res) => {
 router.patch("/notices/:noticeId", siteAdminRequired, async (req, res) => {
   const parsed = adminNoticeSchema.partial().safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const row = await prisma.hospital_notice
@@ -227,7 +228,7 @@ router.get("/:id", siteAdminRequired, async (req, res) => {
 router.post("/", siteAdminRequired, async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const d = parsed.data;
@@ -267,7 +268,7 @@ router.post("/", siteAdminRequired, async (req, res) => {
 router.patch("/:id", siteAdminRequired, async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const { opening_hours, detail_blocks, ...rest } = parsed.data;
@@ -341,7 +342,7 @@ router.get("/:id/notices", siteAdminRequired, async (req, res) => {
 router.post("/:id/notices", siteAdminRequired, async (req, res) => {
   const parsed = adminNoticeSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const row = await prisma.hospital_notice
