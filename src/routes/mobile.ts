@@ -23,6 +23,7 @@ import { hashRegistrationNumber } from "../lib/hash";
 import { authorBlockFilter } from "../lib/blocks";
 import { notify } from "../lib/notify";
 import { hotScore, popularSince } from "../lib/ranking";
+import { toDistrictAddress } from "../lib/kakaoPlaces";
 import { CONSENT_VERSION } from "../lib/consent";
 
 /**
@@ -3373,7 +3374,9 @@ router.get("/facilities/search", async (req, res) => {
         id: d.id,
         name: d.place_name,
         category: cls,
-        address: d.address_name || null,
+        // 지번 주소를 동까지만. 목록은 '어디쯤인지'를 보여주는 자리라
+        // 번지까지 들어가면 한 줄을 넘겨 정작 필요한 부분이 잘린다.
+        address: toDistrictAddress(d.address_name),
         roadAddress: d.road_address_name || null,
         lat,
         lng,
@@ -3426,7 +3429,9 @@ router.get("/facilities/search", async (req, res) => {
         offersChosen,
         description: profile?.tagline ?? profile?.description ?? null,
         keywords: profile?.keywords ?? [],
-        thumbnailUrl: profile?.thumbnail_url ?? null,
+        // A clinic shouldn't have to upload the same photo twice: when no
+        // thumbnail is set, the first banner is the card image.
+        thumbnailUrl: profile?.thumbnail_url ?? profile?.images?.[0] ?? null,
         // The whole list, not just the match: the card shows the chosen
         // treatment's price, and the detail screen shows the rest.
         treatmentItems: (profile?.treatment_items ?? []) as unknown[],
@@ -3530,7 +3535,7 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
     description: profile.description,
     detailBlocks: profile.detail_blocks ?? null,
     bannerImageUrl: profile.banner_image_url,
-    thumbnailUrl: profile.thumbnail_url,
+    thumbnailUrl: profile.thumbnail_url ?? profile.images[0] ?? null,
     images: profile.images,
     phone: profile.phone,
     address: profile.address,

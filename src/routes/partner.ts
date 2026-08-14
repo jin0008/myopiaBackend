@@ -6,6 +6,7 @@ import bcrypt from "bcrypt";
 import multer from "multer";
 import zod from "zod";
 import prisma from "../lib/prisma";
+import { KakaoLookupError, hasKakaoKey, searchPlaces } from "../lib/kakaoPlaces";
 import { validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
@@ -334,6 +335,45 @@ async function ownProfile(partnerId: string) {
 }
 
 /** GET /partner/notices */
+/* ---- 카카오 병원 검색 (프로필 등록 보조) ------------------------------- *
+ * 프로필은 카카오 place id 로 묶인다. 병원 담당자에게 그 번호를 찾아
+ * 입력하라고 하면 오타가 나고, 오타여도 저장은 성공해서 앱에 아무것도
+ * 안 뜨는데 원인을 알 방법이 없다. 이름으로 찾아 고르게 하면 그 부류의
+ * 문제가 통째로 사라지고 전화·주소도 함께 채워진다.
+ * ----------------------------------------------------------------------- */
+router.get("/place-search", partnerRequired, async (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (q.length < 2) {
+    res.json({ places: [] });
+    return;
+  }
+  if (!hasKakaoKey()) {
+    res.status(503).json({ message: "카카오 검색 키가 설정되지 않았습니다." });
+    return;
+  }
+  try {
+    const docs = await searchPlaces(q);
+    res.json({
+      places: docs.map((d) => ({
+        id: d.id,
+        name: d.place_name,
+        category: d.category_name,
+        phone: d.phone || null,
+        address: d.address_name || null,
+        roadAddress: d.road_address_name || null,
+      })),
+    });
+  } catch (err) {
+    const status = err instanceof KakaoLookupError ? err.status : 0;
+    res.status(502).json({
+      message:
+        status === 403
+          ? "카카오 검색이 거부되었습니다 (앱 설정 확인 필요)."
+          : "카카오 검색에 실패했습니다.",
+    });
+  }
+});
+
 router.get("/notices", partnerRequired, async (req, res) => {
   const profile = await ownProfile(req.partner!.sub);
   if (profile == null) {
