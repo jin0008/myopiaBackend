@@ -3338,16 +3338,27 @@ router.get("/facilities/search", async (req, res) => {
     return;
   }
 
-  const keyword =
-    typeof req.query.keyword === "string" ? req.query.keyword.trim() : "";
-  if (!keyword) {
-    res.status(400).json({ error: "keyword is required", code: "bad_request" });
-    return;
-  }
   const region =
     typeof req.query.region === "string" ? req.query.region.trim() : "";
+  // The treatment the user picked, e.g. "dreamLens". It decides who gets a
+  // badge and who rises, NOT what we ask Kakao.
+  const categoryKey =
+    typeof req.query.categoryKey === "string" ? req.query.categoryKey.trim() : "";
 
-  const query = [region, keyword, "안과"].filter(Boolean).join(" ");
+  if (!region) {
+    res.status(400).json({ error: "region is required", code: "bad_request" });
+    return;
+  }
+
+  // Deliberately region + "안과" only.
+  //
+  // Kakao Local matches place names and categories — it has no idea which
+  // clinic performs 드림렌즈. Putting the treatment in the query returned zero
+  // results for every real treatment ("서울 강남구 드림렌즈 안과" → 0), which
+  // emptied the screen precisely when the user had told us what they wanted.
+  // Which clinics offer what is our data, not Kakao's, so the treatment is
+  // applied below instead.
+  const query = [region, "안과"].join(" ");
 
   try {
     const docs = await kakaoKeywordSearchByText(query);
@@ -3371,7 +3382,66 @@ router.get("/facilities/search", async (req, res) => {
         placeUrl: d.place_url || null,
       });
     }
-    res.json({ places });
+
+    // Join Kakao's places to our own profiles on the kakao place id, then order
+    // them: clinics on the platform that offer the chosen treatment, then other
+    // clinics on the platform, then everyone else in Kakao's own order.
+    //
+    // Kakao's ranking is kept as the base because its API exposes no rating or
+    // review count to sort by — only names, addresses and coordinates.
+    const profiles = await prisma.hospital_profile.findMany({
+      where: { kakao_place_id: { in: places.map((p) => p.id) } },
+    });
+    const byPlaceId = new Map(profiles.map((p) => [p.kakao_place_id, p]));
+
+    const reviewStats = await prisma.hospital_review.groupBy({
+      by: ["kakao_place_id"],
+      where: { kakao_place_id: { in: [...byPlaceId.keys()] }, status: "visible" },
+      _count: { _all: true },
+      _avg: { rating: true },
+    });
+    const statByPlaceId = new Map(
+      reviewStats.map((r) => [
+        r.kakao_place_id,
+        { count: r._count._all, avg: r._avg.rating },
+      ]),
+    );
+
+    const decorated = places.map((place, kakaoRank) => {
+      const profile = byPlaceId.get(place.id);
+      const items = (profile?.treatment_items ?? []) as { category?: string }[];
+      const offersChosen =
+        categoryKey !== "" && items.some((it) => it?.category === categoryKey);
+      const stat = statByPlaceId.get(place.id);
+      return {
+        ...place,
+        kakaoRank,
+        partner: profile != null,
+        verified: profile?.verified ?? false,
+        offersChosen,
+        keywords: profile?.keywords ?? [],
+        thumbnailUrl: profile?.thumbnail_url ?? null,
+        reviewCount: stat?.count ?? 0,
+        ratingAvg: stat?.avg ?? null,
+        // Tier 0 sorts first.
+        tier: offersChosen ? 0 : profile != null ? 1 : 2,
+      };
+    });
+
+    decorated.sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      // Within the platform tiers, better-reviewed clinics first. Outside them
+      // there are no reviews, so Kakao's order carries.
+      if (a.tier < 2) {
+        const ar = a.ratingAvg ?? 0;
+        const br = b.ratingAvg ?? 0;
+        if (ar !== br) return br - ar;
+        if (a.reviewCount !== b.reviewCount) return b.reviewCount - a.reviewCount;
+      }
+      return a.kakaoRank - b.kakaoRank;
+    });
+
+    res.json({ places: decorated.map(({ kakaoRank, tier, ...rest }) => rest) });
   } catch (err) {
     respondKakaoFailure(res, err, "facilities/search");
   }
