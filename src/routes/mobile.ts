@@ -3418,9 +3418,18 @@ router.get("/facilities/search", async (req, res) => {
         kakaoRank,
         partner: profile != null,
         verified: profile?.verified ?? false,
+        // Linked to a hospital on the clinician platform. Shown as the
+        // "eyelog 연동" badge — it means measurements flow in automatically,
+        // which is a stronger trust signal to a parent than anything the
+        // clinic writes about itself.
+        eyelogLinked: profile?.hospital_id != null,
         offersChosen,
+        description: profile?.description ?? null,
         keywords: profile?.keywords ?? [],
         thumbnailUrl: profile?.thumbnail_url ?? null,
+        // The whole list, not just the match: the card shows the chosen
+        // treatment's price, and the detail screen shows the rest.
+        treatmentItems: (profile?.treatment_items ?? []) as unknown[],
         reviewCount: stat?.count ?? 0,
         ratingAvg: stat?.avg ?? null,
         // Tier 0 sorts first.
