@@ -80,16 +80,16 @@ model instrument {
 }
 
 model measurement {
-  id            String     @id(map: "measurement_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  patient_id    String     @db.Uuid
-  date          DateTime   @db.Date
-  instrument_id String     @db.Uuid
-  creator_id    String?    @db.Uuid
-  od            Float?     @db.Real
-  os            Float?     @db.Real
-  instrument    instrument @relation(fields: [instrument_id], references: [id], onDelete: NoAction, map: "measurement_instrument_fk")
-  patient       patient    @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "measurement_patient_fk")
-  user          user?      @relation(fields: [creator_id], references: [id], map: "measurement_user_fk")
+  id            String        @id(map: "measurement_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patient_id    String        @db.Uuid
+  date          DateTime      @db.Date
+  instrument_id String        @db.Uuid
+  creator_id    String?       @db.Uuid
+  od            Float?        @db.Real
+  os            Float?        @db.Real
+  instrument    instrument    @relation(fields: [instrument_id], references: [id], onDelete: NoAction, map: "measurement_instrument_fk")
+  patient       patient       @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "measurement_patient_fk")
+  user          user?         @relation(fields: [creator_id], references: [id], map: "measurement_user_fk")
   study_visit   study_visit[]
 }
 
@@ -485,20 +485,20 @@ model expert_column {
 }
 
 model ad_banner {
-  id          String    @id(map: "ad_banner_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  title       String
-  subtitle    String?
-  badge_text  String?
-  image_url   String
-  link_url    String
-  placement   String    @default("home")
-  sort_order  Int       @default(0)
-  active      Boolean   @default(true)
-  start_at    DateTime? @db.Timestamptz(6)
-  end_at      DateTime? @db.Timestamptz(6)
-  created_by  String?   @db.Uuid
-  created_at  DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at  DateTime  @default(now()) @db.Timestamptz(6)
+  id         String    @id(map: "ad_banner_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  title      String
+  subtitle   String?
+  badge_text String?
+  image_url  String
+  link_url   String
+  placement  String    @default("home")
+  sort_order Int       @default(0)
+  active     Boolean   @default(true)
+  start_at   DateTime? @db.Timestamptz(6)
+  end_at     DateTime? @db.Timestamptz(6)
+  created_by String?   @db.Uuid
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at DateTime  @default(now()) @db.Timestamptz(6)
 }
 
 model hospital_account {
@@ -555,10 +555,15 @@ model hospital_profile {
   // A null day means closed; the whole field null means "not provided yet",
   // which the app renders by hiding the section rather than showing blanks.
   opening_hours    Json?
+  /// 의사 정보: [{ name, title?, photoUrl?, bio? }]
+  /// 별도 테이블이 아니라 배열 JSON인 이유는 notices와 달리 개별 조회·정렬·
+  /// 수정 대상이 아니고, 프로필 저장 한 번에 통째로 갱신되기 때문이다.
+  /// 순서가 곧 노출 순서라 대표원장을 맨 앞에 둔다.
+  doctors          Json?
   created_at       DateTime @default(now()) @db.Timestamptz(6)
   updated_at       DateTime @default(now()) @db.Timestamptz(6)
 
-  notices          hospital_notice[]
+  notices hospital_notice[]
 }
 
 /// Clinic-authored notices ("소식"): reopening dates, doctor changes, events.
@@ -701,20 +706,20 @@ model study_hospital {
 
 /// A patient enrolled into a study (연구환자 등록). One row per (study, patient).
 model study_enrollment {
-  id          String        @id(map: "study_enrollment_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  study_id    String        @db.Uuid
-  patient_id  String        @db.Uuid
-  enrolled_by String?       @db.Uuid
-  enrolled_at DateTime      @default(now()) @db.Timestamptz(6)
-  status      String        @default("active")
+  id             String        @id(map: "study_enrollment_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  study_id       String        @db.Uuid
+  patient_id     String        @db.Uuid
+  enrolled_by    String?       @db.Uuid
+  enrolled_at    DateTime      @default(now()) @db.Timestamptz(6)
+  status         String        @default("active")
   /// De-identified subject number shown in alert emails instead of any patient
   /// identifier. Format: {studyCode}-{hospitalCode}-{seq}, e.g. LPTAT-OS-001,
   /// numbered per (study, hospital). Assigned automatically at enrollment.
-  subject_number String?    @db.VarChar
-  study       study         @relation(fields: [study_id], references: [id], onDelete: Cascade, map: "study_enrollment_study_fk")
-  patient     patient       @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "study_enrollment_patient_fk")
-  enroller    user?         @relation(fields: [enrolled_by], references: [id], map: "study_enrollment_user_fk")
-  study_visit study_visit[]
+  subject_number String?       @db.VarChar
+  study          study         @relation(fields: [study_id], references: [id], onDelete: Cascade, map: "study_enrollment_study_fk")
+  patient        patient       @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "study_enrollment_patient_fk")
+  enroller       user?         @relation(fields: [enrolled_by], references: [id], map: "study_enrollment_user_fk")
+  study_visit    study_visit[]
 
   @@unique([study_id, patient_id], map: "study_enrollment_unique")
   @@unique([study_id, subject_number], map: "study_enrollment_subject_unique")

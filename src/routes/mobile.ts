@@ -3549,6 +3549,7 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
     // Null when the clinic hasn't filled them in; the app hides the section
     // rather than showing an empty table.
     openingHours: profile.opening_hours ?? null,
+    doctors: profile.doctors ?? null,
     notices: profile.notices.map((n) => ({
       id: n.id,
       title: n.title,
@@ -3577,6 +3578,15 @@ router.get("/hospital-profile/:kakaoPlaceId/reviews", optionalMobileAuth, async 
     take: 100,
   });
   const me = req.mobileUser?.sub;
+  // 작성자 이름은 첫 글자만. 후기가 실제 사람의 글이라는 신호는 필요한데,
+  // 진료 기록과 붙어 있는 글이라 전체 이름은 노출할 것이 아니다.
+  const authors = await prisma.user.findMany({
+    where: { id: { in: [...new Set(reviews.map((r) => r.user_id))] } },
+    include: { password_auth: true },
+  });
+  const nameById = new Map(
+    authors.map((u) => [u.id, maskName(u.password_auth?.username ?? null)]),
+  );
   res.json({
     reviews: reviews.map((r) => ({
       id: r.id,
@@ -3585,9 +3595,17 @@ router.get("/hospital-profile/:kakaoPlaceId/reviews", optionalMobileAuth, async 
       images: r.images,
       createdAt: r.created_at.toISOString(),
       isMine: me != null && r.user_id === me,
+      authorMasked: nameById.get(r.user_id) ?? "익명",
     })),
   });
 });
+
+/** "홍길동" → "홍**". 이름이 없으면 익명. */
+function maskName(name: string | null): string {
+  const trimmed = (name ?? "").trim();
+  if (trimmed === "") return "익명";
+  return trimmed[0] + "**";
+}
 
 const reviewBodySchema = zod.object({
   rating: zod.number().int().min(1).max(5),
