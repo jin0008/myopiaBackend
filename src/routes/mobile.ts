@@ -3424,7 +3424,7 @@ router.get("/facilities/search", async (req, res) => {
         // clinic writes about itself.
         eyelogLinked: profile?.hospital_id != null,
         offersChosen,
-        description: profile?.description ?? null,
+        description: profile?.tagline ?? profile?.description ?? null,
         keywords: profile?.keywords ?? [],
         thumbnailUrl: profile?.thumbnail_url ?? null,
         // The whole list, not just the match: the card shows the chosen
@@ -3526,7 +3526,9 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
   res.json({
     kakaoPlaceId: profile.kakao_place_id,
     name: profile.name,
+    tagline: profile.tagline,
     description: profile.description,
+    detailBlocks: profile.detail_blocks ?? null,
     bannerImageUrl: profile.banner_image_url,
     thumbnailUrl: profile.thumbnail_url,
     images: profile.images,

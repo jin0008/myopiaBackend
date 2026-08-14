@@ -67,12 +67,27 @@ const openingHoursSchema = zod.object({
   note: zod.string().max(200).optional(),
 });
 
+/** A blog-style body block: a paragraph or a picture, in order. */
+const detailBlockSchema = zod.discriminatedUnion("type", [
+  zod.object({ type: zod.literal("text"), text: zod.string().max(5000) }),
+  zod.object({ type: zod.literal("image"), url: zod.string().url() }),
+]);
+
+/** Generous for a clinic page, but bounded — an unbounded array lets one
+ *  request store a document of any size. */
+const MAX_DETAIL_BLOCKS = 100;
+
+/** Ten is a carousel; beyond that nobody swipes and the page just gets heavy. */
+const MAX_BANNERS = 10;
+
 const createSchema = zod.object({
   kakao_place_id: zod.string().min(1),
   name: zod.string().min(1),
   description: zod.string().optional(),
   banner_image_url: zod.string().url().nullable().optional(),
-  images: zod.array(zod.string().url()).optional(),
+  images: zod.array(zod.string().url()).max(MAX_BANNERS).optional(),
+  tagline: zod.string().max(120).nullable().optional(),
+  detail_blocks: zod.array(detailBlockSchema).max(MAX_DETAIL_BLOCKS).nullable().optional(),
   phone: zod.string().optional(),
   address: zod.string().optional(),
   status: zod.enum(STATUSES).optional(),
@@ -87,6 +102,25 @@ const createSchema = zod.object({
 const patchSchema = createSchema.partial();
 
 // POST /hospital-profile/upload — admin image upload, returns { url }.
+// POST /hospital-profile/upload-many — several images in one request.
+router.post(
+  "/upload-many",
+  siteAdminRequired,
+  upload.array("images", MAX_BANNERS),
+  (req, res) => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    if (files.length === 0) {
+      res.status(400).json({ message: "no image files (or not images)" });
+      return;
+    }
+    res.status(201).json({
+      urls: files.map(
+        (f) => `${PUBLIC_ORIGIN}/api/hospital-profile/uploads/${f.filename}`,
+      ),
+    });
+  },
+);
+
 router.post("/upload", siteAdminRequired, upload.single("image"), (req, res) => {
   if (!req.file) {
     res.status(400).json({ message: "no image file (or not an image)" });
@@ -213,6 +247,8 @@ router.post("/", siteAdminRequired, async (req, res) => {
         keywords: d.keywords ?? [],
         treatment_items: d.treatment_items ?? undefined,
         opening_hours: d.opening_hours ?? undefined,
+        tagline: d.tagline ?? null,
+        detail_blocks: d.detail_blocks ?? undefined,
         verified: d.verified ?? false,
         booking_url: d.booking_url ?? null,
         created_by: req.authSession!.user_id,
@@ -234,7 +270,7 @@ router.patch("/:id", siteAdminRequired, async (req, res) => {
     res.status(400).json({ message: "invalid body" });
     return;
   }
-  const { opening_hours, ...rest } = parsed.data;
+  const { opening_hours, detail_blocks, ...rest } = parsed.data;
   const row = await prisma.hospital_profile
     .update({
       where: { id: String(req.params.id) },
@@ -244,6 +280,9 @@ router.patch("/:id", siteAdminRequired, async (req, res) => {
         // column alone, an explicit null clears it.
         ...(opening_hours !== undefined && {
           opening_hours: opening_hours ?? Prisma.DbNull,
+        }),
+        ...(detail_blocks !== undefined && {
+          detail_blocks: detail_blocks ?? Prisma.DbNull,
         }),
         updated_at: new Date(),
       },

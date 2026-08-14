@@ -516,8 +516,21 @@ model hospital_profile {
   id               String   @id(map: "hospital_profile_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   kakao_place_id   String   @unique(map: "hospital_profile_kakao_place_id_key")
   name             String
+  /// One line under the clinic's name, on the list card and at the top of the
+  /// detail page. e.g. "드림렌즈·아트로핀 전문 소아근시 클리닉".
+  /// Separate from `description`, which is now long-form content — a card can't
+  /// show a page of prose and a page of prose can't be a subtitle.
+  tagline          String?
+  /// Long-form intro, kept for profiles written before `detail_blocks`.
   description      String?
+  /// Blog-style body: [{ type: "text", text } | { type: "image", url }]
+  /// Clinics want to explain a treatment with pictures between paragraphs,
+  /// which a single text field and a flat gallery can't express.
+  detail_blocks    Json?
+  /// Legacy single banner. `images` is the carousel; this is only read when a
+  /// profile predates it.
   banner_image_url String?
+  /// Banner carousel, max 10 — enforced by the API, not the column.
   images           String[]
   phone            String?
   address          String?
