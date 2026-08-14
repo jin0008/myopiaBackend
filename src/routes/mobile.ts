@@ -3493,6 +3493,14 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
   const placeId = String(req.params.kakaoPlaceId);
   const profile = await prisma.hospital_profile.findUnique({
     where: { kakao_place_id: placeId },
+    include: {
+      notices: {
+        where: { published: true },
+        // Pinned first, then newest — a clinic pins the thing it wants read.
+        orderBy: [{ pinned: "desc" }, { created_at: "desc" }],
+        take: 20,
+      },
+    },
   });
   if (profile == null || profile.status !== "published") {
     res.status(404).json({ error: "no profile", code: "not_found" });
@@ -3518,6 +3526,18 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
     bookingUrl: profile.booking_url,
     // reviewable only when linked to an internal hospital
     reviewable: profile.hospital_id != null,
+    // Null when the clinic hasn't filled them in; the app hides the section
+    // rather than showing an empty table.
+    openingHours: profile.opening_hours ?? null,
+    notices: profile.notices.map((n) => ({
+      id: n.id,
+      title: n.title,
+      body: n.body,
+      kind: n.kind,
+      pinned: n.pinned,
+      createdAt: n.created_at.toISOString(),
+    })),
+    eyelogLinked: profile.hospital_id != null,
     ratingAvg: agg._avg.rating,
     reviewCount: agg._count._all,
   });

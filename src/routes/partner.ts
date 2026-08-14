@@ -129,6 +129,28 @@ const treatmentItemSchema = zod.object({
 
 // Partners set their own marketing fields, but NOT hospital_id or verified —
 // those gate review eligibility and the trust badge, so they stay admin-only.
+/** A day is either closed (null) or a range, optionally with a lunch break. */
+const dayHoursSchema = zod
+  .object({
+    open: zod.string().regex(/^\d{2}:\d{2}$/),
+    close: zod.string().regex(/^\d{2}:\d{2}$/),
+    lunchStart: zod.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
+    lunchEnd: zod.string().regex(/^\d{2}:\d{2}$/).nullable().optional(),
+  })
+  .nullable();
+
+const openingHoursSchema = zod.object({
+  mon: dayHoursSchema.optional(),
+  tue: dayHoursSchema.optional(),
+  wed: dayHoursSchema.optional(),
+  thu: dayHoursSchema.optional(),
+  fri: dayHoursSchema.optional(),
+  sat: dayHoursSchema.optional(),
+  sun: dayHoursSchema.optional(),
+  /** Free text for the things a grid can't express (공휴일 휴진 등). */
+  note: zod.string().max(200).optional(),
+});
+
 const profileSchema = zod.object({
   kakao_place_id: zod.string().min(1),
   name: zod.string().min(1),
@@ -141,6 +163,7 @@ const profileSchema = zod.object({
   keywords: zod.array(zod.string()).optional(),
   treatment_items: zod.array(treatmentItemSchema).optional(),
   booking_url: zod.string().url().nullable().optional(),
+  opening_hours: openingHoursSchema.nullable().optional(),
 });
 
 // Upsert the partner's single profile. Published only once the account is
@@ -175,6 +198,7 @@ router.put("/profile", partnerRequired, async (req, res) => {
       thumbnail_url: d.thumbnail_url ?? null,
       keywords: d.keywords ?? [],
       treatment_items: d.treatment_items ?? undefined,
+      opening_hours: d.opening_hours ?? undefined,
       booking_url: d.booking_url ?? null,
       status,
       owner_account_id: account.id,
@@ -247,3 +271,105 @@ router.patch("/accounts/:id", siteAdminRequired, async (req, res) => {
 });
 
 export default router;
+
+/* ---- 소식 (clinic notices) --------------------------------------------- *
+ * A clinic posts these itself: reopening dates, doctor changes, events. They
+ * hang off the clinic's own profile, so every handler resolves the profile
+ * from the logged-in partner rather than trusting an id from the request.
+ * ----------------------------------------------------------------------- */
+
+const noticeSchema = zod.object({
+  title: zod.string().trim().min(1).max(120),
+  body: zod.string().trim().min(1).max(5000),
+  kind: zod.enum(["notice", "event"]).optional(),
+  pinned: zod.boolean().optional(),
+  published: zod.boolean().optional(),
+});
+
+/** The partner's own profile, or null when they haven't created one yet. */
+async function ownProfile(partnerId: string) {
+  return prisma.hospital_profile.findFirst({
+    where: { owner_account_id: partnerId },
+    select: { id: true },
+  });
+}
+
+/** GET /partner/notices */
+router.get("/notices", partnerRequired, async (req, res) => {
+  const profile = await ownProfile(req.partner!.sub);
+  if (profile == null) {
+    res.json({ notices: [] });
+    return;
+  }
+  const rows = await prisma.hospital_notice.findMany({
+    where: { profile_id: profile.id },
+    orderBy: [{ pinned: "desc" }, { created_at: "desc" }],
+  });
+  res.json({
+    notices: rows.map((n) => ({
+      id: n.id,
+      title: n.title,
+      body: n.body,
+      kind: n.kind,
+      pinned: n.pinned,
+      published: n.published,
+      createdAt: n.created_at.toISOString(),
+    })),
+  });
+});
+
+/** POST /partner/notices */
+router.post("/notices", partnerRequired, async (req, res) => {
+  const parsed = noticeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "invalid body" });
+    return;
+  }
+  const profile = await ownProfile(req.partner!.sub);
+  if (profile == null) {
+    res.status(409).json({ message: "create the hospital profile first" });
+    return;
+  }
+  const row = await prisma.hospital_notice.create({
+    data: { ...parsed.data, profile_id: profile.id },
+  });
+  res.status(201).json({ id: row.id });
+});
+
+/** PATCH /partner/notices/:id */
+router.patch("/notices/:id", partnerRequired, async (req, res) => {
+  const parsed = noticeSchema.partial().safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "invalid body" });
+    return;
+  }
+  const profile = await ownProfile(req.partner!.sub);
+  if (profile == null) {
+    res.sendStatus(404);
+    return;
+  }
+  // Scoped by profile_id as well as id — otherwise a partner could edit
+  // another clinic's notice by guessing its id.
+  const result = await prisma.hospital_notice.updateMany({
+    where: { id: String(req.params.id), profile_id: profile.id },
+    data: { ...parsed.data, updated_at: new Date() },
+  });
+  if (result.count === 0) {
+    res.sendStatus(404);
+    return;
+  }
+  res.json({ ok: true });
+});
+
+/** DELETE /partner/notices/:id */
+router.delete("/notices/:id", partnerRequired, async (req, res) => {
+  const profile = await ownProfile(req.partner!.sub);
+  if (profile == null) {
+    res.sendStatus(404);
+    return;
+  }
+  const result = await prisma.hospital_notice.deleteMany({
+    where: { id: String(req.params.id), profile_id: profile.id },
+  });
+  res.sendStatus(result.count === 0 ? 404 : 204);
+});
