@@ -3526,7 +3526,9 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
   res.json({
     kakaoPlaceId: profile.kakao_place_id,
     name: profile.name,
+    tagline: profile.tagline,
     description: profile.description,
+    detailBlocks: profile.detail_blocks ?? null,
     bannerImageUrl: profile.banner_image_url,
     thumbnailUrl: profile.thumbnail_url,
     images: profile.images,

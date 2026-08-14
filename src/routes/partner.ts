@@ -11,6 +11,9 @@ import { siteAdminRequired } from "../lib/middlewares";
 
 const router = express.Router();
 
+/** Ten is a carousel; beyond that nobody swipes and the page just gets heavy. */
+const MAX_BANNERS = 10;
+
 // Shared with hospital_profile.ts's uploads (served publicly there at
 // /api/hospital-profile/uploads/:filename), so we don't duplicate the serve
 // route — partner uploads just land in the same directory.
@@ -112,6 +115,27 @@ router.post("/profile/upload", partnerRequired, upload.single("image"), (req, re
   });
 });
 
+/** POST /partner/profile/upload-many — several images in one go.
+ *  Picking banner photos one file at a time is the slowest part of setting up
+ *  a profile, and a clinic uploads them in batches. */
+router.post(
+  "/profile/upload-many",
+  partnerRequired,
+  upload.array("images", MAX_BANNERS),
+  (req, res) => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    if (files.length === 0) {
+      res.status(400).json({ message: "no image files (or not images)" });
+      return;
+    }
+    res.status(201).json({
+      urls: files.map(
+        (f) => `${PUBLIC_ORIGIN}/api/hospital-profile/uploads/${f.filename}`,
+      ),
+    });
+  },
+);
+
 router.get("/profile", partnerRequired, async (req, res) => {
   const profile = await prisma.hospital_profile.findFirst({
     where: { owner_account_id: req.partner!.sub },
@@ -151,12 +175,20 @@ const openingHoursSchema = zod.object({
   note: zod.string().max(200).optional(),
 });
 
+/** A blog-style body block: a paragraph or a picture, in order. */
+const detailBlockSchema = zod.discriminatedUnion("type", [
+  zod.object({ type: zod.literal("text"), text: zod.string().max(5000) }),
+  zod.object({ type: zod.literal("image"), url: zod.string().url() }),
+]);
+
 const profileSchema = zod.object({
   kakao_place_id: zod.string().min(1),
   name: zod.string().min(1),
   description: zod.string().optional(),
   banner_image_url: zod.string().url().nullable().optional(),
-  images: zod.array(zod.string().url()).optional(),
+  images: zod.array(zod.string().url()).max(MAX_BANNERS).optional(),
+  tagline: zod.string().max(120).nullable().optional(),
+  detail_blocks: zod.array(detailBlockSchema).nullable().optional(),
   phone: zod.string().optional(),
   address: zod.string().optional(),
   thumbnail_url: zod.string().url().nullable().optional(),
@@ -199,6 +231,8 @@ router.put("/profile", partnerRequired, async (req, res) => {
       keywords: d.keywords ?? [],
       treatment_items: d.treatment_items ?? undefined,
       opening_hours: d.opening_hours ?? undefined,
+      tagline: d.tagline ?? null,
+      detail_blocks: d.detail_blocks ?? undefined,
       booking_url: d.booking_url ?? null,
       status,
       owner_account_id: account.id,
