@@ -3424,7 +3424,7 @@ router.get("/facilities/search", async (req, res) => {
         // clinic writes about itself.
         eyelogLinked: profile?.hospital_id != null,
         offersChosen,
-        description: profile?.description ?? null,
+        description: profile?.tagline ?? profile?.description ?? null,
         keywords: profile?.keywords ?? [],
         thumbnailUrl: profile?.thumbnail_url ?? null,
         // The whole list, not just the match: the card shows the chosen

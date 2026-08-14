@@ -11,6 +11,10 @@ import { siteAdminRequired } from "../lib/middlewares";
 
 const router = express.Router();
 
+/** Generous for a clinic page, but bounded — an unbounded array lets one
+ *  request store a document of any size. */
+const MAX_DETAIL_BLOCKS = 100;
+
 /** Ten is a carousel; beyond that nobody swipes and the page just gets heavy. */
 const MAX_BANNERS = 10;
 
@@ -188,7 +192,7 @@ const profileSchema = zod.object({
   banner_image_url: zod.string().url().nullable().optional(),
   images: zod.array(zod.string().url()).max(MAX_BANNERS).optional(),
   tagline: zod.string().max(120).nullable().optional(),
-  detail_blocks: zod.array(detailBlockSchema).nullable().optional(),
+  detail_blocks: zod.array(detailBlockSchema).max(MAX_DETAIL_BLOCKS).nullable().optional(),
   phone: zod.string().optional(),
   address: zod.string().optional(),
   thumbnail_url: zod.string().url().nullable().optional(),
