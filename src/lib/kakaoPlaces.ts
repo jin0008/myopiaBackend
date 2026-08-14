@@ -69,3 +69,21 @@ export function toDistrictAddress(address: string | null | undefined): string | 
   const last = parts[parts.length - 1];
   return /^\d/.test(last) ? parts.slice(0, -1).join(" ") : parts.join(" ");
 }
+
+/**
+ * Is this Kakao place an eye clinic?
+ *
+ * Kakao's keyword search matches anything — searching "서울" for a clinic
+ * returns 청계천 and 경복궁. The profile form is only ever registering an eye
+ * clinic, so places that aren't one are noise the user has to read past.
+ *
+ * Matches on the category, not the name: "밝은세상" is a clinic and "안과사거리"
+ * is a road.
+ */
+export function isEyeClinic(categoryName: string): boolean {
+  return (
+    categoryName.includes("안과") ||
+    categoryName.includes("대학병원") ||
+    categoryName.includes("종합병원")
+  );
+}

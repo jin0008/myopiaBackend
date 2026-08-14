@@ -6,7 +6,12 @@ import bcrypt from "bcrypt";
 import multer from "multer";
 import zod from "zod";
 import prisma from "../lib/prisma";
-import { KakaoLookupError, hasKakaoKey, searchPlaces } from "../lib/kakaoPlaces";
+import {
+  KakaoLookupError,
+  hasKakaoKey,
+  isEyeClinic,
+  searchPlaces,
+} from "../lib/kakaoPlaces";
 import { validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
@@ -352,9 +357,16 @@ router.get("/place-search", partnerRequired, async (req, res) => {
     return;
   }
   try {
-    const docs = await searchPlaces(q);
+    // "안과" goes into the query so Kakao ranks clinics first, and the category
+    // filter drops whatever still isn't one — a bare "서울" otherwise returns
+    // 청계천 and 경복궁.
+    // Ask for more than we show, because the filter below removes some.
+    const docs = await searchPlaces(q.includes("안과") ? q : `${q} 안과`, 15);
     res.json({
-      places: docs.map((d) => ({
+      places: docs
+        .filter((d) => isEyeClinic(d.category_name))
+        .slice(0, 10)
+        .map((d) => ({
         id: d.id,
         name: d.place_name,
         category: d.category_name,
