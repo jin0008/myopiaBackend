@@ -9,8 +9,7 @@ import prisma from "../lib/prisma";
 import {
   KakaoLookupError,
   hasKakaoKey,
-  isEyeClinic,
-  searchPlaces,
+  searchEyeClinics,
 } from "../lib/kakaoPlaces";
 import { validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
@@ -357,16 +356,9 @@ router.get("/place-search", partnerRequired, async (req, res) => {
     return;
   }
   try {
-    // "안과" goes into the query so Kakao ranks clinics first, and the category
-    // filter drops whatever still isn't one — a bare "서울" otherwise returns
-    // 청계천 and 경복궁.
-    // Ask for more than we show, because the filter below removes some.
-    const docs = await searchPlaces(q.includes("안과") ? q : `${q} 안과`, 15);
+    const docs = await searchEyeClinics(q);
     res.json({
-      places: docs
-        .filter((d) => isEyeClinic(d.category_name))
-        .slice(0, 10)
-        .map((d) => ({
+      places: docs.map((d) => ({
         id: d.id,
         name: d.place_name,
         category: d.category_name,

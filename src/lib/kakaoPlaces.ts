@@ -87,3 +87,21 @@ export function isEyeClinic(categoryName: string): boolean {
     categoryName.includes("종합병원")
   );
 }
+
+/**
+ * Place search for the profile forms, narrowed to eye clinics.
+ *
+ * "안과" is appended to the query so Kakao ranks clinics first, and the
+ * category filter removes whatever still isn't one. Over-fetches because the
+ * filter drops rows.
+ *
+ * If the filter empties the list, the unfiltered results are returned instead:
+ * this search exists so a clinic can register itself, and a clinic that Kakao
+ * files under a category we don't recognise must not become unregisterable.
+ * A noisy list is recoverable; an empty one is a dead end.
+ */
+export async function searchEyeClinics(query: string, limit = 10): Promise<KakaoPlace[]> {
+  const docs = await searchPlaces(query.includes("안과") ? query : `${query} 안과`, 15);
+  const clinics = docs.filter((d) => isEyeClinic(d.category_name));
+  return (clinics.length > 0 ? clinics : docs).slice(0, limit);
+}
