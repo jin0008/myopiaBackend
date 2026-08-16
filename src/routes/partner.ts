@@ -216,6 +216,8 @@ const profileSchema = zod.object({
   booking_url: zod.string().url().nullable().optional(),
   opening_hours: openingHoursSchema.nullable().optional(),
   doctors: zod.array(doctorSchema).max(MAX_DOCTORS).nullable().optional(),
+  latitude: zod.number().min(-90).max(90).nullable().optional(),
+  longitude: zod.number().min(-180).max(180).nullable().optional(),
 });
 
 // Upsert the partner's single profile. Published only once the account is
@@ -252,6 +254,8 @@ router.put("/profile", partnerRequired, async (req, res) => {
       treatment_items: d.treatment_items ?? undefined,
       opening_hours: d.opening_hours ?? undefined,
       doctors: d.doctors ?? undefined,
+      latitude: d.latitude ?? null,
+      longitude: d.longitude ?? null,
       tagline: d.tagline ?? null,
       detail_blocks: d.detail_blocks ?? undefined,
       booking_url: d.booking_url ?? null,
@@ -376,6 +380,10 @@ router.get("/place-search", partnerRequired, async (req, res) => {
         phone: d.phone || null,
         address: d.address_name || null,
         roadAddress: d.road_address_name || null,
+        // 카카오는 x=경도, y=위도를 문자열로 준다. 여기서 숫자로 바꿔
+        // 두지 않으면 등록 폼이 문자열을 그대로 보내 zod에 걸린다.
+        latitude: Number.parseFloat(d.y),
+        longitude: Number.parseFloat(d.x),
       })),
     });
   } catch (err) {
