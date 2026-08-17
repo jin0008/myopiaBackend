@@ -254,8 +254,11 @@ router.put("/profile", partnerRequired, async (req, res) => {
       treatment_items: d.treatment_items ?? undefined,
       opening_hours: d.opening_hours ?? undefined,
       doctors: d.doctors ?? undefined,
-      latitude: d.latitude ?? null,
-      longitude: d.longitude ?? null,
+      // undefined면 컬럼을 건드리지 않는다(doctors/opening_hours와 같은 규칙).
+      // null로 두면 좌표를 안 보내는 오래된 화면이 저장할 때마다 기존 좌표를
+      // 지운다 - 백엔드만 먼저 배포된 동안 열려 있던 탭이 정확히 그 경우다.
+      latitude: d.latitude ?? undefined,
+      longitude: d.longitude ?? undefined,
       tagline: d.tagline ?? null,
       detail_blocks: d.detail_blocks ?? undefined,
       booking_url: d.booking_url ?? null,
