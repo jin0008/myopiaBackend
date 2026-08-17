@@ -12,7 +12,7 @@ import {
   searchEyeClinics,
 } from "../lib/kakaoPlaces";
 import { validationMessage } from "../lib/validationError";
-import { siteAdminRequired } from "../lib/middlewares";
+import { hospitalAdminRequired, siteAdminRequired } from "../lib/middlewares";
 
 const router = express.Router();
 
@@ -233,6 +233,259 @@ router.get("/place-search", siteAdminRequired, async (req, res) => {
     });
   }
 });
+
+/* ---- 병원 관리자 본인 프로필 ------------------------------------------ *
+ *
+ * myopia를 이미 쓰는 병원은 원장·관리자 계정이 이미 있다. 그 병원이 myodoc
+ * 프로필을 관리하려고 파트너 계정을 또 만들고 다른 주소로 또 로그인해야 한다면,
+ * 같은 회사 서비스인데 계정이 둘이라는 설명을 병원마다 해야 한다.
+ *
+ * 그래서 병원 관리자(healthcare_professional.is_admin)가 자기 병원에 연결된
+ * 프로필을 직접 관리하게 한다. 범위는 hospital_id로 고정된다 — 로그인한
+ * 사람의 병원 말고는 손댈 수 없고, 프로필이 어느 병원에 붙는지도 본인이
+ * 고르지 못한다.
+ *
+ * 파트너 계정과 달리 승인 절차가 없는 이유: 이 계정은 이미 진료 데이터를
+ * 다루도록 승인된 계정이다. 신원은 그때 확인됐다.
+ *
+ * `/:id`보다 먼저 등록해야 한다 — 아니면 "mine"이 프로필 id로 해석된다.
+ * ----------------------------------------------------------------------- */
+
+/** 병원 관리자가 못 만지는 것: 어느 병원에 붙는지, 인증 뱃지, 노출 상태.
+ *  앞의 둘은 신뢰 표시라 우리가 정하고, 상태는 아래에서 정해진다. */
+const hospitalOwnProfileSchema = createSchema.omit({
+  hospital_id: true,
+  verified: true,
+  status: true,
+});
+
+router.get("/mine", hospitalAdminRequired, async (req, res) => {
+  const profile = await prisma.hospital_profile.findFirst({
+    where: { hospital_id: req.healthcare_professional!.hospital_id },
+  });
+  res.json(profile);
+});
+
+router.put("/mine", hospitalAdminRequired, async (req, res) => {
+  const parsed = hospitalOwnProfileSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: validationMessage(parsed.error) });
+    return;
+  }
+  const hospitalId = req.healthcare_professional!.hospital_id;
+  const d = parsed.data;
+  const existing = await prisma.hospital_profile.findFirst({
+    where: { hospital_id: hospitalId },
+  });
+
+  const data = {
+    kakao_place_id: d.kakao_place_id,
+    name: d.name,
+    description: d.description,
+    banner_image_url: d.banner_image_url ?? null,
+    images: d.images ?? [],
+    phone: d.phone,
+    address: d.address,
+    thumbnail_url: d.thumbnail_url ?? null,
+    keywords: d.keywords ?? [],
+    treatment_items: d.treatment_items ?? undefined,
+    opening_hours: d.opening_hours ?? undefined,
+    doctors: d.doctors ?? undefined,
+    latitude: d.latitude ?? undefined,
+    longitude: d.longitude ?? undefined,
+    tagline: d.tagline ?? null,
+    detail_blocks: d.detail_blocks ?? undefined,
+    booking_url: d.booking_url ?? null,
+    // 이미 진료 데이터를 다루는 병원이라 노출을 미룰 이유가 없다.
+    status: "published",
+    hospital_id: hospitalId,
+    updated_at: new Date(),
+  };
+
+  try {
+    const row = existing
+      ? await prisma.hospital_profile.update({ where: { id: existing.id }, data })
+      : await prisma.hospital_profile.create({ data });
+    res.json(row);
+  } catch {
+    // 이 카카오 장소를 다른 병원이 이미 쓰고 있다. 장소를 잘못 고른 경우가
+    // 대부분이라, 그 사실을 알려줘야 다시 고를 수 있다.
+    // 두 경우가 여기로 온다: (1) 다른 지점을 잘못 골랐다, (2) 관리자가
+    // 온보딩용으로 이 병원 프로필을 미리 만들었는데 우리 병원과 연결해 두지
+    // 않았다. 병원 쪽에서 (2)를 스스로 풀 방법은 없으므로 두 길을 다 알려준다.
+    // 여기서 임자 없는 프로필을 자동으로 가져가게 하면, 아무 병원 관리자나
+    // "이 장소가 우리다"라고 주장해 남의 프로필을 차지할 수 있다.
+    res.status(409).json({
+      message:
+        "이미 등록된 병원입니다. 다른 지점을 선택했는지 확인해 주시고, 맞다면 관리자에게 프로필 연결을 요청해 주세요.",
+    });
+  }
+});
+
+/* ---- 병원 관리자의 소식 ------------------------------------------------ *
+ * 프로필을 병원이 직접 관리하는데 공지만 우리에게 부탁해야 한다면 반쪽이다.
+ * 휴진 안내처럼 시급한 것이 대부분이라 특히 그렇다.
+ * 자기 병원 프로필에 달린 소식만 보이고 만질 수 있다.
+ * ----------------------------------------------------------------------- */
+
+/** 로그인한 관리자의 병원 프로필. 없으면 null — 소식은 프로필에 달린다. */
+async function ownHospitalProfile(hospitalId: string) {
+  return prisma.hospital_profile.findFirst({ where: { hospital_id: hospitalId } });
+}
+
+router.get("/mine/notices", hospitalAdminRequired, async (req, res) => {
+  const profile = await ownHospitalProfile(req.healthcare_professional!.hospital_id);
+  if (profile == null) {
+    res.json({ notices: [] });
+    return;
+  }
+  const rows = await prisma.hospital_notice.findMany({
+    where: { profile_id: profile.id },
+    orderBy: [{ pinned: "desc" }, { created_at: "desc" }],
+  });
+  res.json({
+    notices: rows.map((n) => ({
+      id: n.id,
+      title: n.title,
+      body: n.body,
+      kind: n.kind,
+      pinned: n.pinned,
+      published: n.published,
+      createdAt: n.created_at.toISOString(),
+    })),
+  });
+});
+
+router.post("/mine/notices", hospitalAdminRequired, async (req, res) => {
+  const parsed = adminNoticeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: validationMessage(parsed.error) });
+    return;
+  }
+  const profile = await ownHospitalProfile(req.healthcare_professional!.hospital_id);
+  if (profile == null) {
+    res.status(409).json({ message: "프로필을 먼저 저장한 뒤 소식을 등록할 수 있습니다." });
+    return;
+  }
+  const row = await prisma.hospital_notice.create({
+    data: { ...parsed.data, profile_id: profile.id },
+  });
+  res.status(201).json({ id: row.id });
+});
+
+/** 소식 수정·삭제. 내 병원 프로필에 달린 것만 — id만 보고 고치면 남의 병원
+ *  공지를 건드릴 수 있다. */
+async function ownNotice(hospitalId: string, noticeId: string) {
+  const profile = await ownHospitalProfile(hospitalId);
+  if (profile == null) return null;
+  return prisma.hospital_notice.findFirst({
+    where: { id: noticeId, profile_id: profile.id },
+  });
+}
+
+router.patch("/mine/notices/:noticeId", hospitalAdminRequired, async (req, res) => {
+  const parsed = adminNoticeSchema.partial().safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: validationMessage(parsed.error) });
+    return;
+  }
+  const notice = await ownNotice(
+    req.healthcare_professional!.hospital_id,
+    String(req.params.noticeId),
+  );
+  if (notice == null) {
+    res.sendStatus(404);
+    return;
+  }
+  await prisma.hospital_notice.update({
+    where: { id: notice.id },
+    data: { ...parsed.data, updated_at: new Date() },
+  });
+  res.json({ ok: true });
+});
+
+router.delete("/mine/notices/:noticeId", hospitalAdminRequired, async (req, res) => {
+  const notice = await ownNotice(
+    req.healthcare_professional!.hospital_id,
+    String(req.params.noticeId),
+  );
+  if (notice == null) {
+    res.sendStatus(404);
+    return;
+  }
+  await prisma.hospital_notice.delete({ where: { id: notice.id } });
+  res.sendStatus(204);
+});
+
+/** 장소 검색 — 어드민용과 같지만 병원 관리자도 쓸 수 있어야 한다. */
+router.get("/mine/place-search", hospitalAdminRequired, async (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (q.length < 2) {
+    res.json({ places: [] });
+    return;
+  }
+  if (!hasKakaoKey()) {
+    res.status(503).json({ message: "카카오 검색 키가 설정되지 않았습니다." });
+    return;
+  }
+  try {
+    const docs = await searchEyeClinics(q);
+    res.json({
+      places: docs.map((d) => ({
+        id: d.id,
+        name: d.place_name,
+        category: d.category_name,
+        phone: d.phone || null,
+        address: d.address_name || null,
+        roadAddress: d.road_address_name || null,
+        latitude: Number.parseFloat(d.y),
+        longitude: Number.parseFloat(d.x),
+      })),
+    });
+  } catch (err) {
+    const status = err instanceof KakaoLookupError ? err.status : 0;
+    res.status(502).json({
+      message:
+        status === 403
+          ? "카카오 검색이 거부되었습니다 (앱 설정 확인 필요)."
+          : "카카오 검색에 실패했습니다.",
+    });
+  }
+});
+
+/** 이미지 업로드 — 배너·의사 사진용. */
+router.post(
+  "/mine/upload-many",
+  hospitalAdminRequired,
+  upload.array("images", MAX_BANNERS),
+  (req, res) => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    if (files.length === 0) {
+      res.status(400).json({ message: "no image files (or not images)" });
+      return;
+    }
+    res.json({
+      urls: files.map(
+        (f) => `${PUBLIC_ORIGIN}/api/hospital-profile/uploads/${f.filename}`,
+      ),
+    });
+  },
+);
+
+router.post(
+  "/mine/upload",
+  hospitalAdminRequired,
+  upload.single("image"),
+  (req, res) => {
+    if (req.file == null) {
+      res.status(400).json({ message: "no image file (or not an image)" });
+      return;
+    }
+    res.json({
+      url: `${PUBLIC_ORIGIN}/api/hospital-profile/uploads/${req.file.filename}`,
+    });
+  },
+);
 
 router.get("/", siteAdminRequired, async (_req, res) => {
   const rows = await prisma.hospital_profile.findMany({
