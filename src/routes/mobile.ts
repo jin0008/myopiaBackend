@@ -3503,7 +3503,7 @@ router.get("/hospital-profiles/summary", async (req, res) => {
  *  Returns the admin/partner-managed marketing profile (banner, description,
  *  gallery) for a finder hospital, keyed to its Kakao place id. 404 when the
  *  hospital hasn't set one up (the app then just shows the basic info). */
-router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
+router.get("/hospital-profile/:kakaoPlaceId", optionalMobileAuth, async (req, res) => {
   const placeId = String(req.params.kakaoPlaceId);
   const profile = await prisma.hospital_profile.findUnique({
     where: { kakao_place_id: placeId },
@@ -3525,9 +3525,25 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
     _avg: { rating: true },
     _count: { _all: true },
   });
-  // Linked to a clinic on the clinician platform: it gates review eligibility
-  // (only real patients can review) and drives the "eyelog 연동" badge.
+  // 연동 병원 여부는 뱃지("eyelog 연동")용이다 — 이 병원 데이터가 자동으로
+  // 들어온다는 뜻이라 부모에게는 병원이 스스로 쓴 어떤 문구보다 강한 신호다.
   const eyelogLinked = profile.hospital_id != null;
+  // 후기 작성 자격은 그것만으로는 부족하다. 실제로 그 병원에 다니는 아이의
+  // 부모여야 등록이 통과한다(POST가 그렇게 검사한다). 여기서 같은 기준으로
+  // 계산하지 않으면 자격 없는 사람에게 "후기 작성" 버튼을 보여주고 눌렀을 때
+  // 403으로 돌려보내게 된다.
+  const viewerId = req.mobileUser?.sub;
+  const reviewable =
+    viewerId != null &&
+    profile.hospital_id != null &&
+    (await prisma.child_hospital_link.findFirst({
+      where: {
+        hospital_id: profile.hospital_id,
+        status: "active",
+        parent_child_link: { user_id: viewerId },
+      },
+      select: { id: true },
+    })) != null;
   res.json({
     kakaoPlaceId: profile.kakao_place_id,
     name: profile.name,
@@ -3543,9 +3559,7 @@ router.get("/hospital-profile/:kakaoPlaceId", async (req, res) => {
     treatmentItems: profile.treatment_items ?? [],
     verified: profile.verified,
     bookingUrl: profile.booking_url,
-    // Both derive from the same link but answer different questions, so they
-    // stay separate fields — computed once so they can't drift apart.
-    reviewable: eyelogLinked,
+    reviewable,
     // Null when the clinic hasn't filled them in; the app hides the section
     // rather than showing an empty table.
     openingHours: profile.opening_hours ?? null,
@@ -3595,6 +3609,9 @@ router.get("/hospital-profile/:kakaoPlaceId/reviews", optionalMobileAuth, async 
       images: r.images,
       createdAt: r.created_at.toISOString(),
       isMine: me != null && r.user_id === me,
+      // 차단은 글이 아니라 사람을 막는 것이라 작성자 id가 필요하다.
+      // 커뮤니티 작성자 DTO도 같은 값을 내보낸다.
+      authorId: r.user_id,
       authorMasked: nameById.get(r.user_id) ?? "익명",
     })),
   });
@@ -3674,36 +3691,13 @@ router.post(
   },
 );
 
-/** PATCH /api/mobile/hospital-profile/:kakaoPlaceId/reviews/:id — own review. */
-router.patch(
-  "/hospital-profile/:kakaoPlaceId/reviews/:id",
-  requireMobileAuth,
-  async (req, res) => {
-    const parsed = reviewBodySchema.partial().safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "invalid body", code: "bad_request" });
-      return;
-    }
-    const id = String(req.params.id);
-    const userId = req.mobileUser!.sub;
-    const existing = await prisma.hospital_review.findUnique({ where: { id } });
-    // The place id in the path must match the review's, so a review can't be
-    // edited through an unrelated hospital's URL.
-    if (
-      existing == null ||
-      existing.user_id !== userId ||
-      existing.kakao_place_id !== String(req.params.kakaoPlaceId)
-    ) {
-      res.sendStatus(404);
-      return;
-    }
-    const updated = await prisma.hospital_review.update({
-      where: { id },
-      data: { ...parsed.data, updated_at: new Date() },
-    });
-    res.json({ id: updated.id });
-  },
-);
+/* 후기 수정은 없다.
+ *
+ * 후기는 특정 시점의 진료 경험에 대한 진술이고, 나중에 내용을 바꿀 수 있으면
+ * 그 진술이 언제의 것인지 읽는 사람이 알 수 없게 된다. 병원이 사후에 수정을
+ * 요구할 여지도 생긴다. 고칠 것이 있으면 지우고 다시 쓴다(한 병원당 한 건).
+ * 수정 엔드포인트는 그래서 두지 않는다 — 화면에 없더라도 열려 있으면 정책이
+ * 아니라 장식이다. */
 
 /** DELETE /api/mobile/hospital-profile/:kakaoPlaceId/reviews/:id — own review. */
 router.delete(
