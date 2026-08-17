@@ -3351,8 +3351,12 @@ router.get("/treatment/hospitals", async (req, res) => {
   const sido = String(req.query.sido ?? "").trim();
   const sigungu = String(req.query.sigungu ?? "").trim();
 
+  // hospital_id가 걸린 프로필만. 이 값이 있어야 eyelog로 측정이 흘러 들어오고,
+  // 그 병원에 다니는 아이의 부모가 후기를 쓸 수 있다. 즉 이 조건 하나가
+  // "치료탭에 보이는 병원 = 후기가 쌓일 수 있는 병원 = 데이터가 도는 병원"을
+  // 한꺼번에 맞춘다. 프로필만 있고 연동이 안 된 곳은 알맹이가 자라지 않는다.
   const profiles = await prisma.hospital_profile.findMany({
-    where: { status: "published" },
+    where: { status: "published", hospital_id: { not: null } },
   });
 
   const reviewStats = await prisma.hospital_review.groupBy({
@@ -3401,7 +3405,8 @@ router.get("/treatment/hospitals", async (req, res) => {
       placeUrl: `https://place.map.kakao.com/${p.kakao_place_id}`,
       partner: true,
       verified: p.verified,
-      eyelogLinked: p.hospital_id != null,
+      // 위 where가 보장한다.
+      eyelogLinked: true,
       // 목록 전체가 우리가 등록한 병원이라, 뱃지는 "이 치료를 한다"가 아니라
       // 여기까지 온 이유를 확인해 주는 표시로 남는다.
       offersChosen: categoryKey !== "",
