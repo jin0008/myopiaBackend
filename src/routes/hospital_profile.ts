@@ -114,6 +114,8 @@ const createSchema = zod.object({
   booking_url: zod.string().url().nullable().optional(),
   opening_hours: openingHoursSchema.nullable().optional(),
   doctors: zod.array(doctorSchema).max(MAX_DOCTORS).nullable().optional(),
+  latitude: zod.number().min(-90).max(90).nullable().optional(),
+  longitude: zod.number().min(-180).max(180).nullable().optional(),
 });
 const patchSchema = createSchema.partial();
 
@@ -215,6 +217,10 @@ router.get("/place-search", siteAdminRequired, async (req, res) => {
         phone: d.phone || null,
         address: d.address_name || null,
         roadAddress: d.road_address_name || null,
+        // 카카오는 x=경도, y=위도를 문자열로 준다. 여기서 숫자로 바꿔
+        // 두지 않으면 등록 폼이 문자열을 그대로 보내 zod에 걸린다.
+        latitude: Number.parseFloat(d.y),
+        longitude: Number.parseFloat(d.x),
       })),
     });
   } catch (err) {
@@ -303,6 +309,11 @@ router.post("/", siteAdminRequired, async (req, res) => {
         treatment_items: d.treatment_items ?? undefined,
         opening_hours: d.opening_hours ?? undefined,
         doctors: d.doctors ?? undefined,
+        // undefined면 컬럼을 건드리지 않는다(doctors/opening_hours와 같은 규칙).
+        // null로 두면 좌표를 안 보내는 오래된 화면이 저장할 때마다 기존 좌표를
+        // 지운다 - 백엔드만 먼저 배포된 동안 열려 있던 탭이 정확히 그 경우다.
+        latitude: d.latitude ?? undefined,
+        longitude: d.longitude ?? undefined,
         tagline: d.tagline ?? null,
         detail_blocks: d.detail_blocks ?? undefined,
         verified: d.verified ?? false,

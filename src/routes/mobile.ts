@@ -3319,6 +3319,123 @@ async function kakaoKeywordSearchByText(query: string): Promise<KakaoDoc[]> {
 }
 
 /* ------------------------------------------------------------------ *
+ * GET /api/mobile/treatment/hospitals?categoryKey=&sido=&sigungu=     *
+ *                                                                    *
+ * 치료탭 목록. 카카오를 거치지 않고 우리가 온보딩한 프로필만 돌려준다.  *
+ *                                                                    *
+ * 카카오로 전국 안과를 뿌리면 목록의 대부분이 이름과 주소뿐인 껍데기가  *
+ * 된다 — 진료시간도 후기도 치료 가격도 우리가 등록한 병원에만 있다.     *
+ * 치료탭은 "이 치료를 받을 병원을 고른다"는 자리라 알맹이 없는 행이     *
+ * 섞이면 고를 수가 없다. 전국 목록이 필요하면 병원찾기 탭으로.          *
+ *                                                                    *
+ * 지역은 입구가 아니라 필터다. 온보딩 병원이 전국에 흩어져 있어         *
+ * 지역부터 고르게 하면 대부분의 지역에서 빈 화면이 나온다.              *
+ * ------------------------------------------------------------------ */
+
+/** 시/도 표기가 갈린다("경기도" vs 카카오의 "경기", "강원특별자치도").
+ *  앞 두 글자면 17개 시/도가 서로 겹치지 않게 구분된다. */
+function sidoMatches(address: string, sido: string): boolean {
+  return address.startsWith(sido.slice(0, 2));
+}
+
+/** 프로필에는 병원 종류 컬럼이 없다(카카오가 주던 분류였다). 이름으로
+ *  가늠하고 아니면 의원 — 온보딩 대상은 대부분 안과의원이다. */
+function categoryFromName(name: string): FacilityCategory {
+  if (name.includes("대학교병원") || name.includes("대학병원")) return "university";
+  if (name.includes("의료원") || name.includes("종합병원")) return "general";
+  return "clinic";
+}
+
+router.get("/treatment/hospitals", async (req, res) => {
+  const categoryKey = String(req.query.categoryKey ?? "").trim();
+  const sido = String(req.query.sido ?? "").trim();
+  const sigungu = String(req.query.sigungu ?? "").trim();
+
+  const profiles = await prisma.hospital_profile.findMany({
+    where: { status: "published" },
+  });
+
+  const reviewStats = await prisma.hospital_review.groupBy({
+    by: ["kakao_place_id"],
+    where: {
+      kakao_place_id: { in: profiles.map((p) => p.kakao_place_id) },
+      status: "visible",
+    },
+    _count: { _all: true },
+    _avg: { rating: true },
+  });
+  const statByPlaceId = new Map(
+    reviewStats.map((r) => [
+      r.kakao_place_id,
+      { count: r._count._all, avg: r._avg.rating },
+    ]),
+  );
+
+  // 온보딩 규모가 수십 곳이라 메모리에서 거른다. JSON 컬럼(treatment_items)을
+  // SQL로 뒤지는 것보다 읽기 쉽고, 이 크기에서는 차이도 없다.
+  const rows = profiles.filter((p) => {
+    const address = p.address ?? "";
+    if (sido !== "" && !sidoMatches(address, sido)) return false;
+    if (sigungu !== "" && sigungu !== "전체" && !address.includes(sigungu)) return false;
+    if (categoryKey !== "") {
+      const items = (p.treatment_items ?? []) as { category?: string }[];
+      if (!items.some((it) => it?.category === categoryKey)) return false;
+    }
+    return true;
+  });
+
+  const decorated = rows.map((p) => {
+    const stat = statByPlaceId.get(p.kakao_place_id);
+    return {
+      id: p.kakao_place_id,
+      name: p.name,
+      category: categoryFromName(p.name),
+      address: toDistrictAddress(p.address),
+      roadAddress: p.address,
+      lat: p.latitude,
+      lng: p.longitude,
+      phone: p.phone,
+      distanceKm: null,
+      // 카카오 장소 상세는 place id로 바로 열린다 — 상세 화면의 "카카오맵에서
+      // 보기"가 쓰는 링크라 검색 응답 없이도 만들 수 있다.
+      placeUrl: `https://place.map.kakao.com/${p.kakao_place_id}`,
+      partner: true,
+      verified: p.verified,
+      eyelogLinked: p.hospital_id != null,
+      // 목록 전체가 우리가 등록한 병원이라, 뱃지는 "이 치료를 한다"가 아니라
+      // 여기까지 온 이유를 확인해 주는 표시로 남는다.
+      offersChosen: categoryKey !== "",
+      description: p.tagline ?? p.description ?? null,
+      keywords: p.keywords,
+      thumbnailUrl: p.thumbnail_url ?? p.images[0] ?? null,
+      treatmentItems: (p.treatment_items ?? []) as unknown[],
+      reviewCount: stat?.count ?? 0,
+      ratingAvg: stat?.avg ?? null,
+    };
+  });
+
+  // eyelog 연동 병원이 먼저.
+  //
+  // 노출 자격과 후기 자격은 다른 질문에 답한다. 노출은 "이 병원 정보가 쓸모
+  // 있나"(= 프로필이 채워졌나)이고, 후기는 "이 사람이 진짜 환자인가"(= 진료
+  // 기록이 있나)다. 노출까지 연동에 묶으면 myodoc에만 가입한 병원은 정보를
+  // 아무리 채워도 보이지 않아 성장이 막힌다. 대신 연동한 병원을 위로 올리고
+  // 뱃지를 달아, 연동이 장벽이 아니라 이득이 되게 한다.
+  //
+  // 근거 없는 우대가 아니다 - 연동 병원은 측정이 자동으로 흘러 들어오고
+  // 그곳 환자만 후기를 쓸 수 있어, 실제로 더 확인된 선택지다.
+  decorated.sort(
+    (a, b) =>
+      Number(b.eyelogLinked) - Number(a.eyelogLinked) ||
+      (b.ratingAvg ?? 0) - (a.ratingAvg ?? 0) ||
+      b.reviewCount - a.reviewCount ||
+      a.name.localeCompare(b.name, "ko"),
+  );
+
+  res.json({ places: decorated });
+});
+
+/* ------------------------------------------------------------------ *
  * Treatment finder (치료 항목별 병원 찾기)                              *
  *                                                                    *
  * GET /api/mobile/facilities/search?keyword=&region=                  *
