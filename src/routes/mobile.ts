@@ -3351,12 +3351,8 @@ router.get("/treatment/hospitals", async (req, res) => {
   const sido = String(req.query.sido ?? "").trim();
   const sigungu = String(req.query.sigungu ?? "").trim();
 
-  // hospital_id가 걸린 프로필만. 이 값이 있어야 eyelog로 측정이 흘러 들어오고,
-  // 그 병원에 다니는 아이의 부모가 후기를 쓸 수 있다. 즉 이 조건 하나가
-  // "치료탭에 보이는 병원 = 후기가 쌓일 수 있는 병원 = 데이터가 도는 병원"을
-  // 한꺼번에 맞춘다. 프로필만 있고 연동이 안 된 곳은 알맹이가 자라지 않는다.
   const profiles = await prisma.hospital_profile.findMany({
-    where: { status: "published", hospital_id: { not: null } },
+    where: { status: "published" },
   });
 
   const reviewStats = await prisma.hospital_review.groupBy({
@@ -3405,8 +3401,7 @@ router.get("/treatment/hospitals", async (req, res) => {
       placeUrl: `https://place.map.kakao.com/${p.kakao_place_id}`,
       partner: true,
       verified: p.verified,
-      // 위 where가 보장한다.
-      eyelogLinked: true,
+      eyelogLinked: p.hospital_id != null,
       // 목록 전체가 우리가 등록한 병원이라, 뱃지는 "이 치료를 한다"가 아니라
       // 여기까지 온 이유를 확인해 주는 표시로 남는다.
       offersChosen: categoryKey !== "",
@@ -3419,10 +3414,19 @@ router.get("/treatment/hospitals", async (req, res) => {
     };
   });
 
-  // 후기 좋은 순 → 후기 많은 순 → 이름 순. 거리순은 좌표가 다 채워지고
-  // 사용자 위치를 받게 되면 그때.
+  // eyelog 연동 병원이 먼저.
+  //
+  // 노출 자격과 후기 자격은 다른 질문에 답한다. 노출은 "이 병원 정보가 쓸모
+  // 있나"(= 프로필이 채워졌나)이고, 후기는 "이 사람이 진짜 환자인가"(= 진료
+  // 기록이 있나)다. 노출까지 연동에 묶으면 myodoc에만 가입한 병원은 정보를
+  // 아무리 채워도 보이지 않아 성장이 막힌다. 대신 연동한 병원을 위로 올리고
+  // 뱃지를 달아, 연동이 장벽이 아니라 이득이 되게 한다.
+  //
+  // 근거 없는 우대가 아니다 - 연동 병원은 측정이 자동으로 흘러 들어오고
+  // 그곳 환자만 후기를 쓸 수 있어, 실제로 더 확인된 선택지다.
   decorated.sort(
     (a, b) =>
+      Number(b.eyelogLinked) - Number(a.eyelogLinked) ||
       (b.ratingAvg ?? 0) - (a.ratingAvg ?? 0) ||
       b.reviewCount - a.reviewCount ||
       a.name.localeCompare(b.name, "ko"),
