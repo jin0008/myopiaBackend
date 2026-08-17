@@ -271,8 +271,14 @@ router.put("/profile", partnerRequired, async (req, res) => {
       : await prisma.hospital_profile.create({ data });
     res.json(row);
   } catch {
-    // kakao_place_id already claimed by someone else's profile.
-    res.status(409).json({ message: "this place is already registered" });
+    // kakao_place_id는 유니크다. 어드민이 온보딩용으로 먼저 만들어 둔 프로필이
+    // 있으면 병원이 저장할 때 여기로 떨어진다 — 병원 잘못이 아니고, 관리자가
+    // 소유권을 넘겨주면 해결된다. 그 사실을 알려주지 않으면 병원은 자기가
+    // 뭘 잘못했는지 모른 채 막힌다.
+    res.status(409).json({
+      message:
+        "이미 등록된 병원입니다. 관리자가 기존 프로필을 이 계정으로 넘겨드려야 수정할 수 있습니다.",
+    });
   }
 });
 
@@ -330,6 +336,74 @@ router.patch("/accounts/:id", siteAdminRequired, async (req, res) => {
     data: { status: profileStatus, updated_at: new Date() },
   });
   res.json({ id: account.id, status: account.status });
+});
+
+/* ---- 프로필 소유권 이관 ------------------------------------------------ *
+ *
+ * 온보딩은 어드민이 30여 곳을 미리 채우는 것으로 시작한다 — 병원 한 곳마다
+ * 가입을 시키고 기다리면 시작 자체가 안 된다. 그런데 kakao_place_id가
+ * 유니크라, 나중에 그 병원이 파트너로 가입하면 자기 프로필을 만들 수 없고
+ * (409) 어드민이 만들어 둔 행에도 접근할 수 없다. 병원은 자기 공지 하나
+ * 올리려고 계속 우리에게 연락해야 한다.
+ *
+ * 그래서 승인 시점에 소유권을 넘긴다. 주인이 없는 프로필만 넘길 수 있다 —
+ * 이미 다른 계정이 쓰고 있는 프로필을 가져가는 것은 탈취다.
+ * ----------------------------------------------------------------------- */
+const handoverSchema = zod.object({ profile_id: zod.string().uuid() });
+
+router.post("/accounts/:id/claim-profile", siteAdminRequired, async (req, res) => {
+  const parsed = handoverSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: validationMessage(parsed.error) });
+    return;
+  }
+  const accountId = String(req.params.id);
+  const account = await prisma.hospital_account.findUnique({ where: { id: accountId } });
+  if (account == null) {
+    res.sendStatus(404);
+    return;
+  }
+  // 한 계정이 프로필 여러 개를 갖는 구조가 아니다. 이미 있으면 무엇을
+  // 넘기려는 것인지가 불분명하므로 거절한다.
+  const existing = await prisma.hospital_profile.findFirst({
+    where: { owner_account_id: accountId },
+  });
+  if (existing != null) {
+    res.status(409).json({ message: "이 계정은 이미 프로필을 갖고 있습니다." });
+    return;
+  }
+  const profile = await prisma.hospital_profile.findUnique({
+    where: { id: parsed.data.profile_id },
+  });
+  if (profile == null) {
+    res.status(404).json({ message: "프로필을 찾을 수 없습니다." });
+    return;
+  }
+  if (profile.owner_account_id != null) {
+    res.status(409).json({ message: "이미 다른 계정이 관리 중인 프로필입니다." });
+    return;
+  }
+  const updated = await prisma.hospital_profile.update({
+    where: { id: profile.id },
+    data: {
+      owner_account_id: accountId,
+      // 승인된 계정에 넘기는 것이면 바로 노출된다. 아직 심사 중이면 프로필도
+      // 같이 기다린다 - 승인 라우트가 같은 규칙을 쓴다.
+      status: account.status === "approved" ? "published" : "pending",
+      updated_at: new Date(),
+    },
+  });
+  res.json({ id: updated.id, owner_account_id: updated.owner_account_id });
+});
+
+/** 주인이 없는 프로필 목록 — 승인 화면에서 넘길 대상을 고르는 데 쓴다. */
+router.get("/unclaimed-profiles", siteAdminRequired, async (_req, res) => {
+  const rows = await prisma.hospital_profile.findMany({
+    where: { owner_account_id: null },
+    orderBy: [{ name: "asc" }],
+    select: { id: true, name: true, address: true, kakao_place_id: true },
+  });
+  res.json({ profiles: rows });
 });
 
 export default router;
