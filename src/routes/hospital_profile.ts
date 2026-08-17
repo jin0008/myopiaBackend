@@ -26,6 +26,34 @@ const PUBLIC_ORIGIN = "https://myopiamanage.org";
 // extension, so allowing .svg/.html would enable stored XSS.
 const ALLOWED_EXT = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
 
+/**
+ * 업로드 실패 이유를 한국어 JSON으로 돌려준다.
+ *
+ * multer가 던지는 오류는 기본 오류 처리기를 타서 HTML 페이지로 나간다.
+ * 클라이언트는 그걸 JSON으로 읽으려다 실패하고 빈 알림창만 띄우게 되는데,
+ * 병원 쪽에서는 "사진이 큰 건지 형식이 문제인지" 알 방법이 없다.
+ */
+function uploadErrorHandler(
+  err: unknown,
+  _req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  if (err instanceof multer.MulterError) {
+    const message =
+      err.code === "LIMIT_FILE_SIZE"
+        ? `사진 한 장은 ${MAX_UPLOAD_MB}MB까지 올릴 수 있습니다. 크기를 줄여 다시 시도해 주세요.`
+        : err.code === "LIMIT_FILE_COUNT" || err.code === "LIMIT_UNEXPECTED_FILE"
+          ? `한 번에 ${MAX_BANNERS}장까지 올릴 수 있습니다.`
+          : "사진을 올리지 못했습니다.";
+    res.status(400).json({ message });
+    return;
+  }
+  next(err);
+}
+
+const MAX_UPLOAD_MB = 15;
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: UPLOAD_DIR,
@@ -34,7 +62,8 @@ const upload = multer({
       cb(null, `${crypto.randomUUID()}${ext}`);
     },
   }),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  // 병원이 올리는 건 대개 휴대폰으로 찍은 원본이라 5MB로는 자주 걸린다.
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     cb(null, /^image\//.test(file.mimetype) && ALLOWED_EXT.has(ext));
@@ -128,7 +157,9 @@ router.post(
   (req, res) => {
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     if (files.length === 0) {
-      res.status(400).json({ message: "no image files (or not images)" });
+      res.status(400).json({
+      message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
+    });
       return;
     }
     res.status(201).json({
@@ -141,7 +172,9 @@ router.post(
 
 router.post("/upload", siteAdminRequired, upload.single("image"), (req, res) => {
   if (!req.file) {
-    res.status(400).json({ message: "no image file (or not an image)" });
+    res.status(400).json({
+      message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
+    });
     return;
   }
   res.status(201).json({
@@ -233,6 +266,19 @@ router.get("/place-search", siteAdminRequired, async (req, res) => {
     });
   }
 });
+
+/**
+ * 고정 공지는 병원당 하나.
+ *
+ * 상세 화면 맨 위에 딱 하나만 올라가는 자리라, 여러 개를 고정할 수 있으면
+ * 무엇이 보일지 병원이 예측할 수 없다. 새로 고정하면 이전 것이 풀린다.
+ */
+async function unpinOthers(profileId: string, keepNoticeId: string) {
+  await prisma.hospital_notice.updateMany({
+    where: { profile_id: profileId, pinned: true, id: { not: keepNoticeId } },
+    data: { pinned: false },
+  });
+}
 
 /* ---- 병원 관리자 본인 프로필 ------------------------------------------ *
  *
@@ -370,6 +416,7 @@ router.post("/mine/notices", hospitalAdminRequired, async (req, res) => {
   const row = await prisma.hospital_notice.create({
     data: { ...parsed.data, profile_id: profile.id },
   });
+  if (row.pinned) await unpinOthers(profile.id, row.id);
   res.status(201).json({ id: row.id });
 });
 
@@ -397,10 +444,11 @@ router.patch("/mine/notices/:noticeId", hospitalAdminRequired, async (req, res) 
     res.sendStatus(404);
     return;
   }
-  await prisma.hospital_notice.update({
+  const updated = await prisma.hospital_notice.update({
     where: { id: notice.id },
     data: { ...parsed.data, updated_at: new Date() },
   });
+  if (updated.pinned) await unpinOthers(updated.profile_id, updated.id);
   res.json({ ok: true });
 });
 
@@ -461,7 +509,9 @@ router.post(
   (req, res) => {
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     if (files.length === 0) {
-      res.status(400).json({ message: "no image files (or not images)" });
+      res.status(400).json({
+      message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
+    });
       return;
     }
     res.json({
@@ -478,7 +528,9 @@ router.post(
   upload.single("image"),
   (req, res) => {
     if (req.file == null) {
-      res.status(400).json({ message: "no image file (or not an image)" });
+      res.status(400).json({
+      message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
+    });
       return;
     }
     res.json({
@@ -513,6 +565,7 @@ router.patch("/notices/:noticeId", siteAdminRequired, async (req, res) => {
     res.sendStatus(404);
     return;
   }
+  if (row.pinned) await unpinOthers(row.profile_id, row.id);
   res.json({ ok: true });
 });
 
@@ -626,6 +679,8 @@ router.delete("/:id", siteAdminRequired, async (req, res) => {
   res.sendStatus(204);
 });
 
+router.use(uploadErrorHandler);
+
 export default router;
 
 /* ---- 소식 (admin side) --------------------------------------------------
@@ -674,6 +729,7 @@ router.post("/:id/notices", siteAdminRequired, async (req, res) => {
     res.status(404).json({ message: "profile not found" });
     return;
   }
+  if (row.pinned) await unpinOthers(row.profile_id, row.id);
   res.status(201).json({ id: row.id });
 });
 

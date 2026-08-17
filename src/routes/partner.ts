@@ -36,6 +36,28 @@ const PUBLIC_ORIGIN = "https://myopiamanage.org";
 // would let a spoofed upload be served as renderable content (stored XSS).
 const ALLOWED_EXT = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif"]);
 
+const MAX_UPLOAD_MB = 15;
+
+/** multer 오류를 한국어 JSON으로. 기본 처리기는 HTML을 내보내서 클라이언트가
+ *  메시지를 못 읽고 빈 알림창만 띄운다. */
+function uploadErrorHandler(
+  err: unknown,
+  _req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+) {
+  if (err instanceof multer.MulterError) {
+    res.status(400).json({
+      message:
+        err.code === "LIMIT_FILE_SIZE"
+          ? `사진 한 장은 ${MAX_UPLOAD_MB}MB까지 올릴 수 있습니다. 크기를 줄여 다시 시도해 주세요.`
+          : "사진을 올리지 못했습니다.",
+    });
+    return;
+  }
+  next(err);
+}
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: UPLOAD_DIR,
@@ -43,7 +65,8 @@ const upload = multer({
       cb(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`);
     },
   }),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  // 병원이 올리는 건 대개 휴대폰 원본이라 5MB로는 자주 걸린다.
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     cb(null, /^image\//.test(file.mimetype) && ALLOWED_EXT.has(ext));
@@ -338,6 +361,17 @@ router.patch("/accounts/:id", siteAdminRequired, async (req, res) => {
   res.json({ id: account.id, status: account.status });
 });
 
+/**
+ * 고정 공지는 병원당 하나. 상세 화면 맨 위에 하나만 올라가는 자리라 여러 개를
+ * 고정할 수 있으면 무엇이 보일지 병원이 예측할 수 없다.
+ */
+async function unpinOthers(profileId: string, keepNoticeId: string) {
+  await prisma.hospital_notice.updateMany({
+    where: { profile_id: profileId, pinned: true, id: { not: keepNoticeId } },
+    data: { pinned: false },
+  });
+}
+
 /* ---- 프로필 소유권 이관 ------------------------------------------------ *
  *
  * 온보딩은 어드민이 30여 곳을 미리 채우는 것으로 시작한다 — 병원 한 곳마다
@@ -405,6 +439,8 @@ router.get("/unclaimed-profiles", siteAdminRequired, async (_req, res) => {
   });
   res.json({ profiles: rows });
 });
+
+router.use(uploadErrorHandler);
 
 export default router;
 
@@ -506,12 +542,13 @@ router.post("/notices", partnerRequired, async (req, res) => {
   }
   const profile = await ownProfile(req.partner!.sub);
   if (profile == null) {
-    res.status(409).json({ message: "create the hospital profile first" });
+    res.status(409).json({ message: "프로필을 먼저 저장한 뒤 소식을 등록할 수 있습니다." });
     return;
   }
   const row = await prisma.hospital_notice.create({
     data: { ...parsed.data, profile_id: profile.id },
   });
+  if (row.pinned) await unpinOthers(profile.id, row.id);
   res.status(201).json({ id: row.id });
 });
 
@@ -536,6 +573,9 @@ router.patch("/notices/:id", partnerRequired, async (req, res) => {
   if (result.count === 0) {
     res.sendStatus(404);
     return;
+  }
+  if (parsed.data.pinned) {
+    await unpinOthers(profile.id, String(req.params.id));
   }
   res.json({ ok: true });
 });

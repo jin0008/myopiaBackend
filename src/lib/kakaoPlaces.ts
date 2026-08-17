@@ -64,8 +64,15 @@ export function toDistrictAddress(address: string | null | undefined): string | 
   if (parts.length === 0) return null;
   const end = parts.findIndex((p) => /(동|읍|면|가|리)$/.test(p));
   if (end >= 0) return parts.slice(0, end + 1).join(" ");
-  // A road-name address has no 동 at all; drop a trailing building number so
-  // it at least stops at the street.
+  // 도로명 주소에는 동이 없다. 이때 번지만 떼면 "서울 강남구 테헤란로"가 되어
+  // 목록에 길 이름이 남는데, 목록에서 알고 싶은 건 길이 아니라 어느 동네인지다.
+  // 시/군/구까지만 남긴다.
+  // 첫 토큰은 시/도(서울, 경기)라 접미사가 없다. 그 뒤로 시·군·구가 이어지는
+  // 만큼 붙인다 - "경기 성남시 분당구"처럼 시 안에 구가 있는 곳이 있어서
+  // 처음 만나는 하나만 취하면 "경기 성남시"에서 잘린다.
+  let end2 = 1;
+  while (end2 < parts.length && /(시|군|구)$/.test(parts[end2])) end2 += 1;
+  if (end2 > 1) return parts.slice(0, end2).join(" ");
   const last = parts[parts.length - 1];
   return /^\d/.test(last) ? parts.slice(0, -1).join(" ") : parts.join(" ");
 }
