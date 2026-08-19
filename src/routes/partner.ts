@@ -11,7 +11,7 @@ import {
   hasKakaoKey,
   searchEyeClinics,
 } from "../lib/kakaoPlaces";
-import { validationMessage } from "../lib/validationError";
+import { validationBody, validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
 
@@ -248,7 +248,7 @@ const profileSchema = zod.object({
 router.put("/profile", partnerRequired, async (req, res) => {
   const parsed = profileSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: validationMessage(parsed.error) });
+    res.status(400).json(validationBody(parsed.error));
     return;
   }
   const account = await prisma.hospital_account.findUnique({

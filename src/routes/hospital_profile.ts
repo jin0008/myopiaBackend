@@ -11,7 +11,7 @@ import {
   hasKakaoKey,
   searchEyeClinics,
 } from "../lib/kakaoPlaces";
-import { validationMessage } from "../lib/validationError";
+import { validationBody, validationMessage } from "../lib/validationError";
 import { hospitalAdminRequired, siteAdminRequired } from "../lib/middlewares";
 
 const router = express.Router();
@@ -158,8 +158,8 @@ router.post(
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     if (files.length === 0) {
       res.status(400).json({
-      message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
-    });
+        message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
+      });
       return;
     }
     res.status(201).json({
@@ -315,7 +315,7 @@ router.get("/mine", hospitalAdminRequired, async (req, res) => {
 router.put("/mine", hospitalAdminRequired, async (req, res) => {
   const parsed = hospitalOwnProfileSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: validationMessage(parsed.error) });
+    res.status(400).json(validationBody(parsed.error));
     return;
   }
   const hospitalId = req.healthcare_professional!.hospital_id;
@@ -510,8 +510,8 @@ router.post(
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
     if (files.length === 0) {
       res.status(400).json({
-      message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
-    });
+        message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
+      });
       return;
     }
     res.json({
@@ -529,8 +529,8 @@ router.post(
   (req, res) => {
     if (req.file == null) {
       res.status(400).json({
-      message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
-    });
+        message: "이미지 파일만 올릴 수 있습니다 (jpg, png, webp, gif).",
+      });
       return;
     }
     res.json({
@@ -594,7 +594,7 @@ router.get("/:id", siteAdminRequired, async (req, res) => {
 router.post("/", siteAdminRequired, async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: validationMessage(parsed.error) });
+    res.status(400).json(validationBody(parsed.error));
     return;
   }
   const d = parsed.data;
@@ -640,7 +640,7 @@ router.post("/", siteAdminRequired, async (req, res) => {
 router.patch("/:id", siteAdminRequired, async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: validationMessage(parsed.error) });
+    res.status(400).json(validationBody(parsed.error));
     return;
   }
   const { opening_hours, detail_blocks, doctors, ...rest } = parsed.data;
