@@ -1730,7 +1730,8 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
 
   type Item = { createdAt: Date; score: number; dto: Record<string, unknown> };
 
-  const postItems: Item[] = rows.map((p) => ({
+  /** 글 한 건을 점수와 DTO로. 창 안/밖 두 곳에서 같은 모양이 필요하다. */
+  const toItem = (p: (typeof rows)[number]): Item => ({
     createdAt: p.created_at,
     score: score(p.view_count, p._count.likes, p._count.comments, p.created_at),
     dto: {
@@ -1748,7 +1749,9 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
       likeCount: p._count.likes,
       commentCount: p._count.comments,
     },
-  }));
+  });
+
+  const postItems: Item[] = rows.map(toItem);
 
   const all = postItems;
   const ranked = all
@@ -1763,15 +1766,41 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
   // Ranked items keep their order and always come first; the filler is only
   // ever what's left over.
   const chosen = [...ranked];
-  if (chosen.length < limit) {
+  const topUp = (items: Item[]) => {
     const taken = new Set(chosen.map((x) => x.dto.id));
-    for (const x of [...all].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
+    for (const x of [...items].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) {
       if (chosen.length >= limit) break;
       if (!taken.has(x.dto.id)) chosen.push(x);
     }
+  };
+  topUp(all);
+
+  // 창(7일) 안이 통째로 비면 위 채우기도 채울 것이 없어 섹션이 사라진다.
+  // 홈에서 커뮤니티가 아예 안 보이면 사용자는 그런 기능이 있는 줄도 모르게
+  // 되는데, 이건 조용한 것보다 나쁘다. 그래서 창 밖에서라도 최신 글을 가져온다.
+  //
+  // 창을 늘리지 않는 이유: 7일은 "지금 살아있는 글"이라는 랭킹의 뜻을 지탱하는
+  // 값이다. 늘리면 3주 전 글이 계속 '인기글'로 앉아 있게 된다. 대신 창 밖에서
+  // 채웠다는 사실을 클라이언트에 알려, 제목을 '인기글'이 아니라 '새 글'로
+  // 바꿔 달게 한다 - 오래된 글을 인기글이라 부르지 않는 것이 핵심이다.
+  if (chosen.length < limit) {
+    const older = await prisma.community_post.findMany({
+      where: { deleted_at: null, created_at: { lt: since }, ...notBlocked },
+      include: {
+        _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
+        user: { include: { password_auth: true } },
+      },
+      orderBy: { created_at: "desc" },
+      take: limit,
+    });
+    topUp(older.map(toItem));
   }
 
-  res.json({ posts: chosen.map((x) => x.dto) });
+  res.json({
+    posts: chosen.map((x) => x.dto),
+    // 랭킹에 오른 글이 하나도 없으면 이 목록은 '인기글'이 아니라 '새 글'이다.
+    fallback: ranked.length === 0,
+  });
 });
 
 /** GET /api/mobile/community/posts/:id */
