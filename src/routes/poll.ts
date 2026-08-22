@@ -130,16 +130,33 @@ router.get("/polls/popular", optionalMobileAuth, async (req, res) => {
   const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
   const now = new Date();
 
-  const polls = await prisma.poll.findMany({
-    where: { deleted_at: null, created_at: { gte: popularSince() }, ...notBlocked },
+  const include = {
+    options: { orderBy: { position: "asc" } },
+    _count: { select: { votes: true, comments: { where: { deleted_at: null } } } },
+    votes: { where: { user_id: viewerId }, take: 1 },
+  } as const;
+
+  const since = popularSince();
+  let polls = await prisma.poll.findMany({
+    where: { deleted_at: null, created_at: { gte: since }, ...notBlocked },
     orderBy: [{ created_at: "desc" }],
     take: 200,
-    include: {
-      options: { orderBy: { position: "asc" } },
-      _count: { select: { votes: true, comments: { where: { deleted_at: null } } } },
-      votes: { where: { user_id: viewerId }, take: 1 },
-    },
+    include,
   });
+
+  // 창(7일) 안에 투표가 하나도 없으면 홈에서 이 섹션이 통째로 사라진다.
+  // 기능이 있는 줄도 모르게 되는 게 조용한 것보다 나쁘다. 창을 늘리는 대신
+  // (7일은 "지금 살아있는 것"이라는 랭킹의 뜻을 지탱한다) 창 밖에서 최신
+  // 투표를 가져오고, 그 사실을 클라이언트에 알려 제목을 바꿔 달게 한다.
+  const fallback = polls.length === 0;
+  if (fallback) {
+    polls = await prisma.poll.findMany({
+      where: { deleted_at: null, ...notBlocked },
+      orderBy: [{ created_at: "desc" }],
+      take: limit,
+      include,
+    });
+  }
 
   const ranked = [...polls].sort(
     (a, b) =>
@@ -159,6 +176,7 @@ router.get("/polls/popular", optionalMobileAuth, async (req, res) => {
   const countByOption = new Map(tallies.map((t) => [t.option_id, t._count._all]));
 
   res.json({
+    fallback,
     polls: chosen.map((p) => {
       const total = p._count.votes;
       return {
