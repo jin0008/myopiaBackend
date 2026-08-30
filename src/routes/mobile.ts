@@ -454,6 +454,22 @@ router.delete("/auth/me", requireMobileAuth, async (req, res) => {
       data: { actor_user_id: null },
     });
 
+    // 칼럼·배너·병원 프로필의 created_by 도 FK 가 없다. 이 셋은 웹 세션에서만
+    // 채워지고 위에서 의료진·관리자 계정을 막았으니 실제로는 걸릴 일이 없지만,
+    // "걸릴 일이 없다"에 기대면 나중에 경로가 하나 늘 때 조용히 깨진다.
+    await tx.expert_column.updateMany({
+      where: { created_by: uid },
+      data: { created_by: null },
+    });
+    await tx.ad_banner.updateMany({
+      where: { created_by: uid },
+      data: { created_by: null },
+    });
+    await tx.hospital_profile.updateMany({
+      where: { created_by: uid },
+      data: { created_by: null },
+    });
+
     // 2) 나머지는 user 행을 지우면 CASCADE 로 따라 지워진다.
     //    자녀·소셜 연결·동의 이력·게시글·댓글·좋아요·토큰 등.
     await tx.user.delete({ where: { id: uid } });
