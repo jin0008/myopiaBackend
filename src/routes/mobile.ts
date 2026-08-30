@@ -3070,6 +3070,11 @@ function loadSeedColumns(): SeedColumn[] {
       const updatedMatch = front.match(/^updated:\s*(.+)$/m);
       if (updatedMatch) updated = updatedMatch[1].trim();
     }
+    // 제목 앞의 [atropine-01] 같은 번호는 원고를 감수할 때 서로 가리키려고
+    // 붙인 것이지 독자에게 보일 것이 아니다. 앱에서는 질문마다 대괄호 번호가
+    // 먼저 읽혀서 안내문이 아니라 내부 문서처럼 보인다.
+    body = body.replace(/^(#{1,6}\s*)\[[a-z0-9_-]+\]\s*/gim, "$1");
+
     // Excerpt: first non-heading, non-note paragraph, trimmed to ~120 chars.
     const firstPara =
       body
