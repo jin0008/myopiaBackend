@@ -3255,8 +3255,17 @@ type KakaoDoc = {
  * Returns null for anything that is not an eye-care facility so generic
  * hospitals are filtered out. Order matters: 대학병원 is also a 종합병원.
  */
-function classifyMedical(categoryName: string): FacilityCategory | null {
-  if (categoryName.includes("대학병원")) return "university";
+function classifyMedical(
+  placeName: string,
+  categoryName: string,
+): FacilityCategory | null {
+  // 카카오는 대학병원 안과를 그냥 "의료,건강 > 병원 > 안과" 로 준다. 분류만
+  // 보면 동네 안과와 구별되지 않아 대학병원 목록이 늘 비어 있었다. 이름으로
+  // 가른다 - 고려대학교안암병원 안과, 가톨릭대학교 서울성모병원 안과처럼
+  // 대학 이름이 앞에 붙는다.
+  if (categoryName.includes("대학병원") || /대학교|대학병원/.test(placeName)) {
+    return "university";
+  }
   if (categoryName.includes("종합병원")) return "general";
   if (categoryName.includes("안과")) return "clinic";
   return null;
@@ -3401,16 +3410,16 @@ router.get("/facilities", async (req, res) => {
 
     // Insert most-specific first so classify precedence holds on dedup.
     for (const d of univ) {
-      const cls = classifyMedical(d.category_name);
+      const cls = classifyMedical(d.place_name, d.category_name);
       if (cls === "university") add(d, "university");
     }
     for (const d of general) {
-      const cls = classifyMedical(d.category_name);
+      const cls = classifyMedical(d.place_name, d.category_name);
       if (cls === "university") add(d, "university");
       else if (cls === "general") add(d, "general");
     }
     for (const d of eye) {
-      const cls = classifyMedical(d.category_name);
+      const cls = classifyMedical(d.place_name, d.category_name);
       if (cls) add(d, cls);
     }
     for (const d of optical) {
@@ -3607,7 +3616,7 @@ router.get("/facilities/search", async (req, res) => {
     const docs = await kakaoKeywordSearchByText(query);
     const places: FacilityDTO[] = [];
     for (const d of docs) {
-      const cls = classifyMedical(d.category_name);
+      const cls = classifyMedical(d.place_name, d.category_name);
       if (!cls) continue; // not an eye-care result — drop it
       const lat = Number.parseFloat(d.y);
       const lng = Number.parseFloat(d.x);
