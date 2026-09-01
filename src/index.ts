@@ -85,6 +85,8 @@ app.use("/api/mobile/auth/login", authLimiter);
 // 메일 폭탄 도구가 되고, 발신 도메인 평판이 깎여 정상 메일까지 스팸함으로 간다.
 app.use("/api/mobile/auth/email", authLimiter);
 app.use("/partner/login", authLimiter);
+// 인증번호 발송은 남의 주소로도 호출할 수 있어 제한이 필요하다.
+app.use("/partner/password", authLimiter);
 app.use("/partner/signup", authLimiter);
 
 app.use("/auth", authRoutes);

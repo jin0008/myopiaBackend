@@ -22,7 +22,12 @@ const RESEND_COOLDOWN_MS = 60 * 1000;
 const MAX_ATTEMPTS = 5;
 const TICKET_TTL_SECONDS = 15 * 60;
 
-export type VerificationPurpose = "signup" | "reset";
+/**
+ * 코드의 쓰임. 섞이면 안 된다 - 가입용 코드로 비밀번호를 바꿀 수 있으면
+ * 남의 주소로 가입 코드를 받아 그 계정을 가져갈 수 있다.
+ * partner_reset 은 앱 사용자가 아니라 병원 계정용이라 또 따로 둔다.
+ */
+export type VerificationPurpose = "signup" | "reset" | "partner_reset";
 
 export class VerificationError extends Error {
   constructor(
