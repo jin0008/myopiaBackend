@@ -81,6 +81,9 @@ app.use(
 app.use("/auth/passwordLogin", authLimiter);
 app.use("/auth/googleLogin", authLimiter);
 app.use("/api/mobile/auth/login", authLimiter);
+// 인증번호는 남의 주소로도 보낼 수 있다. 제한이 없으면 이 엔드포인트가
+// 메일 폭탄 도구가 되고, 발신 도메인 평판이 깎여 정상 메일까지 스팸함으로 간다.
+app.use("/api/mobile/auth/email", authLimiter);
 app.use("/partner/login", authLimiter);
 app.use("/partner/signup", authLimiter);
 

@@ -18,6 +18,12 @@ import {
   MobileJWTPayload,
 } from "../lib/mobileAuth";
 import { verifySocialToken, SocialProvider } from "../lib/socialAuth";
+import {
+  assertTicket,
+  issueCode,
+  verifyCode,
+  VerificationError,
+} from "../services/emailVerification";
 import { decryptSymmetric } from "../services/encrpytion";
 import { hashRegistrationNumber } from "../lib/hash";
 import { authorBlockFilter } from "../lib/blocks";
@@ -63,19 +69,42 @@ type UserDTO = {
   username: string | null;
   email: string | null;
   role: "regular_user";
+  createdAt: string;
+  /** 이 계정으로 로그인하는 방법. 소셜로 시작하면 아이디·비밀번호가 없다. */
+  authMethods: ("password" | "apple" | "google" | "kakao" | "naver")[];
+  receiveEmailUpdates: boolean;
 };
+
+/**
+ * 이메일은 저장·조회 모두 소문자로 맞춘다.
+ *
+ * 유니크 인덱스는 대소문자를 구분해서, 정규화하지 않으면 A@b.com 과
+ * a@b.com 이 서로 다른 계정이 된다. 그러면 비밀번호 재설정이 계정을
+ * 찾지 못하고, 중복을 막으려고 건 제약도 그냥 비켜간다.
+ */
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
 
 async function userDTO(userId: string): Promise<UserDTO | null> {
   const u = await prisma.user.findUnique({
     where: { id: userId },
-    include: { password_auth: true },
+    include: { password_auth: true, oauth_identity: true },
   });
   if (u == null) return null;
+  const authMethods: UserDTO["authMethods"] = [];
+  if (u.password_auth != null) authMethods.push("password");
+  for (const o of u.oauth_identity) {
+    authMethods.push(o.provider as "apple" | "google" | "kakao" | "naver");
+  }
   return {
     id: u.id,
     username: u.password_auth?.username ?? null,
     email: u.email,
     role: REGULAR_ROLE,
+    createdAt: u.created_at.toISOString(),
+    authMethods,
+    receiveEmailUpdates: u.receive_email_updates,
   };
 }
 
@@ -226,20 +255,87 @@ const signupSchema = zod.object({
     .regex(/^[a-zA-Z0-9]+$/),
   password: zod.string().min(8),
   email: zod.string().email(),
+  /** /auth/email/verify-code 가 준 티켓. 이게 없으면 가입이 끝나지 않는다. */
+  verificationTicket: zod.string().nonempty(),
   receive_email_updates: zod.boolean().optional(),
 });
+
+const sendCodeSchema = zod.object({ email: zod.string().email() });
+
+/** POST /api/mobile/auth/email/send-code — 인증번호 발송. */
+router.post(
+  "/auth/email/send-code",
+  validateRequestBody(sendCodeSchema),
+  async (req, res) => {
+    const { email } = req.body as zod.infer<typeof sendCodeSchema>;
+    // 이미 가입된 주소인지 여기서 알려준다. 코드를 받고 다 입력한 뒤
+    // 마지막에 "이미 가입됨"을 보는 것보다 낫다.
+    const taken = await prisma.user.findUnique({
+      where: { email: normalizeEmail(email) },
+    });
+    if (taken != null) {
+      res
+        .status(409)
+        .json({ error: "이미 가입된 이메일입니다.", code: "conflict" });
+      return;
+    }
+    try {
+      await issueCode(email, "signup");
+      res.status(202).json({ ok: true });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(429).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
+
+const verifyCodeSchema = zod.object({
+  email: zod.string().email(),
+  code: zod.string().regex(/^[0-9]{6}$/),
+});
+
+/** POST /api/mobile/auth/email/verify-code — 확인 후 가입용 티켓 발급. */
+router.post(
+  "/auth/email/verify-code",
+  validateRequestBody(verifyCodeSchema),
+  async (req, res) => {
+    const { email, code } = req.body as zod.infer<typeof verifyCodeSchema>;
+    try {
+      const ticket = await verifyCode(email, code, "signup");
+      res.json({ verificationTicket: ticket });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(400).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
 
 router.post(
   "/auth/signup",
   validateRequestBody(signupSchema),
   async (req, res) => {
     const data = req.body as zod.infer<typeof signupSchema>;
+    try {
+      assertTicket(data.verificationTicket, data.email, "signup");
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(400).json({ error: e.message, code: "validation_error" });
+        return;
+      }
+      throw e;
+    }
     const hash = await bcrypt.hash(data.password, 12);
 
     try {
       const user = await prisma.user.create({
         data: {
-          email: data.email,
+          email: normalizeEmail(data.email),
           receive_email_updates: data.receive_email_updates ?? false,
           password_auth: {
             create: {
@@ -254,9 +350,17 @@ router.post(
       res.status(201).json(body);
     } catch (e) {
       if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
-        res
-          .status(400)
-          .json({ error: "username already exists", code: "validation_error" });
+        // 아이디와 이메일 둘 다 유니크다. 어느 쪽이 걸렸는지 알려주지 않으면
+        // 사용자는 멀쩡한 값을 계속 고쳐 보게 된다.
+        const onEmail = (e.meta?.target as string[] | undefined)?.some((t) =>
+          t.includes("email"),
+        );
+        res.status(400).json({
+          error: onEmail
+            ? "이미 가입된 이메일입니다."
+            : "이미 사용 중인 아이디입니다.",
+          code: "validation_error",
+        });
         return;
       }
       throw e;
@@ -287,6 +391,114 @@ router.post("/auth/login", validateRequestBody(loginSchema), async (req, res) =>
   await ensureNormalUser(auth.user.id);
   res.json(await issueAuthResponse(auth.user.id));
 });
+
+/* ------------------------------------------------------------------ *
+ * 비밀번호 재설정                                                       *
+ *                                                                    *
+ * 계정이 있는지 없는지를 그대로 알려준다. 감추는 편이 원칙이지만,
+ * 가입 쪽에서 이미 "이미 가입된 이메일입니다"로 같은 사실을 드러내고
+ * 있어 여기만 감추면 얻는 것이 없다. 대신 못 찾았을 때 사용자가 오타를
+ * 바로 알아챌 수 있다.
+ * ------------------------------------------------------------------ */
+
+/** POST /api/mobile/auth/password/send-code */
+router.post(
+  "/auth/password/send-code",
+  validateRequestBody(sendCodeSchema),
+  async (req, res) => {
+    const { email } = req.body as zod.infer<typeof sendCodeSchema>;
+    const user = await prisma.user.findUnique({
+      where: { email: normalizeEmail(email) },
+      include: { password_auth: true },
+    });
+    if (user == null) {
+      res
+        .status(404)
+        .json({ error: "가입되지 않은 이메일입니다.", code: "not_found" });
+      return;
+    }
+    // 소셜로만 가입하면 바꿀 비밀번호 자체가 없다. 코드를 보내봐야
+    // 마지막 단계에서 막히므로 여기서 알려준다.
+    if (user.password_auth == null) {
+      res.status(409).json({
+        error:
+          "소셜 로그인으로 가입한 계정입니다. 가입할 때 사용한 방법으로 로그인해 주세요.",
+        code: "conflict",
+      });
+      return;
+    }
+    try {
+      await issueCode(email, "reset");
+      res.status(202).json({ ok: true });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(429).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
+
+/** POST /api/mobile/auth/password/verify-code */
+router.post(
+  "/auth/password/verify-code",
+  validateRequestBody(verifyCodeSchema),
+  async (req, res) => {
+    const { email, code } = req.body as zod.infer<typeof verifyCodeSchema>;
+    try {
+      res.json({ verificationTicket: await verifyCode(email, code, "reset") });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(400).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
+
+const resetSchema = zod.object({
+  email: zod.string().email(),
+  verificationTicket: zod.string().nonempty(),
+  password: zod.string().min(8),
+});
+
+/** POST /api/mobile/auth/password/reset */
+router.post(
+  "/auth/password/reset",
+  validateRequestBody(resetSchema),
+  async (req, res) => {
+    const d = req.body as zod.infer<typeof resetSchema>;
+    try {
+      assertTicket(d.verificationTicket, d.email, "reset");
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(400).json({ error: e.message, code: "validation_error" });
+        return;
+      }
+      throw e;
+    }
+    const user = await prisma.user.findUnique({
+      where: { email: normalizeEmail(d.email) },
+      include: { password_auth: true },
+    });
+    if (user?.password_auth == null) {
+      res
+        .status(404)
+        .json({ error: "가입되지 않은 이메일입니다.", code: "not_found" });
+      return;
+    }
+    await prisma.password_auth.update({
+      where: { user_id: user.id },
+      data: { hash: await bcrypt.hash(d.password, 12) },
+    });
+    // 비밀번호를 바꾸는 이유의 절반은 남이 들어와 있을지 모른다는 걱정이다.
+    // 기존 세션을 그대로 두면 그 걱정이 해결되지 않는다.
+    await revokeAllRefreshTokens(user.id);
+    res.json({ ok: true });
+  },
+);
 
 const socialSchema = zod.object({
   provider: zod.enum(["apple", "google", "kakao", "naver"]),
@@ -327,20 +539,49 @@ router.post(
     if (existing) {
       userId = existing.user_id;
     } else {
-      const created = await prisma.user.create({
-        data: {
-          email: identity.email ?? body.email ?? null,
-          receive_email_updates: body.receive_email_updates ?? false,
-          normal_user: { create: {} },
-          oauth_identity: {
-            create: {
-              provider: body.provider,
-              subject: identity.subject,
+      const email =
+        identity.email != null
+          ? normalizeEmail(identity.email)
+          : body.email != null
+            ? normalizeEmail(body.email)
+            : null;
+
+      // 같은 주소로 이미 만든 계정이 있으면 그 계정에 이 로그인 방법을
+      // 덧붙인다. 새로 만들면 email 유니크에 걸려 로그인 자체가 실패하고,
+      // 유니크를 풀면 한 사람이 계정 두 개로 갈라져 아이 기록이 나뉜다.
+      //
+      // 주소가 그 사람 것이라는 근거는 제공자에게 있다 - 애플·구글·카카오·
+      // 네이버 모두 자기가 확인한 주소만 내려준다.
+      const sameEmail =
+        email != null
+          ? await prisma.user.findUnique({ where: { email } })
+          : null;
+
+      if (sameEmail != null) {
+        await prisma.oauth_identity.create({
+          data: {
+            user_id: sameEmail.id,
+            provider: body.provider,
+            subject: identity.subject,
+          },
+        });
+        userId = sameEmail.id;
+      } else {
+        const created = await prisma.user.create({
+          data: {
+            email,
+            receive_email_updates: body.receive_email_updates ?? false,
+            normal_user: { create: {} },
+            oauth_identity: {
+              create: {
+                provider: body.provider,
+                subject: identity.subject,
+              },
             },
           },
-        },
-      });
-      userId = created.id;
+        });
+        userId = created.id;
+      }
     }
     await ensureNormalUser(userId);
     res.json(await issueAuthResponse(userId));
@@ -3480,6 +3721,24 @@ function categoryFromName(name: string): FacilityCategory {
   return "clinic";
 }
 
+/** 이 병원이 해당 치료를 하는가.
+ *
+ *  treatment_categories 가 정답이다. 다만 백엔드가 먼저 배포되고 병원이 아직
+ *  저장을 다시 하지 않은 동안에는 비어 있을 수 있어, 그때는 예전처럼
+ *  이벤트 항목의 category 로 넘어간다. 두 곳이 다 비면 그 치료는 안 하는 것이다. */
+function offersCategory(
+  p: { treatment_categories?: string[]; treatment_items?: unknown },
+  categoryKey: string,
+): boolean {
+  const cats = p.treatment_categories ?? [];
+  if (cats.length > 0) return cats.includes(categoryKey);
+  // 아직 한 번도 저장하지 않은 프로필만 예전 방식으로 읽는다. 무조건 함께
+  // 보면, 카테고리를 제대로 고른 병원도 이벤트에 붙은 카테고리로 검색에
+  // 걸려 "안 하는 치료"로 노출된다.
+  const items = (p.treatment_items ?? []) as { category?: string }[];
+  return Array.isArray(items) && items.some((it) => it?.category === categoryKey);
+}
+
 router.get("/treatment/hospitals", async (req, res) => {
   const categoryKey = String(req.query.categoryKey ?? "").trim();
   const sido = String(req.query.sido ?? "").trim();
@@ -3511,10 +3770,7 @@ router.get("/treatment/hospitals", async (req, res) => {
     const address = p.address ?? "";
     if (sido !== "" && !sidoMatches(address, sido)) return false;
     if (sigungu !== "" && sigungu !== "전체" && !address.includes(sigungu)) return false;
-    if (categoryKey !== "") {
-      const items = (p.treatment_items ?? []) as { category?: string }[];
-      if (!items.some((it) => it?.category === categoryKey)) return false;
-    }
+    if (categoryKey !== "" && !offersCategory(p, categoryKey)) return false;
     return true;
   });
 
@@ -3538,6 +3794,7 @@ router.get("/treatment/hospitals", async (req, res) => {
       eyelogLinked: p.hospital_id != null,
       // 목록 전체가 우리가 등록한 병원이라, 뱃지는 "이 치료를 한다"가 아니라
       // 여기까지 온 이유를 확인해 주는 표시로 남는다.
+      treatmentCategories: p.treatment_categories ?? [],
       offersChosen: categoryKey !== "",
       description: p.tagline ?? p.description ?? null,
       keywords: p.keywords,
@@ -3663,9 +3920,8 @@ router.get("/facilities/search", async (req, res) => {
 
     const decorated = places.map((place, kakaoRank) => {
       const profile = byPlaceId.get(place.id);
-      const items = (profile?.treatment_items ?? []) as { category?: string }[];
       const offersChosen =
-        categoryKey !== "" && items.some((it) => it?.category === categoryKey);
+        categoryKey !== "" && profile != null && offersCategory(profile, categoryKey);
       const stat = statByPlaceId.get(place.id);
       return {
         ...place,
@@ -3677,6 +3933,7 @@ router.get("/facilities/search", async (req, res) => {
         // which is a stronger trust signal to a parent than anything the
         // clinic writes about itself.
         eyelogLinked: profile?.hospital_id != null,
+        treatmentCategories: profile?.treatment_categories ?? [],
         offersChosen,
         description: profile?.tagline ?? profile?.description ?? null,
         keywords: profile?.keywords ?? [],
@@ -3807,6 +4064,7 @@ router.get("/hospital-profile/:kakaoPlaceId", optionalMobileAuth, async (req, re
     phone: profile.phone,
     address: profile.address,
     keywords: profile.keywords,
+    treatmentCategories: profile.treatment_categories ?? [],
     treatmentItems: profile.treatment_items ?? [],
     verified: profile.verified,
     bookingUrl: profile.booking_url,

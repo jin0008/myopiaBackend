@@ -72,8 +72,10 @@ const upload = multer({
 
 const STATUSES = ["draft", "pending", "published"] as const;
 
+/** 이벤트·프로모션 한 줄. category 는 상세에서 묶어 보여줄 때만 쓰고,
+ *  검색은 treatment_categories 가 맡으므로 비워도 된다. */
 const treatmentItemSchema = zod.object({
-  category: zod.string().min(1),
+  category: zod.string().optional(),
   name: zod.string().min(1),
   normalPrice: zod.number().nullable().optional(),
   eventPrice: zod.number().nullable().optional(),
@@ -138,6 +140,7 @@ const createSchema = zod.object({
   hospital_id: zod.string().uuid().nullable().optional(),
   thumbnail_url: zod.string().url().nullable().optional(),
   keywords: zod.array(zod.string()).optional(),
+  treatment_categories: zod.array(zod.string()).optional(),
   treatment_items: zod.array(treatmentItemSchema).optional(),
   verified: zod.boolean().optional(),
   booking_url: zod.string().url().nullable().optional(),
@@ -334,6 +337,7 @@ router.put("/mine", hospitalAdminRequired, async (req, res) => {
     address: d.address,
     thumbnail_url: d.thumbnail_url ?? null,
     keywords: d.keywords ?? [],
+    treatment_categories: d.treatment_categories ?? undefined,
     treatment_items: d.treatment_items ?? undefined,
     opening_hours: d.opening_hours ?? undefined,
     doctors: d.doctors ?? undefined,
@@ -612,6 +616,7 @@ router.post("/", siteAdminRequired, async (req, res) => {
         hospital_id: d.hospital_id ?? null,
         thumbnail_url: d.thumbnail_url ?? null,
         keywords: d.keywords ?? [],
+        treatment_categories: d.treatment_categories ?? undefined,
         treatment_items: d.treatment_items ?? undefined,
         opening_hours: d.opening_hours ?? undefined,
         doctors: d.doctors ?? undefined,

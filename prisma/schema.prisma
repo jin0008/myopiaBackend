@@ -166,7 +166,11 @@ model user {
   id                      String                   @id(map: "user_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   created_at              DateTime                 @default(now()) @db.Timestamp(6)
   is_site_admin           Boolean                  @default(false)
-  email                   String?
+  /// 계정 하나에 주소 하나. 인증 메일과 비밀번호 재설정이 이 주소로 가는데,
+  /// 같은 주소에 계정이 여럿이면 어느 쪽 이야기인지 정할 수 없다.
+  /// 소셜 로그인이 이메일을 안 주는 경우가 있어 NULL 은 허용한다
+  /// (Postgres 는 NULL 끼리는 중복으로 보지 않는다).
+  email                   String?                  @unique(map: "user_email_key")
   receive_email_updates   Boolean                  @default(false)
   google_auth             google_auth?
   healthcare_professional healthcare_professional?
@@ -513,60 +517,65 @@ model hospital_account {
 }
 
 model hospital_profile {
-  id               String   @id(map: "hospital_profile_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  kakao_place_id   String   @unique(map: "hospital_profile_kakao_place_id_key")
-  name             String
+  id                   String   @id(map: "hospital_profile_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  kakao_place_id       String   @unique(map: "hospital_profile_kakao_place_id_key")
+  name                 String
   /// One line under the clinic's name, on the list card and at the top of the
   /// detail page. e.g. "드림렌즈·아트로핀 전문 소아근시 클리닉".
   /// Separate from `description`, which is now long-form content — a card can't
   /// show a page of prose and a page of prose can't be a subtitle.
-  tagline          String?
+  tagline              String?
   /// Long-form intro, kept for profiles written before `detail_blocks`.
-  description      String?
+  description          String?
   /// Blog-style body: [{ type: "text", text } | { type: "image", url }]
   /// Clinics want to explain a treatment with pictures between paragraphs,
   /// which a single text field and a flat gallery can't express.
-  detail_blocks    Json?
+  detail_blocks        Json?
   /// Legacy single banner. `images` is the carousel; this is only read when a
   /// profile predates it.
-  banner_image_url String?
+  banner_image_url     String?
   /// Banner carousel, max 10 — enforced by the API, not the column.
-  images           String[]
-  phone            String?
-  address          String?
-  status           String   @default("published")
-  owner_account_id String?  @db.Uuid
-  created_by       String?  @db.Uuid
+  images               String[]
+  phone                String?
+  address              String?
+  status               String   @default("published")
+  owner_account_id     String?  @db.Uuid
+  created_by           String?  @db.Uuid
   // Link to an internal participating hospital. When set, app users with an
   // active child_hospital_link to this hospital may leave reviews (the only
   // way we can verify someone was actually a patient). Null = review-disabled.
-  hospital_id      String?  @db.Uuid
+  hospital_id          String?  @db.Uuid
   // 모두닥-style card fields (all additive/optional).
-  thumbnail_url    String?
-  keywords         String[]
-  // [{ category, name, normalPrice, eventPrice, description }] — category is a
-  // treatment-finder key (dreamLens, visionCorrection, ...).
-  treatment_items  Json?
-  verified         Boolean  @default(false)
-  booking_url      String?
+  thumbnail_url        String?
+  keywords             String[]
+  /// 이 병원이 하는 치료. 치료탭 필터가 보는 곳이다.
+  /// 예전에는 treatment_items 안의 category 를 훑어서 판단했는데, 그러면
+  /// 가격표를 올리지 않은 병원은 그 치료를 해도 검색되지 않았다. "무엇을
+  /// 하는가"와 "얼마에 하는가"는 다른 질문이라 필드를 나눈다.
+  treatment_categories String[] @default([])
+  /// 이벤트·프로모션: [{ category?, name, normalPrice, eventPrice, description }]
+  /// 상세 화면에만 쓰고 검색에는 관여하지 않는다.
+  treatment_items      Json?
+  verified             Boolean  @default(false)
+  booking_url          String?
   // Weekly opening hours, entered by the clinic. Kakao doesn't supply these
   // and neither does any map API, so it's ours to collect.
   // { mon: { open, close, lunchStart?, lunchEnd? } | null, ... , note?: string }
   // A null day means closed; the whole field null means "not provided yet",
   // which the app renders by hiding the section rather than showing blanks.
-  opening_hours    Json?
+  opening_hours        Json?
   /// 카카오 장소의 위경도. 치료탭이 카카오 검색을 거치지 않고 이 테이블을
   /// 직접 읽기 때문에, 거리 정렬과 지도 표시에 쓸 좌표가 여기 있어야 한다.
   /// 장소 검색 응답에 이미 들어 있어 등록 시점에 같이 받는다.
-  latitude         Float?
-  longitude        Float?
+  latitude             Float?
+  longitude            Float?
   /// 의사 정보: [{ name, title?, photoUrl?, bio? }]
   /// 별도 테이블이 아니라 배열 JSON인 이유는 notices와 달리 개별 조회·정렬·
   /// 수정 대상이 아니고, 프로필 저장 한 번에 통째로 갱신되기 때문이다.
   /// 순서가 곧 노출 순서라 대표원장을 맨 앞에 둔다.
-  doctors          Json?
-  created_at       DateTime @default(now()) @db.Timestamptz(6)
-  updated_at       DateTime @default(now()) @db.Timestamptz(6)
+  doctors              Json?
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+  updated_at           DateTime @default(now()) @db.Timestamptz(6)
 
   notices hospital_notice[]
 }
@@ -938,4 +947,28 @@ model notification {
 
   @@index([user_id, created_at(sort: Desc)], map: "idx_notification_user")
   @@index([user_id, read_at], map: "idx_notification_unread")
+}
+
+/// 이메일 인증 코드.
+///
+/// 코드를 확인해야 가입이 끝나도록 한다. 인증 전에 user 행을 만들어 두는
+/// 방법도 있지만, 그러면 확인하지 않은 계정이 쌓이고 아이디가 선점된다.
+/// 대신 확인을 통과하면 짧게 사는 토큰을 주고, 가입 요청이 그 토큰을 들고 온다.
+model email_verification {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email       String
+  /// 코드는 해시로 둔다. DB 를 읽을 수 있는 사람이 남의 코드로 가입을
+  /// 끝내는 일이 없어야 한다.
+  code_hash   String
+  /// signup · reset. 가입용 코드로 비밀번호를 바꿀 수 없게 나눈다.
+  purpose     String
+  /// 틀린 횟수. 넘기면 코드를 버린다 - 6자리는 끝까지 넣어보면 뚫린다.
+  attempts    Int       @default(0)
+  expires_at  DateTime  @db.Timestamptz(6)
+  /// 한 번 쓴 코드는 다시 못 쓴다.
+  consumed_at DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([email, purpose])
+  @@index([expires_at])
 }
