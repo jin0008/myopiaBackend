@@ -204,6 +204,8 @@ router.post("/password/reset", async (req, res) => {
     where: { id: account.id },
     data: {
       password_hash: await bcrypt.hash(d.password, 10),
+      // 이 시각보다 먼저 발급된 토큰은 거절된다(partnerRequired).
+      password_changed_at: new Date(),
       updated_at: new Date(),
     },
   });
