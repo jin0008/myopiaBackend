@@ -379,6 +379,114 @@ router.post("/auth/login", validateRequestBody(loginSchema), async (req, res) =>
   res.json(await issueAuthResponse(auth.user.id));
 });
 
+/* ------------------------------------------------------------------ *
+ * 비밀번호 재설정                                                       *
+ *                                                                    *
+ * 계정이 있는지 없는지를 그대로 알려준다. 감추는 편이 원칙이지만,
+ * 가입 쪽에서 이미 "이미 가입된 이메일입니다"로 같은 사실을 드러내고
+ * 있어 여기만 감추면 얻는 것이 없다. 대신 못 찾았을 때 사용자가 오타를
+ * 바로 알아챌 수 있다.
+ * ------------------------------------------------------------------ */
+
+/** POST /api/mobile/auth/password/send-code */
+router.post(
+  "/auth/password/send-code",
+  validateRequestBody(sendCodeSchema),
+  async (req, res) => {
+    const { email } = req.body as zod.infer<typeof sendCodeSchema>;
+    const user = await prisma.user.findUnique({
+      where: { email },
+      include: { password_auth: true },
+    });
+    if (user == null) {
+      res
+        .status(404)
+        .json({ error: "가입되지 않은 이메일입니다.", code: "not_found" });
+      return;
+    }
+    // 소셜로만 가입하면 바꿀 비밀번호 자체가 없다. 코드를 보내봐야
+    // 마지막 단계에서 막히므로 여기서 알려준다.
+    if (user.password_auth == null) {
+      res.status(409).json({
+        error:
+          "소셜 로그인으로 가입한 계정입니다. 가입할 때 사용한 방법으로 로그인해 주세요.",
+        code: "conflict",
+      });
+      return;
+    }
+    try {
+      await issueCode(email, "reset");
+      res.status(202).json({ ok: true });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(429).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
+
+/** POST /api/mobile/auth/password/verify-code */
+router.post(
+  "/auth/password/verify-code",
+  validateRequestBody(verifyCodeSchema),
+  async (req, res) => {
+    const { email, code } = req.body as zod.infer<typeof verifyCodeSchema>;
+    try {
+      res.json({ verificationTicket: await verifyCode(email, code, "reset") });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(400).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
+
+const resetSchema = zod.object({
+  email: zod.string().email(),
+  verificationTicket: zod.string().nonempty(),
+  password: zod.string().min(8),
+});
+
+/** POST /api/mobile/auth/password/reset */
+router.post(
+  "/auth/password/reset",
+  validateRequestBody(resetSchema),
+  async (req, res) => {
+    const d = req.body as zod.infer<typeof resetSchema>;
+    try {
+      assertTicket(d.verificationTicket, d.email, "reset");
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(400).json({ error: e.message, code: "validation_error" });
+        return;
+      }
+      throw e;
+    }
+    const user = await prisma.user.findUnique({
+      where: { email: d.email.toLowerCase() },
+      include: { password_auth: true },
+    });
+    if (user?.password_auth == null) {
+      res
+        .status(404)
+        .json({ error: "가입되지 않은 이메일입니다.", code: "not_found" });
+      return;
+    }
+    await prisma.password_auth.update({
+      where: { user_id: user.id },
+      data: { hash: await bcrypt.hash(d.password, 12) },
+    });
+    // 비밀번호를 바꾸는 이유의 절반은 남이 들어와 있을지 모른다는 걱정이다.
+    // 기존 세션을 그대로 두면 그 걱정이 해결되지 않는다.
+    await revokeAllRefreshTokens(user.id);
+    res.json({ ok: true });
+  },
+);
+
 const socialSchema = zod.object({
   provider: zod.enum(["apple", "google", "kakao", "naver"]),
   token: zod.string().nonempty(),
