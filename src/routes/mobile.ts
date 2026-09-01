@@ -3480,6 +3480,20 @@ function categoryFromName(name: string): FacilityCategory {
   return "clinic";
 }
 
+/** 이 병원이 해당 치료를 하는가.
+ *
+ *  treatment_categories 가 정답이다. 다만 백엔드가 먼저 배포되고 병원이 아직
+ *  저장을 다시 하지 않은 동안에는 비어 있을 수 있어, 그때는 예전처럼
+ *  이벤트 항목의 category 로 넘어간다. 두 곳이 다 비면 그 치료는 안 하는 것이다. */
+function offersCategory(
+  p: { treatment_categories?: string[]; treatment_items?: unknown },
+  categoryKey: string,
+): boolean {
+  if ((p.treatment_categories ?? []).includes(categoryKey)) return true;
+  const items = (p.treatment_items ?? []) as { category?: string }[];
+  return Array.isArray(items) && items.some((it) => it?.category === categoryKey);
+}
+
 router.get("/treatment/hospitals", async (req, res) => {
   const categoryKey = String(req.query.categoryKey ?? "").trim();
   const sido = String(req.query.sido ?? "").trim();
@@ -3511,10 +3525,7 @@ router.get("/treatment/hospitals", async (req, res) => {
     const address = p.address ?? "";
     if (sido !== "" && !sidoMatches(address, sido)) return false;
     if (sigungu !== "" && sigungu !== "전체" && !address.includes(sigungu)) return false;
-    if (categoryKey !== "") {
-      const items = (p.treatment_items ?? []) as { category?: string }[];
-      if (!items.some((it) => it?.category === categoryKey)) return false;
-    }
+    if (categoryKey !== "" && !offersCategory(p, categoryKey)) return false;
     return true;
   });
 
@@ -3538,6 +3549,7 @@ router.get("/treatment/hospitals", async (req, res) => {
       eyelogLinked: p.hospital_id != null,
       // 목록 전체가 우리가 등록한 병원이라, 뱃지는 "이 치료를 한다"가 아니라
       // 여기까지 온 이유를 확인해 주는 표시로 남는다.
+      treatmentCategories: p.treatment_categories ?? [],
       offersChosen: categoryKey !== "",
       description: p.tagline ?? p.description ?? null,
       keywords: p.keywords,
@@ -3663,9 +3675,8 @@ router.get("/facilities/search", async (req, res) => {
 
     const decorated = places.map((place, kakaoRank) => {
       const profile = byPlaceId.get(place.id);
-      const items = (profile?.treatment_items ?? []) as { category?: string }[];
       const offersChosen =
-        categoryKey !== "" && items.some((it) => it?.category === categoryKey);
+        categoryKey !== "" && profile != null && offersCategory(profile, categoryKey);
       const stat = statByPlaceId.get(place.id);
       return {
         ...place,
@@ -3677,6 +3688,7 @@ router.get("/facilities/search", async (req, res) => {
         // which is a stronger trust signal to a parent than anything the
         // clinic writes about itself.
         eyelogLinked: profile?.hospital_id != null,
+        treatmentCategories: profile?.treatment_categories ?? [],
         offersChosen,
         description: profile?.tagline ?? profile?.description ?? null,
         keywords: profile?.keywords ?? [],
@@ -3807,6 +3819,7 @@ router.get("/hospital-profile/:kakaoPlaceId", optionalMobileAuth, async (req, re
     phone: profile.phone,
     address: profile.address,
     keywords: profile.keywords,
+    treatmentCategories: profile.treatment_categories ?? [],
     treatmentItems: profile.treatment_items ?? [],
     verified: profile.verified,
     bookingUrl: profile.booking_url,
