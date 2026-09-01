@@ -18,6 +18,12 @@ import {
   MobileJWTPayload,
 } from "../lib/mobileAuth";
 import { verifySocialToken, SocialProvider } from "../lib/socialAuth";
+import {
+  assertTicket,
+  issueCode,
+  verifyCode,
+  VerificationError,
+} from "../services/emailVerification";
 import { decryptSymmetric } from "../services/encrpytion";
 import { hashRegistrationNumber } from "../lib/hash";
 import { authorBlockFilter } from "../lib/blocks";
@@ -238,14 +244,79 @@ const signupSchema = zod.object({
     .regex(/^[a-zA-Z0-9]+$/),
   password: zod.string().min(8),
   email: zod.string().email(),
+  /** /auth/email/verify-code 가 준 티켓. 이게 없으면 가입이 끝나지 않는다. */
+  verificationTicket: zod.string().nonempty(),
   receive_email_updates: zod.boolean().optional(),
 });
+
+const sendCodeSchema = zod.object({ email: zod.string().email() });
+
+/** POST /api/mobile/auth/email/send-code — 인증번호 발송. */
+router.post(
+  "/auth/email/send-code",
+  validateRequestBody(sendCodeSchema),
+  async (req, res) => {
+    const { email } = req.body as zod.infer<typeof sendCodeSchema>;
+    // 이미 가입된 주소인지 여기서 알려준다. 코드를 받고 다 입력한 뒤
+    // 마지막에 "이미 가입됨"을 보는 것보다 낫다.
+    const taken = await prisma.user.findUnique({ where: { email } });
+    if (taken != null) {
+      res
+        .status(409)
+        .json({ error: "이미 가입된 이메일입니다.", code: "conflict" });
+      return;
+    }
+    try {
+      await issueCode(email, "signup");
+      res.status(202).json({ ok: true });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(429).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
+
+const verifyCodeSchema = zod.object({
+  email: zod.string().email(),
+  code: zod.string().regex(/^[0-9]{6}$/),
+});
+
+/** POST /api/mobile/auth/email/verify-code — 확인 후 가입용 티켓 발급. */
+router.post(
+  "/auth/email/verify-code",
+  validateRequestBody(verifyCodeSchema),
+  async (req, res) => {
+    const { email, code } = req.body as zod.infer<typeof verifyCodeSchema>;
+    try {
+      const ticket = await verifyCode(email, code, "signup");
+      res.json({ verificationTicket: ticket });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(400).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
 
 router.post(
   "/auth/signup",
   validateRequestBody(signupSchema),
   async (req, res) => {
     const data = req.body as zod.infer<typeof signupSchema>;
+    try {
+      assertTicket(data.verificationTicket, data.email, "signup");
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(400).json({ error: e.message, code: "validation_error" });
+        return;
+      }
+      throw e;
+    }
     const hash = await bcrypt.hash(data.password, 12);
 
     try {
@@ -266,9 +337,17 @@ router.post(
       res.status(201).json(body);
     } catch (e) {
       if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
-        res
-          .status(400)
-          .json({ error: "username already exists", code: "validation_error" });
+        // 아이디와 이메일 둘 다 유니크다. 어느 쪽이 걸렸는지 알려주지 않으면
+        // 사용자는 멀쩡한 값을 계속 고쳐 보게 된다.
+        const onEmail = (e.meta?.target as string[] | undefined)?.some((t) =>
+          t.includes("email"),
+        );
+        res.status(400).json({
+          error: onEmail
+            ? "이미 가입된 이메일입니다."
+            : "이미 사용 중인 아이디입니다.",
+          code: "validation_error",
+        });
         return;
       }
       throw e;
