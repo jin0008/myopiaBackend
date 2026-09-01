@@ -467,7 +467,19 @@ router.post(
   async (req, res) => {
     const { email, code } = req.body as zod.infer<typeof verifyCodeSchema>;
     try {
-      res.json({ verificationTicket: await verifyCode(email, code, "reset") });
+      const verificationTicket = await verifyCode(email, code, "reset");
+      // 아이디 찾기를 따로 만들지 않는다. 이 주소의 주인임을 방금 증명했으니
+      // 아이디를 알려줘도 되고, 비밀번호를 잊은 사람은 아이디도 같이 잊는다.
+      // 소셜로만 가입한 계정은 아이디가 없어 null 이 되고, 화면은 그때
+      // 아이디 칸을 그리지 않는다.
+      const user = await prisma.user.findUnique({
+        where: { email: normalizeEmail(email) },
+        include: { password_auth: true },
+      });
+      res.json({
+        verificationTicket,
+        username: user?.password_auth?.username ?? null,
+      });
     } catch (e) {
       if (e instanceof VerificationError) {
         res.status(400).json({ error: e.message, code: e.code });
