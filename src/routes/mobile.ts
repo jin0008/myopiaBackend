@@ -75,6 +75,17 @@ type UserDTO = {
   receiveEmailUpdates: boolean;
 };
 
+/**
+ * 이메일은 저장·조회 모두 소문자로 맞춘다.
+ *
+ * 유니크 인덱스는 대소문자를 구분해서, 정규화하지 않으면 A@b.com 과
+ * a@b.com 이 서로 다른 계정이 된다. 그러면 비밀번호 재설정이 계정을
+ * 찾지 못하고, 중복을 막으려고 건 제약도 그냥 비켜간다.
+ */
+function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
 async function userDTO(userId: string): Promise<UserDTO | null> {
   const u = await prisma.user.findUnique({
     where: { id: userId },
@@ -259,7 +270,9 @@ router.post(
     const { email } = req.body as zod.infer<typeof sendCodeSchema>;
     // 이미 가입된 주소인지 여기서 알려준다. 코드를 받고 다 입력한 뒤
     // 마지막에 "이미 가입됨"을 보는 것보다 낫다.
-    const taken = await prisma.user.findUnique({ where: { email } });
+    const taken = await prisma.user.findUnique({
+      where: { email: normalizeEmail(email) },
+    });
     if (taken != null) {
       res
         .status(409)
@@ -322,7 +335,7 @@ router.post(
     try {
       const user = await prisma.user.create({
         data: {
-          email: data.email,
+          email: normalizeEmail(data.email),
           receive_email_updates: data.receive_email_updates ?? false,
           password_auth: {
             create: {
@@ -395,7 +408,7 @@ router.post(
   async (req, res) => {
     const { email } = req.body as zod.infer<typeof sendCodeSchema>;
     const user = await prisma.user.findUnique({
-      where: { email },
+      where: { email: normalizeEmail(email) },
       include: { password_auth: true },
     });
     if (user == null) {
@@ -467,7 +480,7 @@ router.post(
       throw e;
     }
     const user = await prisma.user.findUnique({
-      where: { email: d.email.toLowerCase() },
+      where: { email: normalizeEmail(d.email) },
       include: { password_auth: true },
     });
     if (user?.password_auth == null) {
@@ -526,20 +539,49 @@ router.post(
     if (existing) {
       userId = existing.user_id;
     } else {
-      const created = await prisma.user.create({
-        data: {
-          email: identity.email ?? body.email ?? null,
-          receive_email_updates: body.receive_email_updates ?? false,
-          normal_user: { create: {} },
-          oauth_identity: {
-            create: {
-              provider: body.provider,
-              subject: identity.subject,
+      const email =
+        identity.email != null
+          ? normalizeEmail(identity.email)
+          : body.email != null
+            ? normalizeEmail(body.email)
+            : null;
+
+      // 같은 주소로 이미 만든 계정이 있으면 그 계정에 이 로그인 방법을
+      // 덧붙인다. 새로 만들면 email 유니크에 걸려 로그인 자체가 실패하고,
+      // 유니크를 풀면 한 사람이 계정 두 개로 갈라져 아이 기록이 나뉜다.
+      //
+      // 주소가 그 사람 것이라는 근거는 제공자에게 있다 - 애플·구글·카카오·
+      // 네이버 모두 자기가 확인한 주소만 내려준다.
+      const sameEmail =
+        email != null
+          ? await prisma.user.findUnique({ where: { email } })
+          : null;
+
+      if (sameEmail != null) {
+        await prisma.oauth_identity.create({
+          data: {
+            user_id: sameEmail.id,
+            provider: body.provider,
+            subject: identity.subject,
+          },
+        });
+        userId = sameEmail.id;
+      } else {
+        const created = await prisma.user.create({
+          data: {
+            email,
+            receive_email_updates: body.receive_email_updates ?? false,
+            normal_user: { create: {} },
+            oauth_identity: {
+              create: {
+                provider: body.provider,
+                subject: identity.subject,
+              },
             },
           },
-        },
-      });
-      userId = created.id;
+        });
+        userId = created.id;
+      }
     }
     await ensureNormalUser(userId);
     res.json(await issueAuthResponse(userId));
@@ -3688,7 +3730,11 @@ function offersCategory(
   p: { treatment_categories?: string[]; treatment_items?: unknown },
   categoryKey: string,
 ): boolean {
-  if ((p.treatment_categories ?? []).includes(categoryKey)) return true;
+  const cats = p.treatment_categories ?? [];
+  if (cats.length > 0) return cats.includes(categoryKey);
+  // 아직 한 번도 저장하지 않은 프로필만 예전 방식으로 읽는다. 무조건 함께
+  // 보면, 카테고리를 제대로 고른 병원도 이벤트에 붙은 카테고리로 검색에
+  // 걸려 "안 하는 치료"로 노출된다.
   const items = (p.treatment_items ?? []) as { category?: string }[];
   return Array.isArray(items) && items.some((it) => it?.category === categoryKey);
 }

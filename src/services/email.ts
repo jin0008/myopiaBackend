@@ -25,6 +25,11 @@ if (host && port) {
   );
 }
 
+/** SMTP 가 설정돼 있는지. 인증번호처럼 "안 보내면 실패"인 곳에서 쓴다. */
+export function isEmailConfigured(): boolean {
+  return transporter != null;
+}
+
 export async function sendEmail(
   to: string[],
   subject: string,

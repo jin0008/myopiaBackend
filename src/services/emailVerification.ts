@@ -2,7 +2,7 @@ import crypto from "crypto";
 import jwt from "jsonwebtoken";
 
 import prisma from "../lib/prisma";
-import { sendEmail } from "./email";
+import { isEmailConfigured, sendEmail } from "./email";
 
 /**
  * 이메일 인증 코드.
@@ -27,6 +27,7 @@ export type VerificationPurpose = "signup" | "reset";
 export class VerificationError extends Error {
   constructor(
     readonly code:
+      | "unavailable"
       | "cooldown"
       | "not_found"
       | "expired"
@@ -79,7 +80,21 @@ export async function issueCode(
     throw new VerificationError("cooldown", "잠시 후 다시 시도해 주세요.");
   }
 
+  // 발송이 꺼져 있으면 성공이라고 하지 않는다. sendEmail 은 SMTP 설정이
+  // 없을 때 경고만 찍고 조용히 돌아오는데, 그대로 두면 화면에는 "보냈다"고
+  // 뜨고 사용자는 오지 않는 메일을 기다린다.
+  if (!isEmailConfigured()) {
+    throw new VerificationError(
+      "unavailable",
+      "인증번호를 보낼 수 없습니다. 잠시 후 다시 시도해 주세요.",
+    );
+  }
+
   const code = newCode();
+  // 메일부터 보낸다. 코드 행을 먼저 만들면 발송이 실패했을 때 쓸 수 없는
+  // 코드가 남고, 쿨다운까지 걸려 사용자가 60초 동안 다시 시도하지 못한다.
+  await sendEmail([email], "마이오닥 인증번호", codeEmailHtml(code));
+
   // 이 주소로 아직 살아 있는 코드는 모두 무효로 한다. 코드가 여러 개
   // 유효하면 시도 횟수 제한이 사실상 배수로 늘어난다.
   await prisma.email_verification.updateMany({
@@ -94,8 +109,6 @@ export async function issueCode(
       expires_at: new Date(Date.now() + CODE_TTL_MS),
     },
   });
-
-  await sendEmail([email], "마이오닥 인증번호", codeEmailHtml(code));
 }
 
 /**
