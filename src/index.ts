@@ -32,7 +32,7 @@ import bannerRoutes from "./routes/banner";
 import hospitalProfileRoutes from "./routes/hospital_profile";
 import partnerRoutes from "./routes/partner";
 
-import { authLimiter } from "./lib/security";
+import { authLimiter, lookupLimiter } from "./lib/security";
 
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Prisma } from "@prisma/client";
@@ -84,7 +84,11 @@ app.use("/api/mobile/auth/login", authLimiter);
 // 인증번호는 남의 주소로도 보낼 수 있다. 제한이 없으면 이 엔드포인트가
 // 메일 폭탄 도구가 되고, 발신 도메인 평판이 깎여 정상 메일까지 스팸함으로 간다.
 app.use("/api/mobile/auth/email", authLimiter);
+// 아이디 사용 가능 확인은 성공해도 정보를 내주므로 성공까지 세는 제한을 쓴다.
+app.use("/api/mobile/auth/username-available", lookupLimiter);
 app.use("/partner/login", authLimiter);
+// 인증번호 발송은 남의 주소로도 호출할 수 있어 제한이 필요하다.
+app.use("/partner/password", authLimiter);
 app.use("/partner/signup", authLimiter);
 
 app.use("/auth", authRoutes);

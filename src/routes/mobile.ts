@@ -260,6 +260,26 @@ const signupSchema = zod.object({
   receive_email_updates: zod.boolean().optional(),
 });
 
+/**
+ * GET /api/mobile/auth/username-available?username=...
+ *
+ * 가입 버튼을 눌러야 중복을 알 수 있었다. 아이디를 정하고 이메일 인증까지
+ * 마친 뒤에 거절당하면, 사용자는 어느 칸이 문제인지 모른 채 처음으로 돌아간다.
+ *
+ * 아이디가 쓰이는지 알려주는 것은 곧 그 아이디의 존재를 알려주는 것이다.
+ * 다만 가입 시도로도 같은 사실이 드러나고, 아이디만으로는 로그인할 수 없다.
+ * 감춰서 얻는 것보다 입력 중에 알려주는 편이 낫다고 봤다.
+ */
+router.get("/auth/username-available", async (req, res) => {
+  const username = String(req.query.username ?? "").trim();
+  if (!/^[a-zA-Z0-9]{1,}$/.test(username)) {
+    res.status(400).json({ error: "invalid username", code: "validation_error" });
+    return;
+  }
+  const taken = await prisma.password_auth.findUnique({ where: { username } });
+  res.json({ available: taken == null });
+});
+
 const sendCodeSchema = zod.object({ email: zod.string().email() });
 
 /** POST /api/mobile/auth/email/send-code — 인증번호 발송. */

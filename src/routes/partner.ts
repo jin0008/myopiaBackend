@@ -14,6 +14,12 @@ import {
 import { validationBody, validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
+import {
+  assertTicket,
+  issueCode,
+  verifyCode,
+  VerificationError,
+} from "../services/emailVerification";
 
 const router = express.Router();
 
@@ -105,6 +111,105 @@ router.post("/signup", async (req, res) => {
     return;
   }
   res.status(201).json({ id: account.id, status: account.status });
+});
+
+const pwEmailSchema = zod.object({ email: zod.string().email() });
+const pwCodeSchema = zod.object({
+  email: zod.string().email(),
+  code: zod.string().regex(/^[0-9]{6}$/),
+});
+const pwResetSchema = zod.object({
+  email: zod.string().email(),
+  verificationTicket: zod.string().nonempty(),
+  password: zod.string().min(8),
+});
+
+/* ------------------------------------------------------------------ *
+ * 비밀번호 재설정
+ *
+ * 병원이 비밀번호를 잊으면 지금까지는 방법이 없었다. 운영자가 DB 에서
+ * 해시를 바꿔주는 것 말고는 길이 없었는데, 실제 병원이 들어오기 시작하면
+ * 그 요청을 매번 사람이 받게 된다.
+ * ------------------------------------------------------------------ */
+
+/** POST /partner/password/send-code */
+router.post("/password/send-code", async (req, res) => {
+  const parsed = pwEmailSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: validationMessage(parsed.error) });
+    return;
+  }
+  const email = parsed.data.email.toLowerCase();
+  const account = await prisma.hospital_account.findUnique({ where: { email } });
+  if (account == null) {
+    res.status(404).json({ message: "가입되지 않은 이메일입니다." });
+    return;
+  }
+  try {
+    await issueCode(email, "partner_reset");
+    res.status(202).json({ ok: true });
+  } catch (e) {
+    if (e instanceof VerificationError) {
+      res.status(429).json({ message: e.message });
+      return;
+    }
+    throw e;
+  }
+});
+
+/** POST /partner/password/verify-code */
+router.post("/password/verify-code", async (req, res) => {
+  const parsed = pwCodeSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: validationMessage(parsed.error) });
+    return;
+  }
+  const { email, code } = parsed.data;
+  try {
+    const ticket = await verifyCode(email.toLowerCase(), code, "partner_reset");
+    res.json({ verificationTicket: ticket });
+  } catch (e) {
+    if (e instanceof VerificationError) {
+      res.status(400).json({ message: e.message });
+      return;
+    }
+    throw e;
+  }
+});
+
+/** POST /partner/password/reset */
+router.post("/password/reset", async (req, res) => {
+  const parsed = pwResetSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: validationMessage(parsed.error) });
+    return;
+  }
+  const d = parsed.data;
+  const email = d.email.toLowerCase();
+  try {
+    assertTicket(d.verificationTicket, email, "partner_reset");
+  } catch (e) {
+    if (e instanceof VerificationError) {
+      res.status(400).json({ message: e.message });
+      return;
+    }
+    throw e;
+  }
+  const account = await prisma.hospital_account.findUnique({ where: { email } });
+  if (account == null) {
+    res.status(404).json({ message: "가입되지 않은 이메일입니다." });
+    return;
+  }
+  await prisma.hospital_account.update({
+    where: { id: account.id },
+    data: {
+      password_hash: await bcrypt.hash(d.password, 10),
+      // 이 시각보다 먼저 발급된 토큰은 거절된다(partnerRequired).
+      password_changed_at: new Date(),
+      updated_at: new Date(),
+    },
+  });
+  res.json({ ok: true });
 });
 
 router.post("/login", async (req, res) => {

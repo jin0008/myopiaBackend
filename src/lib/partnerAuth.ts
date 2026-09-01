@@ -1,3 +1,4 @@
+import prisma from "./prisma";
 import jwt, { SignOptions } from "jsonwebtoken";
 import { RequestHandler } from "express";
 
@@ -43,17 +44,49 @@ declare global {
   }
 }
 
-/** Requires a valid hospital-partner access token. */
-export const partnerRequired: RequestHandler = (req, res, next) => {
+/**
+ * Requires a valid hospital-partner access token.
+ *
+ * 토큰 서명만 보지 않고 계정도 확인한다. 파트너 토큰은 14일짜리 JWT 라
+ * 서버에 폐기 목록이 없어서, 비밀번호를 바꿔도 남이 들고 있던 토큰이
+ * 그대로 살아 있다. 그러면 비밀번호를 바꾸는 일이 침입자를 내보내지 못한다.
+ *
+ * 요청마다 조회가 한 번 늘지만, 파트너 API 는 병원 몇 곳이 프로필을 고칠
+ * 때만 쓰여서 부담이 되지 않는다.
+ */
+export const partnerRequired: RequestHandler = async (req, res, next) => {
   const header = req.get("Authorization");
   if (!header || !header.startsWith("Bearer ")) {
     res.status(401).json({ error: "missing bearer", code: "unauthorized" });
     return;
   }
+  let payload: PartnerJWTPayload;
   try {
-    req.partner = verifyPartnerToken(header.slice("Bearer ".length).trim());
-    next();
+    payload = verifyPartnerToken(header.slice("Bearer ".length).trim());
   } catch {
     res.status(401).json({ error: "invalid token", code: "unauthorized" });
+    return;
   }
+
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: payload.sub },
+    select: { password_changed_at: true },
+  });
+  if (account == null) {
+    res.status(401).json({ error: "account gone", code: "unauthorized" });
+    return;
+  }
+  // iat 는 초 단위다.
+  const issuedAt = (payload as { iat?: number }).iat;
+  if (
+    account.password_changed_at != null &&
+    issuedAt != null &&
+    issuedAt * 1000 < account.password_changed_at.getTime()
+  ) {
+    res.status(401).json({ error: "password changed", code: "unauthorized" });
+    return;
+  }
+
+  req.partner = payload;
+  next();
 };
