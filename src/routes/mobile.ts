@@ -63,19 +63,31 @@ type UserDTO = {
   username: string | null;
   email: string | null;
   role: "regular_user";
+  createdAt: string;
+  /** 이 계정으로 로그인하는 방법. 소셜로 시작하면 아이디·비밀번호가 없다. */
+  authMethods: ("password" | "apple" | "google" | "kakao" | "naver")[];
+  receiveEmailUpdates: boolean;
 };
 
 async function userDTO(userId: string): Promise<UserDTO | null> {
   const u = await prisma.user.findUnique({
     where: { id: userId },
-    include: { password_auth: true },
+    include: { password_auth: true, oauth_identity: true },
   });
   if (u == null) return null;
+  const authMethods: UserDTO["authMethods"] = [];
+  if (u.password_auth != null) authMethods.push("password");
+  for (const o of u.oauth_identity) {
+    authMethods.push(o.provider as "apple" | "google" | "kakao" | "naver");
+  }
   return {
     id: u.id,
     username: u.password_auth?.username ?? null,
     email: u.email,
     role: REGULAR_ROLE,
+    createdAt: u.created_at.toISOString(),
+    authMethods,
+    receiveEmailUpdates: u.receive_email_updates,
   };
 }
 
