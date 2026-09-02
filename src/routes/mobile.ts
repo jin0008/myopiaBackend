@@ -570,6 +570,32 @@ router.post(
     let userId: string;
     if (existing) {
       userId = existing.user_id;
+
+      // 이미 있는 계정에 이메일이 비어 있고 이번에 제공자가 주면 채운다.
+      //
+      // 카카오는 비즈니스 인증 전까지 이메일을 주지 않아, 그 사이에 가입한
+      // 계정은 이메일이 비어 있다. 채우지 않으면 인증이 통과한 뒤에도
+      // 그 계정만 영영 비어 있고, 그 사람은 아이디·비밀번호 찾기를 쓸 수
+      // 없다 - 아이 기록이 쌓인 계정을 복구할 길이 없다는 뜻이다.
+      //
+      // 다른 계정이 이미 쓰는 주소면 건드리지 않는다. 여기서 계정을 합치는
+      // 것은 로그인 요청이 할 일이 아니고, 잘못 합치면 되돌릴 수 없다.
+      const providerEmail =
+        identity.email != null ? normalizeEmail(identity.email) : null;
+      if (providerEmail != null) {
+        const me = await prisma.user.findUnique({ where: { id: userId } });
+        if (me != null && me.email == null) {
+          const taken = await prisma.user.findUnique({
+            where: { email: providerEmail },
+          });
+          if (taken == null) {
+            await prisma.user.update({
+              where: { id: userId },
+              data: { email: providerEmail },
+            });
+          }
+        }
+      }
     } else {
       const email =
         identity.email != null
