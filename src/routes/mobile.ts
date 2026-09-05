@@ -1235,12 +1235,31 @@ router.get("/children/:childId/progress", requireMobileAuth, async (req, res) =>
   let perYear: number | null = null;
   if (earlier != null) {
     const years = (latest.date.getTime() - earlier.date.getTime()) / (365.25 * 86400000);
-    perYear = Number(((worse(latest) - worse(earlier)) / years).toFixed(2));
+    // 눈마다 따로 재고 더 많이 자란 쪽을 쓴다. 좌우 최댓값끼리 빼면, 방문마다
+    // 긴 눈이 바뀌었을 때 서로 다른 눈을 비교하게 된다.
+    const deltas = (["od", "os"] as const)
+      .map((eye) =>
+        latest[eye] != null && earlier[eye] != null
+          ? (latest[eye] as number) - (earlier[eye] as number)
+          : null,
+      )
+      .filter((v): v is number => v != null);
+    if (deltas.length > 0) {
+      perYear = Number((Math.max(...deltas) / years).toFixed(2));
+    }
   }
 
-  const overThreshold = threshold != null && worse(latest) > threshold.warn_max;
+  // 기준 자료가 없으면 모른다고 답한다. ok 로 뭉뚱그리면 화면에는
+  // "또래 기준 안에 있습니다" 가 뜨는데, 실제로는 비교조차 못 한 상태다.
+  // 근시 관리 앱에서 거짓 안심은 진료를 미루게 만든다.
+  const status =
+    threshold == null
+      ? "unknown"
+      : worse(latest) > threshold.warn_max
+        ? "over"
+        : "ok";
   res.json({
-    status: overThreshold ? "over" : "ok",
+    status,
     latest: {
       date: serializeDateOnly(latest.date),
       od: latest.od,

@@ -1029,8 +1029,8 @@ model child_care_log {
   parent_child_link parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade)
 
   /// 하루에 한 번만. 두 번 눌러도 한 줄이다.
+  /// 조회도 이 인덱스가 받으므로 같은 컬럼으로 일반 인덱스를 더 두지 않는다.
   @@unique([parent_child_link_id, kind, done_on])
-  @@index([parent_child_link_id, kind, done_on])
 }
 
 /// 잊으면 안 되는 날.
