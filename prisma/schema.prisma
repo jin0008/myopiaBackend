@@ -414,6 +414,9 @@ model parent_child_link {
   created_at          DateTime              @default(now()) @db.Timestamptz(6)
   user                user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "parent_child_link_user_fk")
   child_hospital_link child_hospital_link[]
+  child_record        child_record[]
+  child_care_log      child_care_log[]
+  child_reminder      child_reminder[]
 
   @@index([user_id], map: "idx_parent_child_link_user")
 }
@@ -977,4 +980,75 @@ model email_verification {
 
   @@index([email, purpose])
   @@index([expires_at])
+}
+
+/// 부모가 직접 적는 검사 기록.
+///
+/// 병원 측정은 patient 에 매달려 있어 연동이 없으면 아무것도 남길 수 없다.
+/// 그런데 연동은 병원 참여에 달려 있어 사용자가 통제할 수 없고, 그동안
+/// 앱은 빈 화면이 된다. 그래서 patient 가 아니라 아이(parent_child_link)에
+/// 직접 붙인다.
+///
+/// 병원 기록과 섞지 않는다. 값의 출처가 다르면 신뢰도도 다르고, 나중에
+/// 연동됐을 때 어느 쪽이 병원 것인지 구분할 수 있어야 한다.
+model child_record {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parent_child_link_id String   @db.Uuid
+  /// 검사받은 날. 앱에 적은 날이 아니다.
+  recorded_on          DateTime @db.Date
+
+  /// 안축장(mm). 병원에서 들은 값을 옮겨 적는다.
+  axial_od Float? @db.Real
+  axial_os Float? @db.Real
+  /// 처방전의 구면(S)·원주(C) 도수.
+  sph_od   Float? @db.Real
+  sph_os   Float? @db.Real
+  cyl_od   Float? @db.Real
+  cyl_os   Float? @db.Real
+
+  memo       String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  parent_child_link parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade)
+
+  @@index([parent_child_link_id, recorded_on])
+}
+
+/// 매일 하는 치료를 했는지.
+///
+/// 저농도 아트로핀은 매일 밤 넣고 드림렌즈는 매일 밤 낀다. 측정은 3~6개월에
+/// 한 번뿐이라 그것만으로는 앱을 열 이유가 없는데, 이건 매일 생긴다.
+model child_care_log {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parent_child_link_id String   @db.Uuid
+  /// atropine · lens
+  kind                 String
+  done_on              DateTime @db.Date
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+
+  parent_child_link parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade)
+
+  /// 하루에 한 번만. 두 번 눌러도 한 줄이다.
+  @@unique([parent_child_link_id, kind, done_on])
+  @@index([parent_child_link_id, kind, done_on])
+}
+
+/// 잊으면 안 되는 날.
+///
+/// 다음 진료일과 렌즈 교체일이 같은 모양이라 한 표에 담는다. 종류만 다르고
+/// "언제까지"와 "며칠 남았나"는 똑같이 다룬다.
+model child_reminder {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parent_child_link_id String    @db.Uuid
+  /// appointment · lens_replace
+  kind                 String
+  due_on               DateTime  @db.Date
+  memo                 String?
+  /// 지난 일정을 지우지 않고 남긴다. 언제 갔었는지가 기록이 된다.
+  done_at              DateTime? @db.Timestamptz(6)
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+
+  parent_child_link parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade)
+
+  @@index([parent_child_link_id, due_on])
 }

@@ -1025,6 +1025,435 @@ router.delete("/children/:childId", requireMobileAuth, async (req, res) => {
  * Hospitals + hospital-links                                          *
  * ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ *
+ * 부모가 직접 남기는 기록                                              *
+ *                                                                    *
+ * 병원 측정은 patient 에 매달려 있어 연동 없이는 아무것도 남길 수 없다.
+ * 연동은 병원 참여에 달려 있어 사용자가 통제할 수 없으므로, 여기서는
+ * 아이(parent_child_link)에 직접 붙인다. 병원 기록과 섞지 않는다 -
+ * 출처가 다르면 신뢰도도 다르고, 나중에 연동됐을 때 어느 쪽이 병원
+ * 것인지 구분할 수 있어야 한다.
+ * ------------------------------------------------------------------ */
+
+/** 안축장은 성인도 24mm 안팎이다. 범위를 벗어난 값은 오타로 본다. */
+const axialField = zod.number().min(15).max(35).nullable().optional();
+/** 처방 도수. 소아 근시에서 이 범위를 벗어나는 일은 없다. */
+const dioptreField = zod.number().min(-30).max(30).nullable().optional();
+
+const childRecordSchema = zod.object({
+  recordedOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  axialOd: axialField,
+  axialOs: axialField,
+  sphOd: dioptreField,
+  sphOs: dioptreField,
+  cylOd: dioptreField,
+  cylOs: dioptreField,
+  memo: zod.string().max(500).nullable().optional(),
+});
+
+const recordDTO = (r: {
+  id: string;
+  recorded_on: Date;
+  axial_od: number | null;
+  axial_os: number | null;
+  sph_od: number | null;
+  sph_os: number | null;
+  cyl_od: number | null;
+  cyl_os: number | null;
+  memo: string | null;
+}) => ({
+  id: r.id,
+  recordedOn: serializeDateOnly(r.recorded_on),
+  axialOd: r.axial_od,
+  axialOs: r.axial_os,
+  sphOd: r.sph_od,
+  sphOs: r.sph_os,
+  cylOd: r.cyl_od,
+  cylOs: r.cyl_os,
+  memo: r.memo,
+});
+
+/** GET /api/mobile/children/:childId/records */
+router.get("/children/:childId/records", requireMobileAuth, async (req, res) => {
+  const user = requireAppUser(req);
+  const child = await loadOwnedChild(user.sub, String(req.params.childId));
+  if (child == null) {
+    res.status(404).json({ error: "child not found", code: "not_found" });
+    return;
+  }
+  const rows = await prisma.child_record.findMany({
+    where: { parent_child_link_id: child.id },
+    orderBy: { recorded_on: "desc" },
+    take: 200,
+  });
+  res.json({ records: rows.map(recordDTO) });
+});
+
+/** POST /api/mobile/children/:childId/records */
+router.post(
+  "/children/:childId/records",
+  requireMobileAuth,
+  validateRequestBody(childRecordSchema),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const d = req.body as zod.infer<typeof childRecordSchema>;
+    // 값이 하나도 없는 기록은 만들지 않는다. 날짜만 남은 줄은 목록에서
+    // 무엇을 뜻하는지 알 수 없다.
+    const hasValue = [d.axialOd, d.axialOs, d.sphOd, d.sphOs, d.cylOd, d.cylOs].some(
+      (v) => v != null,
+    );
+    if (!hasValue) {
+      res
+        .status(400)
+        .json({ error: "값을 하나 이상 입력해 주세요.", code: "validation_error" });
+      return;
+    }
+    const row = await prisma.child_record.create({
+      data: {
+        parent_child_link_id: child.id,
+        recorded_on: new Date(d.recordedOn),
+        axial_od: d.axialOd ?? null,
+        axial_os: d.axialOs ?? null,
+        sph_od: d.sphOd ?? null,
+        sph_os: d.sphOs ?? null,
+        cyl_od: d.cylOd ?? null,
+        cyl_os: d.cylOs ?? null,
+        memo: d.memo ?? null,
+      },
+    });
+    res.status(201).json(recordDTO(row));
+  },
+);
+
+/** DELETE /api/mobile/children/:childId/records/:recordId */
+router.delete(
+  "/children/:childId/records/:recordId",
+  requireMobileAuth,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    // 아이까지 조건에 넣는다. id 만으로 지우면 남의 기록을 지울 수 있다.
+    const { count } = await prisma.child_record.deleteMany({
+      where: { id: String(req.params.recordId), parent_child_link_id: child.id },
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "record not found", code: "not_found" });
+      return;
+    }
+    res.json({ ok: true });
+  },
+);
+
+/**
+ * GET /api/mobile/children/:childId/progress
+ *
+ * 안축장이 또래 기준을 넘었는지 한 문장으로 답한다.
+ *
+ * 차트는 이미 있지만 부모가 그래프를 읽고 판단하기는 어렵다. 근시 관리에서
+ * 부모가 알고 싶은 것은 곡선의 모양이 아니라 "지금 괜찮은가" 하나다.
+ *
+ * 병원 측정과 직접 적은 기록을 함께 본다. 연동이 없는 사람도 답을 받을 수
+ * 있어야 하고, 값의 출처가 달라도 눈의 길이는 같은 눈의 길이다.
+ */
+router.get("/children/:childId/progress", requireMobileAuth, async (req, res) => {
+  const user = requireAppUser(req);
+  const child = await loadOwnedChild(user.sub, String(req.params.childId));
+  if (child == null) {
+    res.status(404).json({ error: "child not found", code: "not_found" });
+    return;
+  }
+
+  const patientIds = (await linkedPatientIds(child.id)).map((p) => p.patientId);
+  const [hospital, own] = await Promise.all([
+    patientIds.length > 0
+      ? prisma.measurement.findMany({
+          where: { patient_id: { in: patientIds } },
+          orderBy: { date: "desc" },
+          take: 20,
+        })
+      : Promise.resolve([]),
+    prisma.child_record.findMany({
+      where: { parent_child_link_id: child.id },
+      orderBy: { recorded_on: "desc" },
+      take: 20,
+    }),
+  ]);
+
+  // 두 출처를 한 줄로 세운다. 같은 날 둘 다 있으면 병원 값을 쓴다 -
+  // 옮겨 적는 과정이 없어 오타가 끼어들 자리가 없다.
+  type Point = { date: Date; od: number | null; os: number | null; fromHospital: boolean };
+  const points: Point[] = [
+    ...hospital.map((m) => ({
+      date: m.date,
+      od: m.od,
+      os: m.os,
+      fromHospital: true,
+    })),
+    ...own.map((r) => ({
+      date: r.recorded_on,
+      od: r.axial_od,
+      os: r.axial_os,
+      fromHospital: false,
+    })),
+  ]
+    .filter((p) => p.od != null || p.os != null)
+    .sort((a, b) => b.date.getTime() - a.date.getTime());
+
+  if (points.length === 0) {
+    res.json({ status: "no_data", latest: null, perYear: null, threshold: null });
+    return;
+  }
+
+  const latest = points[0];
+  const worse = (p: Point) => Math.max(p.od ?? 0, p.os ?? 0);
+
+  // 또래 기준: 만 나이와 성별로 찾는다.
+  const age = Math.floor(
+    (latest.date.getTime() - child.date_of_birth.getTime()) / (365.25 * 24 * 3600 * 1000),
+  );
+  const threshold = await prisma.axial_length_threshold.findUnique({
+    where: { age_sex: { age, sex: child.sex } },
+  });
+
+  // 진행 속도는 1년 안팎으로 떨어진 두 점이 있어야 뜻이 있다. 한 달 간격
+  // 두 점으로 연 환산하면 작은 오차가 열두 배로 부풀어 겁을 준다.
+  const MIN_GAP_DAYS = 120;
+  const earlier = points.find(
+    (p) =>
+      (latest.date.getTime() - p.date.getTime()) / 86400000 >= MIN_GAP_DAYS &&
+      worse(p) > 0,
+  );
+  let perYear: number | null = null;
+  if (earlier != null) {
+    const years = (latest.date.getTime() - earlier.date.getTime()) / (365.25 * 86400000);
+    perYear = Number(((worse(latest) - worse(earlier)) / years).toFixed(2));
+  }
+
+  const overThreshold = threshold != null && worse(latest) > threshold.warn_max;
+  res.json({
+    status: overThreshold ? "over" : "ok",
+    latest: {
+      date: serializeDateOnly(latest.date),
+      od: latest.od,
+      os: latest.os,
+      fromHospital: latest.fromHospital,
+    },
+    /// 연 환산 증가량(mm). 두 점이 충분히 떨어져 있을 때만 낸다.
+    perYear,
+    threshold: threshold?.warn_max ?? null,
+  });
+});
+
+/* ---- 매일 하는 치료 체크 --------------------------------------- */
+
+const CARE_KINDS = ["atropine", "lens"] as const;
+const careSchema = zod.object({
+  kind: zod.enum(CARE_KINDS),
+  doneOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  done: zod.boolean(),
+});
+
+/**
+ * GET /api/mobile/children/:childId/care?days=30
+ *
+ * 최근 며칠치를 한 번에 준다. 날짜마다 물어보면 달력 한 장에 서른 번을
+ * 부르게 된다.
+ */
+router.get("/children/:childId/care", requireMobileAuth, async (req, res) => {
+  const user = requireAppUser(req);
+  const child = await loadOwnedChild(user.sub, String(req.params.childId));
+  if (child == null) {
+    res.status(404).json({ error: "child not found", code: "not_found" });
+    return;
+  }
+  const days = Math.min(Math.max(Number(req.query.days ?? 30) || 30, 1), 180);
+  const from = new Date();
+  from.setUTCHours(0, 0, 0, 0);
+  from.setUTCDate(from.getUTCDate() - days + 1);
+
+  const rows = await prisma.child_care_log.findMany({
+    where: { parent_child_link_id: child.id, done_on: { gte: from } },
+    orderBy: { done_on: "desc" },
+  });
+  res.json({
+    logs: rows.map((r) => ({ kind: r.kind, doneOn: serializeDateOnly(r.done_on) })),
+  });
+});
+
+/**
+ * PUT /api/mobile/children/:childId/care
+ *
+ * 켜고 끄는 동작이라 POST/DELETE 로 나누지 않는다. 체크박스 하나에
+ * 엔드포인트가 둘이면 화면이 상태를 두 번 관리하게 된다.
+ */
+router.put(
+  "/children/:childId/care",
+  requireMobileAuth,
+  validateRequestBody(careSchema),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const d = req.body as zod.infer<typeof careSchema>;
+    const doneOn = new Date(d.doneOn);
+    // 오지 않은 날은 체크할 수 없다. 달력을 넘기다 미래를 누르면 기록이
+    // 실제와 어긋난다.
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    if (doneOn.getTime() > today.getTime()) {
+      res
+        .status(400)
+        .json({ error: "아직 오지 않은 날짜입니다.", code: "validation_error" });
+      return;
+    }
+
+    if (d.done) {
+      await prisma.child_care_log.upsert({
+        where: {
+          parent_child_link_id_kind_done_on: {
+            parent_child_link_id: child.id,
+            kind: d.kind,
+            done_on: doneOn,
+          },
+        },
+        create: { parent_child_link_id: child.id, kind: d.kind, done_on: doneOn },
+        update: {},
+      });
+    } else {
+      await prisma.child_care_log.deleteMany({
+        where: { parent_child_link_id: child.id, kind: d.kind, done_on: doneOn },
+      });
+    }
+    res.json({ ok: true });
+  },
+);
+
+/* ---- 잊으면 안 되는 날 ------------------------------------------- */
+
+const REMINDER_KINDS = ["appointment", "lens_replace"] as const;
+const reminderSchema = zod.object({
+  kind: zod.enum(REMINDER_KINDS),
+  dueOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  memo: zod.string().max(200).nullable().optional(),
+});
+
+const reminderDTO = (r: {
+  id: string;
+  kind: string;
+  due_on: Date;
+  memo: string | null;
+  done_at: Date | null;
+}) => ({
+  id: r.id,
+  kind: r.kind,
+  dueOn: serializeDateOnly(r.due_on),
+  memo: r.memo,
+  done: r.done_at != null,
+});
+
+/** GET /api/mobile/children/:childId/reminders */
+router.get("/children/:childId/reminders", requireMobileAuth, async (req, res) => {
+  const user = requireAppUser(req);
+  const child = await loadOwnedChild(user.sub, String(req.params.childId));
+  if (child == null) {
+    res.status(404).json({ error: "child not found", code: "not_found" });
+    return;
+  }
+  const rows = await prisma.child_reminder.findMany({
+    where: { parent_child_link_id: child.id },
+    orderBy: { due_on: "asc" },
+    take: 100,
+  });
+  res.json({ reminders: rows.map(reminderDTO) });
+});
+
+/** POST /api/mobile/children/:childId/reminders */
+router.post(
+  "/children/:childId/reminders",
+  requireMobileAuth,
+  validateRequestBody(reminderSchema),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const d = req.body as zod.infer<typeof reminderSchema>;
+    const row = await prisma.child_reminder.create({
+      data: {
+        parent_child_link_id: child.id,
+        kind: d.kind,
+        due_on: new Date(d.dueOn),
+        memo: d.memo ?? null,
+      },
+    });
+    res.status(201).json(reminderDTO(row));
+  },
+);
+
+/**
+ * PATCH /api/mobile/children/:childId/reminders/:id — 완료 표시
+ *
+ * 지난 일정을 지우지 않고 완료로 남긴다. 언제 갔었는지가 그 자체로 기록이다.
+ */
+router.patch(
+  "/children/:childId/reminders/:id",
+  requireMobileAuth,
+  validateRequestBody(zod.object({ done: zod.boolean() })),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const { count } = await prisma.child_reminder.updateMany({
+      where: { id: String(req.params.id), parent_child_link_id: child.id },
+      data: { done_at: (req.body as { done: boolean }).done ? new Date() : null },
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "reminder not found", code: "not_found" });
+      return;
+    }
+    res.json({ ok: true });
+  },
+);
+
+/** DELETE /api/mobile/children/:childId/reminders/:id */
+router.delete(
+  "/children/:childId/reminders/:id",
+  requireMobileAuth,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const { count } = await prisma.child_reminder.deleteMany({
+      where: { id: String(req.params.id), parent_child_link_id: child.id },
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "reminder not found", code: "not_found" });
+      return;
+    }
+    res.json({ ok: true });
+  },
+);
+
 router.get("/hospitals", async (_req, res) => {
   const hospitals = await prisma.hospital.findMany({
     include: { country: { select: { code: true } } },
