@@ -2532,19 +2532,27 @@ async function backfillToPatient(
     if (data.length > 0) await tx.patient_outdoor_activity.createMany({ data });
   }
 
-  // 부모 근시는 현재값 하나뿐이라 있는 것을 갈아 끼운다.
+  // 부모 근시는 빈 자리만 채운다.
+  //
+  // 병원이 이미 문진으로 받아 둔 값이 있을 수 있는데, 연동했다는 이유만으로
+  // 그걸 덮으면 의사가 직접 적은 것이 조용히 사라진다. 부모가 앱에서
+  // 고쳐 넣는 것은 지금처럼 PUT 이 덮어쓴다 — 그건 사용자가 그 순간
+  // 의도한 행동이다.
   const parental = await tx.child_parental_myopia.findMany({
     where: { parent_child_link_id: parentChildLinkId },
   });
   for (const p of parental) {
-    await tx.patient_parental_myopia_status.deleteMany({
+    const already = await tx.patient_parental_myopia_status.findFirst({
       where: { patient_id: patientId, parent_sex: p.parent_sex as SexEnum },
     });
+    if (already != null) continue;
     await tx.patient_parental_myopia_status.create({
       data: {
         patient_id: patientId,
         parent_sex: p.parent_sex as SexEnum,
         status: p.status as MyopiaStatusEnum,
+        // 옮겨 적는 것이지 지금 답한 것이 아니다. 부모가 적은 날을 남긴다.
+        timestamp: p.recorded_at,
       },
     });
   }
