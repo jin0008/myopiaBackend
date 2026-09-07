@@ -4,7 +4,7 @@ import path from "path";
 import bcrypt from "bcrypt";
 import zod from "zod";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
-import { sex as SexEnum, myopia_status as MyopiaStatusEnum } from "@prisma/client";
+import { Prisma, sex as SexEnum, myopia_status as MyopiaStatusEnum } from "@prisma/client";
 
 import prisma from "../lib/prisma";
 import { validateRequestBody } from "../lib/middlewares";
@@ -1706,6 +1706,20 @@ router.post(
             },
           });
         }
+        // 4) 연동 전에 부모가 적어 둔 것을 이 병원 쪽으로 옮긴다.
+        //
+        //    연동 없이도 기록할 수 있게 되면서, 가입해서 몇 달 적다가
+        //    나중에 병원을 연동하는 길이 생겼다. 그때 옮겨 주지 않으면
+        //    의사는 연동 이후 것만 보게 된다 — 하필 "그동안 어떻게
+        //    지냈나"를 묻는 자리에서 앞부분이 비어 있다.
+        //
+        //    부모가 옮겨 적은 검사값(child_record)은 보내지 않는다. 활동과
+        //    부모 근시는 원래 부모가 답하는 정보지만, 안축장·도수는 병원이
+        //    재는 값이다. 그게 차트에서 실제 측정값과 섞이면 어느 것이
+        //    측정이고 어느 것이 기억인지 구분할 수 없고, 그 숫자로 근시
+        //    진행을 판단한다.
+        await backfillToPatient(tx, child.id, patient.id);
+
         return created;
       });
       res.status(201).json({
@@ -2252,20 +2266,30 @@ const lifestyleEntrySchema = zod.object({
   recordedAt: zod.string().datetime().optional(),
 });
 
+/** 한 번에 내려보내는 활동 이력 줄 수.
+ *
+ *  매일 적으면 1년에 365줄이 쌓이는데 화면은 최근 몇 줄만 그린다. 제한이
+ *  없으면 쓸수록 응답이 무거워진다. 연동 병원 수만큼 같은 값이 겹쳐 오므로
+ *  중복을 걷어낸 뒤에도 화면에 쓸 만큼 남도록 넉넉히 가져온다. */
+const ACTIVITY_HISTORY_LIMIT = 60;
+
 async function listActivity(
   kind: ActivityKind,
   patientIds: string[],
 ): Promise<{ id: string; hours: number | null; recordedAt: string }[]> {
   const where = { patient_id: { in: patientIds } };
+  const take = ACTIVITY_HISTORY_LIMIT * Math.max(patientIds.length, 1);
   const rows =
     kind === "nearwork"
       ? await prisma.patient_nearwork_activity.findMany({
           where,
           orderBy: { timestamp: "desc" },
+          take,
         })
       : await prisma.patient_outdoor_activity.findMany({
           where,
           orderBy: { timestamp: "desc" },
+          take,
         });
   // collapse duplicates from fan-out: same (timestamp, hours) across
   // hospitals counts as a single entry.
@@ -2318,6 +2342,7 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
           ? await prisma.child_activity_log.findMany({
               where: { parent_child_link_id: child.childId, kind },
               orderBy: { recorded_at: "desc" },
+              take: ACTIVITY_HISTORY_LIMIT,
             })
           : [];
       const links = await linkedPatientIds(child);
@@ -2342,7 +2367,7 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
         entries.push(r);
       }
       entries.sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
-      res.json({ entries });
+      res.json({ entries: entries.slice(0, ACTIVITY_HISTORY_LIMIT) });
     },
   );
 
@@ -2450,6 +2475,80 @@ router.get(
     });
   },
 );
+
+/**
+ * 아이에 붙어 있던 부모 입력값을 patient 쪽으로 복사한다.
+ *
+ * 이미 있는 줄은 건너뛴다 - 같은 병원을 끊었다 다시 이으면 두 번 도는데,
+ * 그때마다 같은 값이 쌓이면 의사 화면의 이력이 부풀어 오른다.
+ */
+async function backfillToPatient(
+  tx: Prisma.TransactionClient,
+  parentChildLinkId: string,
+  patientId: string,
+): Promise<void> {
+  const acts = await tx.child_activity_log.findMany({
+    where: { parent_child_link_id: parentChildLinkId },
+  });
+  // 두 테이블의 델리게이트는 타입이 달라 변수 하나에 담을 수 없다.
+  // 갈래마다 읽고 쓰되, 그 사이 계산은 한곳에 둔다.
+  const toInsert = (
+    rows: { hours: number | null; recorded_at: Date }[],
+    existing: { timestamp: Date; hours: number | null }[],
+  ) => {
+    const seen = new Set(
+      existing.map((e) => `${e.timestamp.toISOString()}|${e.hours ?? ""}`),
+    );
+    return rows
+      .filter((r) => !seen.has(`${r.recorded_at.toISOString()}|${r.hours ?? ""}`))
+      .map((r) => ({
+        patient_id: patientId,
+        hours: r.hours,
+        timestamp: r.recorded_at,
+      }));
+  };
+
+  const near = acts.filter((a) => a.kind === "nearwork");
+  if (near.length > 0) {
+    const data = toInsert(
+      near,
+      await tx.patient_nearwork_activity.findMany({
+        where: { patient_id: patientId },
+        select: { timestamp: true, hours: true },
+      }),
+    );
+    if (data.length > 0) await tx.patient_nearwork_activity.createMany({ data });
+  }
+
+  const out = acts.filter((a) => a.kind === "outdoor");
+  if (out.length > 0) {
+    const data = toInsert(
+      out,
+      await tx.patient_outdoor_activity.findMany({
+        where: { patient_id: patientId },
+        select: { timestamp: true, hours: true },
+      }),
+    );
+    if (data.length > 0) await tx.patient_outdoor_activity.createMany({ data });
+  }
+
+  // 부모 근시는 현재값 하나뿐이라 있는 것을 갈아 끼운다.
+  const parental = await tx.child_parental_myopia.findMany({
+    where: { parent_child_link_id: parentChildLinkId },
+  });
+  for (const p of parental) {
+    await tx.patient_parental_myopia_status.deleteMany({
+      where: { patient_id: patientId, parent_sex: p.parent_sex as SexEnum },
+    });
+    await tx.patient_parental_myopia_status.create({
+      data: {
+        patient_id: patientId,
+        parent_sex: p.parent_sex as SexEnum,
+        status: p.status as MyopiaStatusEnum,
+      },
+    });
+  }
+}
 
 /* ================================================================== *
  * Community board (자유게시판)                                         *
