@@ -1274,7 +1274,10 @@ router.get("/children/:childId/progress", requireMobileAuth, async (req, res) =>
 
 /* ---- 매일 하는 치료 체크 --------------------------------------- */
 
-const CARE_KINDS = ["atropine", "lens"] as const;
+// "outdoor" 는 몇 시간인지가 아니라 오늘 밖에 나갔는지다. 시간은
+// child_activity_log 에 따로 남는다 — 체크에서 시간을 지어내면 의사
+// 화면에 부모가 말한 적 없는 숫자가 뜬다.
+const CARE_KINDS = ["atropine", "lens", "outdoor"] as const;
 const careSchema = zod.object({
   kind: zod.enum(CARE_KINDS),
   doneOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -2049,9 +2052,12 @@ router.get(
 /* ------------------------------------------------------------------ *
  * Parent-entered data: parental refraction + lifestyle activity        *
  *                                                                      *
- * Writes are fanned out to every linked patient row so each hospital   *
- * sees the same value on the web side. Reads come from any one of the  *
- * linked patients (they're kept in sync, so we just pick the first).   *
+ * 저장은 아이(parent_child_link)에 한다. 예전에는 patient 에만 넣어서    *
+ * 병원 연동이 없는 아이는 아무것도 남길 수 없었는데, 연동은 병원 참여에  *
+ * 달려 있어 사용자가 통제할 수 없다.                                    *
+ *                                                                      *
+ * 연동이 있으면 patient 쪽에도 그대로 내보낸다 — 의사 화면이 보는 곳이   *
+ * 거기다. 읽을 때는 둘을 합치고 같은 값은 한 번만 센다.                 *
  *                                                                      *
  * NOTE: parental_myopia rows are kept "current value only" — a PUT     *
  * deletes any existing rows for that patient+sex and inserts one new   *
@@ -2083,27 +2089,48 @@ router.get(
     const child = await findOwnedChild(String(req.params.childId), userId);
     if (child == null) return res.status(404).json({ error: "child not found" });
 
+    // 아이에 붙은 값이 먼저다. 없으면 이 기능이 생기기 전에 patient 로만
+    // 들어간 값이 있을 수 있어 그쪽을 본다.
+    const own =
+      child.source === "app"
+        ? await prisma.child_parental_myopia.findMany({
+            where: { parent_child_link_id: child.childId },
+          })
+        : [];
+
     const links = await linkedPatientIds(child);
-    if (links.length === 0) {
-      return res.json({ mother: null, father: null });
-    }
+    const legacy =
+      links.length > 0
+        ? await prisma.patient_parental_myopia_status.findMany({
+            where: { patient_id: { in: links.map((l) => l.patientId) } },
+            orderBy: { timestamp: "desc" },
+          })
+        : [];
 
-    const rows = await prisma.patient_parental_myopia_status.findMany({
-      where: { patient_id: { in: links.map((l) => l.patientId) } },
-      orderBy: { timestamp: "desc" },
-    });
-
-    function pick(parentSex: SexEnum) {
-      const row = rows.find((r) => r.parent_sex === parentSex);
-      return row
-        ? { status: row.status, recordedAt: row.timestamp.toISOString() }
+    // 한쪽 부모씩 따로 본다. 어머니만 새로 넣었다고 해서 예전에 patient 로만
+    // 들어간 아버지 값이 화면에서 사라지면 안 된다.
+    function pick(sex: SexEnum) {
+      const mine = own.find((r) => r.parent_sex === sex);
+      if (mine != null) {
+        return {
+          status: mine.status,
+          sphOd: mine.sph_od,
+          sphOs: mine.sph_os,
+          recordedAt: mine.recorded_at.toISOString(),
+        };
+      }
+      const old = legacy.find((r) => r.parent_sex === sex);
+      return old
+        ? {
+            status: old.status,
+            sphOd: null,
+            sphOs: null,
+            recordedAt: old.timestamp.toISOString(),
+          }
         : null;
     }
 
-    res.json({
-      mother: pick(SexEnum.female),
-      father: pick(SexEnum.male),
-    });
+    res.json({ mother: pick(SexEnum.female), father: pick(SexEnum.male) });
   },
 );
 
@@ -2117,15 +2144,16 @@ router.get(
  * row per linked patient. Pass `null` to clear ("Don't know" without
  * even storing 'unknown'); omit the key to leave that parent untouched.
  */
+// 도수는 아는 부모만 적는다. -20 ~ +20 D 를 벗어난 값은 오타다.
+const parentEntrySchema = zod.object({
+  status: zod.enum(MYOPIA_STATUS_VALUES),
+  sphOd: zod.number().min(-20).max(20).nullish(),
+  sphOs: zod.number().min(-20).max(20).nullish(),
+});
+
 const parentalMyopiaUpdateSchema = zod.object({
-  mother: zod
-    .object({ status: zod.enum(MYOPIA_STATUS_VALUES) })
-    .nullable()
-    .optional(),
-  father: zod
-    .object({ status: zod.enum(MYOPIA_STATUS_VALUES) })
-    .nullable()
-    .optional(),
+  mother: parentEntrySchema.nullable().optional(),
+  father: parentEntrySchema.nullable().optional(),
 });
 
 router.put(
@@ -2138,7 +2166,8 @@ router.put(
     if (child == null) return res.status(404).json({ error: "child not found" });
 
     const links = await linkedPatientIds(child);
-    if (links.length === 0) {
+    // 연동이 없어도 저장한다. 아이에 붙는 자리가 따로 있다.
+    if (links.length === 0 && child.source !== "app") {
       return res
         .status(400)
         .json({ error: "child has no linked hospitals to write to" });
@@ -2146,22 +2175,46 @@ router.put(
 
     const body = req.body as zod.infer<typeof parentalMyopiaUpdateSchema>;
 
-    const tasks: { sex: SexEnum; status: MyopiaStatusEnum | null }[] = [];
-    if ("mother" in body) {
+    const tasks: {
+      sex: SexEnum;
+      status: MyopiaStatusEnum | null;
+      sphOd: number | null;
+      sphOs: number | null;
+    }[] = [];
+    for (const [key, sex] of [
+      ["mother", SexEnum.female],
+      ["father", SexEnum.male],
+    ] as const) {
+      if (!(key in body)) continue;
+      const entry = body[key];
       tasks.push({
-        sex: SexEnum.female,
-        status: body.mother == null ? null : (body.mother.status as MyopiaStatusEnum),
-      });
-    }
-    if ("father" in body) {
-      tasks.push({
-        sex: SexEnum.male,
-        status: body.father == null ? null : (body.father.status as MyopiaStatusEnum),
+        sex,
+        status: entry == null ? null : (entry.status as MyopiaStatusEnum),
+        sphOd: entry?.sphOd ?? null,
+        sphOs: entry?.sphOs ?? null,
       });
     }
 
     await prisma.$transaction(async (tx) => {
       for (const t of tasks) {
+        if (child.source === "app") {
+          await tx.child_parental_myopia.deleteMany({
+            where: { parent_child_link_id: child.childId, parent_sex: t.sex },
+          });
+          if (t.status != null) {
+            await tx.child_parental_myopia.create({
+              data: {
+                parent_child_link_id: child.childId,
+                parent_sex: t.sex,
+                status: t.status,
+                sph_od: t.sphOd,
+                sph_os: t.sphOs,
+              },
+            });
+          }
+        }
+
+        if (links.length === 0) continue;
         // wipe existing rows for every linked patient + this parent_sex
         await tx.patient_parental_myopia_status.deleteMany({
           where: {
@@ -2193,7 +2246,9 @@ router.put(
 type ActivityKind = "nearwork" | "outdoor";
 
 const lifestyleEntrySchema = zod.object({
-  hours: zod.number().int().min(0).max(24),
+  // 앱의 "모름". 값을 모른다는 것도 기록이다 — 400 으로 되돌려 보내면
+  // 그 선택지가 화면에만 있고 눌리지 않는다.
+  hours: zod.number().int().min(0).max(24).nullable(),
   recordedAt: zod.string().datetime().optional(),
 });
 
@@ -2232,7 +2287,7 @@ async function listActivity(
 async function createActivity(
   kind: ActivityKind,
   links: { patientId: string }[],
-  hours: number,
+  hours: number | null,
   recordedAt: Date,
 ) {
   const data = links.map((l) => ({
@@ -2256,10 +2311,37 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
       const child = await findOwnedChild(String(req.params.childId), userId);
       if (child == null) return res.status(404).json({ error: "child not found" });
 
+      // 아이에 붙은 것 + 연동된 병원 것. 같은 값이 양쪽에 있으므로
+      // (시각, 시간) 이 같으면 한 줄로 친다.
+      const own =
+        child.source === "app"
+          ? await prisma.child_activity_log.findMany({
+              where: { parent_child_link_id: child.childId, kind },
+              orderBy: { recorded_at: "desc" },
+            })
+          : [];
       const links = await linkedPatientIds(child);
-      if (links.length === 0) return res.json({ entries: [] });
+      const fromHospital =
+        links.length > 0
+          ? await listActivity(kind, links.map((l) => l.patientId))
+          : [];
 
-      const entries = await listActivity(kind, links.map((l) => l.patientId));
+      const seen = new Set<string>();
+      const entries: { id: string; hours: number | null; recordedAt: string }[] = [];
+      for (const r of [
+        ...own.map((r) => ({
+          id: r.id,
+          hours: r.hours,
+          recordedAt: r.recorded_at.toISOString(),
+        })),
+        ...fromHospital,
+      ]) {
+        const key = `${r.recordedAt}|${r.hours ?? ""}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        entries.push(r);
+      }
+      entries.sort((a, b) => b.recordedAt.localeCompare(a.recordedAt));
       res.json({ entries });
     },
   );
@@ -2274,7 +2356,8 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
       if (child == null) return res.status(404).json({ error: "child not found" });
 
       const links = await linkedPatientIds(child);
-      if (links.length === 0) {
+      // 연동이 없어도 저장한다. 아이에 붙는 자리가 따로 있다.
+      if (links.length === 0 && child.source !== "app") {
         return res
           .status(400)
           .json({ error: "child has no linked hospitals to write to" });
@@ -2282,7 +2365,19 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
 
       const body = req.body as zod.infer<typeof lifestyleEntrySchema>;
       const recordedAt = body.recordedAt ? new Date(body.recordedAt) : new Date();
-      await createActivity(kind, links, body.hours, recordedAt);
+      if (child.source === "app") {
+        await prisma.child_activity_log.create({
+          data: {
+            parent_child_link_id: child.childId,
+            kind,
+            hours: body.hours,
+            recorded_at: recordedAt,
+          },
+        });
+      }
+      if (links.length > 0) {
+        await createActivity(kind, links, body.hours, recordedAt);
+      }
 
       res.status(201).json({
         ok: true,
