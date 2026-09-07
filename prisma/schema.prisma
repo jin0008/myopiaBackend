@@ -1005,7 +1005,8 @@ model child_activity_log {
   parent_child_link_id String   @db.Uuid
   /// "nearwork" | "outdoor"
   kind                 String
-  hours                Int
+  /// "모름"으로 남길 수 있다.
+  hours                Int?
   /// 활동한 날. 앱에 적은 날이 아니다.
   recorded_at          DateTime @db.Timestamptz(6)
   created_at           DateTime @default(now()) @db.Timestamptz(6)

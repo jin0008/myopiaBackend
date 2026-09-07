@@ -12,7 +12,8 @@ CREATE TABLE "child_activity_log" (
   "parent_child_link_id" UUID NOT NULL,
   -- 'nearwork' | 'outdoor'
   "kind"                 TEXT NOT NULL,
-  "hours"                INTEGER NOT NULL,
+  -- 앱에 "모름" 선택지가 있다. patient 쪽 테이블도 NULL 을 받는다.
+  "hours"                INTEGER,
   "recorded_at"          TIMESTAMPTZ(6) NOT NULL,
   "created_at"           TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
   CONSTRAINT "child_activity_log_pkey" PRIMARY KEY ("id"),

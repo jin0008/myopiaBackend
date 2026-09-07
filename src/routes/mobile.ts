@@ -2091,47 +2091,46 @@ router.get(
 
     // 아이에 붙은 값이 먼저다. 없으면 이 기능이 생기기 전에 patient 로만
     // 들어간 값이 있을 수 있어 그쪽을 본다.
-    if (child.source === "app") {
-      const own = await prisma.child_parental_myopia.findMany({
-        where: { parent_child_link_id: child.childId },
-      });
-      if (own.length > 0) {
-        const pickOwn = (sex: string) => {
-          const row = own.find((r) => r.parent_sex === sex);
-          return row
-            ? {
-                status: row.status,
-                sphOd: row.sph_od,
-                sphOs: row.sph_os,
-                recordedAt: row.recorded_at.toISOString(),
-              }
-            : null;
-        };
-        return res.json({ mother: pickOwn("female"), father: pickOwn("male") });
-      }
-    }
+    const own =
+      child.source === "app"
+        ? await prisma.child_parental_myopia.findMany({
+            where: { parent_child_link_id: child.childId },
+          })
+        : [];
 
     const links = await linkedPatientIds(child);
-    if (links.length === 0) {
-      return res.json({ mother: null, father: null });
-    }
+    const legacy =
+      links.length > 0
+        ? await prisma.patient_parental_myopia_status.findMany({
+            where: { patient_id: { in: links.map((l) => l.patientId) } },
+            orderBy: { timestamp: "desc" },
+          })
+        : [];
 
-    const rows = await prisma.patient_parental_myopia_status.findMany({
-      where: { patient_id: { in: links.map((l) => l.patientId) } },
-      orderBy: { timestamp: "desc" },
-    });
-
-    function pick(parentSex: SexEnum) {
-      const row = rows.find((r) => r.parent_sex === parentSex);
-      return row
-        ? { status: row.status, recordedAt: row.timestamp.toISOString() }
+    // 한쪽 부모씩 따로 본다. 어머니만 새로 넣었다고 해서 예전에 patient 로만
+    // 들어간 아버지 값이 화면에서 사라지면 안 된다.
+    function pick(sex: SexEnum) {
+      const mine = own.find((r) => r.parent_sex === sex);
+      if (mine != null) {
+        return {
+          status: mine.status,
+          sphOd: mine.sph_od,
+          sphOs: mine.sph_os,
+          recordedAt: mine.recorded_at.toISOString(),
+        };
+      }
+      const old = legacy.find((r) => r.parent_sex === sex);
+      return old
+        ? {
+            status: old.status,
+            sphOd: null,
+            sphOs: null,
+            recordedAt: old.timestamp.toISOString(),
+          }
         : null;
     }
 
-    res.json({
-      mother: pick(SexEnum.female),
-      father: pick(SexEnum.male),
-    });
+    res.json({ mother: pick(SexEnum.female), father: pick(SexEnum.male) });
   },
 );
 
@@ -2247,7 +2246,9 @@ router.put(
 type ActivityKind = "nearwork" | "outdoor";
 
 const lifestyleEntrySchema = zod.object({
-  hours: zod.number().int().min(0).max(24),
+  // 앱의 "모름". 값을 모른다는 것도 기록이다 — 400 으로 되돌려 보내면
+  // 그 선택지가 화면에만 있고 눌리지 않는다.
+  hours: zod.number().int().min(0).max(24).nullable(),
   recordedAt: zod.string().datetime().optional(),
 });
 
@@ -2286,7 +2287,7 @@ async function listActivity(
 async function createActivity(
   kind: ActivityKind,
   links: { patientId: string }[],
-  hours: number,
+  hours: number | null,
   recordedAt: Date,
 ) {
   const data = links.map((l) => ({
