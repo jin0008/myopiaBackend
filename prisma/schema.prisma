@@ -1023,6 +1023,9 @@ model child_parental_myopia {
   parent_sex           String
   /// "myopia" | "high_myopia" | "emmetropia" | "hyperopia" | "unknown"
   status               String
+  /// 도수(구면, D). 아는 부모만 적는다.
+  sph_od               Float?   @db.Real
+  sph_os               Float?   @db.Real
   recorded_at          DateTime @default(now()) @db.Timestamptz(6)
 
   parent_child_link parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade)

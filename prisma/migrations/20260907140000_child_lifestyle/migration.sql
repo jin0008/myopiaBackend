@@ -31,6 +31,10 @@ CREATE TABLE "child_parental_myopia" (
   "parent_sex"           TEXT NOT NULL,
   -- 'myopia' | 'high_myopia' | 'emmetropia' | 'hyperopia' | 'unknown'
   "status"               TEXT NOT NULL,
+  -- 도수(구면, D). 아는 부모만 적는다 — 대부분은 자기 도수를 모르므로
+  -- 분류(status)는 그대로 두고 여기는 비워 둘 수 있게 한다.
+  "sph_od"               REAL,
+  "sph_os"               REAL,
   "recorded_at"          TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
   CONSTRAINT "child_parental_myopia_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "child_parental_myopia_link_fk" FOREIGN KEY ("parent_child_link_id")

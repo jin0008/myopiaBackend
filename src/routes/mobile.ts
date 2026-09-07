@@ -2099,7 +2099,12 @@ router.get(
         const pickOwn = (sex: string) => {
           const row = own.find((r) => r.parent_sex === sex);
           return row
-            ? { status: row.status, recordedAt: row.recorded_at.toISOString() }
+            ? {
+                status: row.status,
+                sphOd: row.sph_od,
+                sphOs: row.sph_os,
+                recordedAt: row.recorded_at.toISOString(),
+              }
             : null;
         };
         return res.json({ mother: pickOwn("female"), father: pickOwn("male") });
@@ -2140,15 +2145,16 @@ router.get(
  * row per linked patient. Pass `null` to clear ("Don't know" without
  * even storing 'unknown'); omit the key to leave that parent untouched.
  */
+// 도수는 아는 부모만 적는다. -20 ~ +20 D 를 벗어난 값은 오타다.
+const parentEntrySchema = zod.object({
+  status: zod.enum(MYOPIA_STATUS_VALUES),
+  sphOd: zod.number().min(-20).max(20).nullish(),
+  sphOs: zod.number().min(-20).max(20).nullish(),
+});
+
 const parentalMyopiaUpdateSchema = zod.object({
-  mother: zod
-    .object({ status: zod.enum(MYOPIA_STATUS_VALUES) })
-    .nullable()
-    .optional(),
-  father: zod
-    .object({ status: zod.enum(MYOPIA_STATUS_VALUES) })
-    .nullable()
-    .optional(),
+  mother: parentEntrySchema.nullable().optional(),
+  father: parentEntrySchema.nullable().optional(),
 });
 
 router.put(
@@ -2170,17 +2176,23 @@ router.put(
 
     const body = req.body as zod.infer<typeof parentalMyopiaUpdateSchema>;
 
-    const tasks: { sex: SexEnum; status: MyopiaStatusEnum | null }[] = [];
-    if ("mother" in body) {
+    const tasks: {
+      sex: SexEnum;
+      status: MyopiaStatusEnum | null;
+      sphOd: number | null;
+      sphOs: number | null;
+    }[] = [];
+    for (const [key, sex] of [
+      ["mother", SexEnum.female],
+      ["father", SexEnum.male],
+    ] as const) {
+      if (!(key in body)) continue;
+      const entry = body[key];
       tasks.push({
-        sex: SexEnum.female,
-        status: body.mother == null ? null : (body.mother.status as MyopiaStatusEnum),
-      });
-    }
-    if ("father" in body) {
-      tasks.push({
-        sex: SexEnum.male,
-        status: body.father == null ? null : (body.father.status as MyopiaStatusEnum),
+        sex,
+        status: entry == null ? null : (entry.status as MyopiaStatusEnum),
+        sphOd: entry?.sphOd ?? null,
+        sphOs: entry?.sphOs ?? null,
       });
     }
 
@@ -2196,6 +2208,8 @@ router.put(
                 parent_child_link_id: child.childId,
                 parent_sex: t.sex,
                 status: t.status,
+                sph_od: t.sphOd,
+                sph_os: t.sphOs,
               },
             });
           }
