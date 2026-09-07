@@ -629,27 +629,32 @@ model hospital_review {
 }
 
 model community_post {
-  id         String                @id(map: "community_post_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  user_id    String                @db.Uuid
-  title      String
-  body       String
+  id                 String                @id(map: "community_post_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id            String                @db.Uuid
+  title              String
+  body               String
   // Board category: "review" (치료후기) | "general" (일반). Defaults to
   // general so existing rows and older clients keep working.
-  category   String                @default("general")
-  created_at DateTime              @default(now()) @db.Timestamptz(6)
-  updated_at DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
-  deleted_at DateTime?             @db.Timestamptz(6)
+  category           String                @default("general")
+  // 치료후기일 때 어떤 치료의 후기인지. 치료탭의 치료별 화면이 후기를
+  // 모아 보여주려면 "review" 만으로는 부족하다. 후기가 아닌 글과 태그를
+  // 고르지 않은 기존 글이 있으므로 nullable.
+  treatment_category String?
+  created_at         DateTime              @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
+  deleted_at         DateTime?             @db.Timestamptz(6)
   // Read count. Drives the home "인기글" ranking together with likes and
   // comments — likes alone put a post with two hearts above one people are
   // actually reading.
-  view_count Int                   @default(0)
-  user       user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "community_post_user_fk")
-  comments   community_comment[]
-  likes      community_post_like[]
+  view_count         Int                   @default(0)
+  user               user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "community_post_user_fk")
+  comments           community_comment[]
+  likes              community_post_like[]
 
   @@index([created_at(sort: Desc)], map: "idx_community_post_created_at")
   @@index([user_id], map: "idx_community_post_user")
   @@index([category, created_at(sort: Desc)], map: "idx_community_post_category")
+  @@index([treatment_category, created_at(sort: Desc)], map: "idx_community_post_treatment")
 }
 
 /// One row per comment OR reply. A reply is just a comment with

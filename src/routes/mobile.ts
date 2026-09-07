@@ -2416,6 +2416,13 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
   )
     ? (categoryParam as PostCategory)
     : null;
+  // 치료탭의 치료별 화면이 그 치료의 후기만 받아 가려고 쓴다.
+  const treatmentParam = String(req.query.treatment ?? "");
+  const treatment = TREATMENT_CATEGORIES.includes(
+    treatmentParam as (typeof TREATMENT_CATEGORIES)[number],
+  )
+    ? treatmentParam
+    : null;
 
   const cursorRow = cursor
     ? await prisma.community_post.findUnique({ where: { id: cursor } })
@@ -2428,6 +2435,7 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
       deleted_at: null,
       ...notBlocked,
       ...(category != null && { category }),
+      ...(treatment != null && { treatment_category: treatment }),
       ...(cursorRow != null && {
         OR: [
           { created_at: { lt: cursorRow.created_at } },
@@ -2456,6 +2464,7 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
       id: p.id,
       title: p.title,
       category: p.category,
+      treatmentCategory: p.treatment_category,
       bodyPreview: p.body.length > 200 ? p.body.slice(0, 200) + "…" : p.body,
       author: {
         id: p.user_id,
@@ -2476,11 +2485,32 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
 const POST_CATEGORIES = ["review", "general", "chat"] as const;
 type PostCategory = (typeof POST_CATEGORIES)[number];
 
+/** 치료탭의 다섯 항목. myodoc TreatmentCategoryScreen, myopia
+ *  treatmentCategories.ts 와 같은 키를 쓴다. `dreamLens` 는 이미 그 키로
+ *  태그된 병원 프로필이 있어 그대로 두었다. */
+const TREATMENT_CATEGORIES = [
+  "dreamLens",
+  "myopiaGlasses",
+  "atropine",
+  "misight",
+  "other",
+] as const;
+
 const createPostSchema = zod.object({
   title: zod.string().trim().min(1).max(200),
   body: zod.string().trim().min(1).max(20_000),
   category: zod.enum(POST_CATEGORIES).optional(),
+  treatmentCategory: zod.enum(TREATMENT_CATEGORIES).nullish(),
 });
+
+/** 치료 태그는 치료후기에만 의미가 있다. 자유수다 글에 드림렌즈 태그가
+ *  붙으면 치료 화면의 후기 목록에 잡담이 섞인다. */
+function treatmentTagFor(
+  category: string,
+  tag: string | null | undefined,
+): string | null {
+  return category === "review" ? (tag ?? null) : null;
+}
 
 /** POST /api/mobile/community/posts */
 router.post(
@@ -2489,17 +2519,25 @@ router.post(
   validateRequestBody(createPostSchema),
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const { title, body, category } = req.body as zod.infer<
+    const { title, body, category, treatmentCategory } = req.body as zod.infer<
       typeof createPostSchema
     >;
+    const resolved = category ?? "general";
     const post = await prisma.community_post.create({
-      data: { user_id: userId, title, body, category: category ?? "general" },
+      data: {
+        user_id: userId,
+        title,
+        body,
+        category: resolved,
+        treatment_category: treatmentTagFor(resolved, treatmentCategory),
+      },
     });
     res.status(201).json({
       id: post.id,
       title: post.title,
       body: post.body,
       category: post.category,
+      treatmentCategory: post.treatment_category,
       author: await authorDTO(userId, userId),
       createdAt: post.created_at.toISOString(),
       updatedAt: post.updated_at.toISOString(),
@@ -2576,6 +2614,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
       id: p.id,
       title: p.title,
       category: p.category,
+      treatmentCategory: p.treatment_category,
       bodyPreview: p.body.replace(/\s+/g, " ").trim().slice(0, 120),
       author: {
         id: p.user_id,
@@ -2670,6 +2709,7 @@ router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
     title: post.title,
     body: post.body,
     category: post.category,
+    treatmentCategory: post.treatment_category,
     viewCount: post.view_count,
     author: {
       id: post.user_id,
@@ -2687,6 +2727,7 @@ router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
 const updatePostSchema = zod.object({
   title: zod.string().trim().min(1).max(200).optional(),
   body: zod.string().trim().min(1).max(20_000).optional(),
+  treatmentCategory: zod.enum(TREATMENT_CATEGORIES).nullish(),
 });
 
 /** PATCH /api/mobile/community/posts/:id — author only */
@@ -2705,18 +2746,31 @@ router.patch(
     if (post.user_id !== userId) {
       return res.status(403).json({ error: "not your post" });
     }
-    const data = req.body as zod.infer<typeof updatePostSchema>;
-    if (data.title == null && data.body == null) {
+    const { treatmentCategory, ...data } = req.body as zod.infer<
+      typeof updatePostSchema
+    >;
+    if (
+      data.title == null &&
+      data.body == null &&
+      treatmentCategory === undefined
+    ) {
       return res.status(400).json({ error: "nothing to update" });
     }
     const updated = await prisma.community_post.update({
       where: { id: post.id },
-      data: { ...data },
+      data: {
+        ...data,
+        // 게시판은 수정으로 바뀌지 않으므로 저장된 category 로 판단한다.
+        ...(treatmentCategory !== undefined && {
+          treatment_category: treatmentTagFor(post.category, treatmentCategory),
+        }),
+      },
     });
     res.json({
       id: updated.id,
       title: updated.title,
       body: updated.body,
+      treatmentCategory: updated.treatment_category,
       updatedAt: updated.updated_at.toISOString(),
     });
   },
