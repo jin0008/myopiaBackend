@@ -14,7 +14,7 @@ import { isPatientInHospital } from "../lib/authorization";
 import bcrypt from "bcrypt";
 import { hashRegistrationNumber } from "../lib/hash";
 import { auditContextFromRequest, writeAuditLog } from "../services/audit";
-import { createLinkInvite } from "../services/linkInvite";
+import { createLinkInvite, sendInviteEmail } from "../services/linkInvite";
 
 const router = express.Router();
 
@@ -616,10 +616,16 @@ router.delete("/:patientId", hospitalAdminRequired, async (req, res, next) => {
  * 등록번호 방식은 링크를 잃어버린 사람을 위해 남겨 둔다.               *
  * ------------------------------------------------------------------ */
 
+const linkInviteSchema = zod.object({
+  /** 있으면 그 주소로 메일을 보낸다. 없으면 링크·QR 만 돌려준다. */
+  email: zod.string().trim().email().max(254).optional(),
+});
+
 /** POST /api/patient/:patientId/link-invite — 자기 병원 환자만. */
 router.post(
   "/:patientId/link-invite",
   approvedProfessionalRequired,
+  validateRequestBody(linkInviteSchema),
   async (req, res) => {
     const patientId = String(req.params.patientId);
     const hospitalId = req.healthcare_professional!.hospital_id;
@@ -635,11 +641,35 @@ router.post(
       data: { revoked_at: new Date() },
     });
 
+    const body = req.body as zod.infer<typeof linkInviteSchema>;
+    const hospital = await prisma.hospital.findUnique({
+      where: { id: hospitalId },
+      select: { name: true },
+    });
+
     const invite = await createLinkInvite({
       hospitalId,
       patientId,
       createdBy: req.healthcare_professional!.user_id,
+      sentTo: body.email ?? null,
     });
+
+    // 메일이 실패해도 링크는 이미 유효하다. 발급을 되돌리면 화면에 QR 도
+    // 못 띄우게 되는데, 그건 메일보다 흔히 쓰는 경로다.
+    let emailSent = false;
+    if (body.email) {
+      try {
+        await sendInviteEmail({
+          to: body.email,
+          hospitalName: hospital?.name ?? "",
+          url: invite.url,
+          expiresAt: invite.expiresAt,
+        });
+        emailSent = true;
+      } catch (e) {
+        console.error("[link-invite] email failed", e);
+      }
+    }
 
     writeAuditLog({
       ...auditContextFromRequest(req),
@@ -652,6 +682,9 @@ router.post(
     res.status(201).json({
       url: invite.url,
       expiresAt: invite.expiresAt.toISOString(),
+      // 보냈다고 말하려면 실제로 나갔어야 한다. 실패했는데 "전송됨"이라고
+      // 하면 병원은 기다리고 부모는 못 받는다.
+      emailSent,
     });
   },
 );

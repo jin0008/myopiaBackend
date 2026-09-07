@@ -20,6 +20,8 @@ CREATE TABLE "child_link_invite" (
   "used_at"     TIMESTAMPTZ(6),
   "used_by"     UUID,
   "revoked_at"  TIMESTAMPTZ(6),
+  -- 어디로 보냈는지. 재발송하거나 "안 왔다"는 문의를 받을 때 필요하다.
+  "sent_to"     TEXT,
   CONSTRAINT "child_link_invite_pkey" PRIMARY KEY ("id"),
   CONSTRAINT "child_link_invite_hospital_fk" FOREIGN KEY ("hospital_id")
     REFERENCES "hospital"("id") ON DELETE CASCADE,

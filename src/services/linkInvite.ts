@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import prisma from "../lib/prisma";
+import { sendEmail } from "./email";
 
 /**
  * 병원이 부모에게 건네는 일회용 연동 초대.
@@ -34,6 +35,7 @@ export async function createLinkInvite(params: {
   hospitalId: string;
   patientId: string;
   createdBy: string;
+  sentTo?: string | null;
 }): Promise<CreatedInvite> {
   // 32바이트. 대입으로 맞힐 수 있는 크기가 아니다.
   const token = crypto.randomBytes(32).toString("base64url");
@@ -46,6 +48,7 @@ export async function createLinkInvite(params: {
       token_hash: hashInviteToken(token),
       created_by: params.createdBy,
       expires_at: expiresAt,
+      sent_to: params.sentTo ?? null,
     },
   });
 
@@ -77,4 +80,48 @@ export async function resolveInvite(token: string) {
     return { problem: "expired" as const };
   }
   return { invite };
+}
+
+/** 초대 메일.
+ *
+ *  받는 사람은 병원에서 방금 안내를 들은 부모다. 무엇을 눌러야 하는지가
+ *  한눈에 보여야 하고, 링크가 언제까지 유효한지를 밝혀야 한다.
+ *
+ *  아이 이름이나 등록번호는 넣지 않는다. 메일은 잘못 간 주소에 도착할 수
+ *  있고, 그때 누구의 진료 기록인지 알려주게 된다.
+ */
+export async function sendInviteEmail(params: {
+  to: string;
+  hospitalName: string;
+  url: string;
+  expiresAt: Date;
+}): Promise<void> {
+  const until = params.expiresAt.toISOString().slice(0, 10);
+  const html = `
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;
+                max-width:520px;margin:0 auto;padding:32px 24px;color:#111">
+      <p style="font-size:13px;color:#666;margin:0 0 8px">마이오닥</p>
+      <h1 style="font-size:20px;margin:0 0 16px">아이 진료 기록 연동 안내</h1>
+      <p style="font-size:15px;line-height:1.7;margin:0 0 24px">
+        <b>${escapeHtml(params.hospitalName)}</b>에서 아이의 진료 기록을
+        마이오닥 앱에 연동할 수 있는 링크를 보냈습니다.
+        아래 버튼을 누르면 앱에서 연동이 진행됩니다.
+      </p>
+      <a href="${params.url}"
+         style="display:inline-block;background:#1a73e8;color:#fff;text-decoration:none;
+                padding:13px 24px;border-radius:8px;font-weight:700;font-size:15px">
+        연동하기
+      </a>
+      <p style="font-size:13px;color:#666;line-height:1.7;margin:24px 0 0">
+        이 링크는 <b>${until}</b>까지 유효하며 한 번만 사용할 수 있습니다.<br />
+        본인이 요청하지 않았다면 이 메일을 무시하셔도 됩니다.
+      </p>
+    </div>`;
+  await sendEmail([params.to], "[마이오닥] 아이 진료 기록 연동 안내", html);
+}
+
+function escapeHtml(v: string): string {
+  return v.replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
+  );
 }

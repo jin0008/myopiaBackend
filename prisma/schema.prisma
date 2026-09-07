@@ -1054,6 +1054,8 @@ model child_link_invite {
   used_at     DateTime? @db.Timestamptz(6)
   used_by     String?   @db.Uuid
   revoked_at  DateTime? @db.Timestamptz(6)
+  /// 어디로 보냈는지. 재발송하거나 "안 왔다"는 문의를 받을 때 필요하다.
+  sent_to     String?
 
   hospital hospital @relation(fields: [hospital_id], references: [id], onDelete: Cascade)
   patient  patient  @relation(fields: [patient_id], references: [id], onDelete: Cascade)
