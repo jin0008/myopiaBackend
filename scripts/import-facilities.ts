@@ -14,43 +14,26 @@ import fs from "fs";
 import path from "path";
 
 import prisma from "../src/lib/prisma";
+import { parseCsv } from "../src/lib/csv";
+import { areaCodeFor, normalizePhone } from "../src/lib/phone";
 
 const DIR = path.join(__dirname, "../src/assets/facilities");
 
-/** 따옴표로 감싼 칸과 그 안의 쉼표를 다룬다. */
-function parseCsv(text: string): Record<string, string>[] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (quoted) {
-      if (ch === '"') {
-        if (text[i + 1] === '"') {
-          cell += '"';
-          i++;
-        } else quoted = false;
-      } else cell += ch;
-      continue;
-    }
-    if (ch === '"') quoted = true;
-    else if (ch === ",") {
-      row.push(cell);
-      cell = "";
-    } else if (ch === "\n") {
-      row.push(cell);
-      rows.push(row);
-      row = [];
-      cell = "";
-    } else if (ch !== "\r") cell += ch;
-  }
-  if (cell !== "" || row.length) {
-    row.push(cell);
-    rows.push(row);
-  }
-  const [head, ...body] = rows.filter((r) => r.some((c) => c !== ""));
-  return body.map((r) => Object.fromEntries(head.map((h, i) => [h, r[i] ?? ""])));
+
+/** "서울특별시 강남구 ..." 에서 지역번호를 고른다. */
+function areaFromAddress(addr: string): string | null {
+  const m = /^(\S+?(?:특별시|광역시|특별자치시|특별자치도|도))\s+(\S+)/.exec(addr ?? "");
+  if (m == null) return null;
+  const sido = m[1]
+    .replace(/(특별시|광역시|특별자치시|특별자치도)$/, "")
+    .replace(/^(강원|전북|제주)특별자치도$/, "$1")
+    .replace(/도$/, "");
+  const short =
+    { 서울: "서울", 부산: "부산", 대구: "대구", 인천: "인천", 광주: "전남광주",
+      대전: "대전", 울산: "울산", 세종: "세종", 경기: "경기", 강원: "강원",
+      충청북: "충북", 충청남: "충남", 전라북: "전북", 전라남: "전남",
+      경상북: "경북", 경상남: "경남", 제주: "제주" }[sido] ?? sido;
+  return areaCodeFor(short, m[2]);
 }
 
 function int(v: string): number | null {
@@ -69,7 +52,9 @@ async function main() {
       sido: c.sido,
       sigungu: c.sigungu,
       address: c.address,
-      phone: c.phone || null,
+      // 자료의 번호는 제각각이다. 한 모양으로 맞추되 지역번호는 확신이
+      // 설 때만 붙인다(lib/phone.ts).
+      phone: normalizePhone(c.phone || null, areaCodeFor(c.sido, c.sigungu)),
       homepage: c.homepage || null,
       lat: Number(c.lat),
       lng: Number(c.lng),
@@ -101,7 +86,8 @@ async function main() {
     const data = {
       name: s.name,
       address: s.address,
-      phone: s.phone || null,
+      // 안경점 자료에는 시도 칸이 없어 주소 앞머리로 가른다.
+      phone: normalizePhone(s.phone || null, areaFromAddress(s.address)),
       lat: Number(s.lat),
       lng: Number(s.lng),
       refractometer: int(s.refractometer) ?? 0,
