@@ -4743,7 +4743,9 @@ router.get("/facilities", async (req, res) => {
     kindParam === "eye" || kindParam === "optical" ? kindParam : "both";
   const fromDirectory = await directoryFacilities(lat, lng, radius, kind);
   if (fromDirectory.length > 0) {
-    res.json({ facilities: fromDirectory, source: "directory" });
+    // 키 이름은 카카오 경로와 같아야 한다. 앱은 places 를 읽는데 명부만
+    // facilities 로 보내고 있어, 200 을 받고도 목록이 늘 비었다.
+    res.json({ places: fromDirectory, source: "directory" });
     return;
   }
 
