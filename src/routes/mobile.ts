@@ -782,6 +782,18 @@ router.delete("/auth/me", requireMobileAuth, async (req, res) => {
  * Children                                                            *
  * ------------------------------------------------------------------ */
 
+/**
+ * 환자의 생년월일을 날짜만 남긴다.
+ *
+ * patient.encrypted_date_of_birth 에는 "2015-03-12" 로 들어간 것도 있고
+ * "2015-03-12T00:00:00.000Z" 로 들어간 것도 있다(의사 화면도 표시할 때
+ * split("T") 로 자른다). 그대로 비교하면 시각이 붙은 환자는 아이와 절대
+ * 맞지 않아, 생년월일이 같은데도 연동이 거부됐다.
+ */
+function dateOnly(v: string): string {
+  return v.slice(0, 10);
+}
+
 function serializeDateOnly(d: Date): string {
   // YYYY-MM-DD, UTC-safe for DATE columns.
   return d.toISOString().slice(0, 10);
@@ -1672,7 +1684,7 @@ router.post(
     // Verify DOB + sex match what the parent entered for the child.
     const patientDOB = await decryptSymmetric(patient.encrypted_date_of_birth);
     const childDOB = serializeDateOnly(child.date_of_birth);
-    if (patientDOB !== childDOB || patient.sex !== child.sex) {
+    if (dateOnly(patientDOB) !== dateOnly(childDOB) || patient.sex !== child.sex) {
       res.status(404).json({ error: "no matching record", code: "not_found" });
       return;
     }
@@ -1772,7 +1784,8 @@ router.get("/link-invites/:token", requireMobileAuth, async (req, res) => {
   const dob = await decryptSymmetric(r.invite.patient.encrypted_date_of_birth);
   res.json({
     hospitalName: r.invite.hospital.name,
-    dateOfBirth: dob,
+    // 날짜만. 앱이 이 값으로 아이를 만들기도 하므로 시각이 섞이면 안 된다.
+    dateOfBirth: dateOnly(dob),
     sex: r.invite.patient.sex,
     expiresAt: r.invite.expires_at.toISOString(),
   });
@@ -1809,7 +1822,7 @@ router.post(
       invite.patient.encrypted_date_of_birth,
     );
     if (
-      patientDOB !== serializeDateOnly(child.date_of_birth) ||
+      dateOnly(patientDOB) !== serializeDateOnly(child.date_of_birth) ||
       invite.patient.sex !== child.sex
     ) {
       return res.status(409).json({
