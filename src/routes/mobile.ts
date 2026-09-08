@@ -4635,6 +4635,7 @@ async function directoryFacilities(
   lat: number,
   lng: number,
   radiusM: number,
+  kind: "eye" | "optical" | "both",
 ): Promise<FacilityDTO[]> {
   const km = radiusM / 1000;
   const dLat = km / 111;
@@ -4650,15 +4651,17 @@ async function directoryFacilities(
   // 하버사인으로 다시 잰다.
   const cosLat = Math.max(Math.cos((lat * Math.PI) / 180), 0.1);
   const order = { lat, lng, cosLat, limit: PER_KIND_LIMIT };
+  const wantEye = kind !== "optical";
+  const wantOptical = kind !== "eye";
   const [clinics, shops] = await Promise.all([
-    prisma.$queryRaw<EyeClinicRow[]>`
+    !wantEye ? [] : prisma.$queryRaw<EyeClinicRow[]>`
       SELECT * FROM "eye_clinic"
       WHERE lat BETWEEN ${box.lat.gte} AND ${box.lat.lte}
         AND lng BETWEEN ${box.lng.gte} AND ${box.lng.lte}
       ORDER BY (lat - ${order.lat}) ^ 2
              + ((lng - ${order.lng}) * ${order.cosLat}) ^ 2
       LIMIT ${order.limit}`,
-    prisma.$queryRaw<OpticalShopRow[]>`
+    !wantOptical ? [] : prisma.$queryRaw<OpticalShopRow[]>`
       SELECT * FROM "optical_shop"
       WHERE lat BETWEEN ${box.lat.gte} AND ${box.lat.lte}
         AND lng BETWEEN ${box.lng.gte} AND ${box.lng.lte}
@@ -4732,7 +4735,13 @@ router.get("/facilities", async (req, res) => {
   // 명부가 먼저다. 심평원 진료과목으로 확정된 목록이라, 상호명으로 안과를
   // 추측하던 카카오 결과보다 정확하다. 명부가 아직 비어 있는 배포에서는
   // 카카오로 떨어진다.
-  const fromDirectory = await directoryFacilities(lat, lng, radius);
+  // 종류를 서버가 알아야 한다. 섞어서 가까운 순으로 자르면 안경점이
+  // 훨씬 촘촘해 자리를 다 먹는다 - 서울시청 반경 2km 에서 80곳 중 안경점이
+  // 77곳이었고, 안과 찾기 화면에는 안과가 3곳만 남았다.
+  const kindParam = String(req.query.kind ?? "");
+  const kind =
+    kindParam === "eye" || kindParam === "optical" ? kindParam : "both";
+  const fromDirectory = await directoryFacilities(lat, lng, radius, kind);
   if (fromDirectory.length > 0) {
     res.json({ facilities: fromDirectory, source: "directory" });
     return;
