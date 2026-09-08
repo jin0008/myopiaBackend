@@ -4514,14 +4514,69 @@ async function kakaoKeywordSearch(
   return data.documents ?? [];
 }
 
-router.get("/facilities", async (req, res) => {
-  if (!KAKAO_REST_KEY) {
-    res
-      .status(503)
-      .json({ error: "facility search unavailable", code: "no_kakao_key" });
-    return;
-  }
+/**
+ * 명부에서 반경 안의 안과·안경점을 고른다.
+ *
+ * 위도 1도는 어디서나 약 111km 지만 경도 1도는 위도에 따라 줄어든다.
+ * 사각형으로 먼저 크게 자르고(인덱스가 듣는다) 그 다음 실제 거리로
+ * 거른다 - 사각형만으로 자르면 모서리 쪽이 반경 밖인데도 들어온다.
+ */
+async function directoryFacilities(
+  lat: number,
+  lng: number,
+  radiusM: number,
+): Promise<FacilityDTO[]> {
+  const km = radiusM / 1000;
+  const dLat = km / 111;
+  const dLng = km / (111 * Math.max(Math.cos((lat * Math.PI) / 180), 0.1));
+  const box = {
+    lat: { gte: lat - dLat, lte: lat + dLat },
+    lng: { gte: lng - dLng, lte: lng + dLng },
+  };
 
+  const [clinics, shops] = await Promise.all([
+    prisma.eye_clinic.findMany({ where: box, take: 300 }),
+    prisma.optical_shop.findMany({ where: box, take: 300 }),
+  ]);
+
+  const out: FacilityDTO[] = [];
+  for (const c of clinics) {
+    const d = haversineKm(lat, lng, c.lat, c.lng);
+    if (d > km) continue;
+    out.push({
+      id: `hira:${c.ykiho}`,
+      name: c.name,
+      category: c.kind as FacilityCategory,
+      address: c.address,
+      roadAddress: c.address,
+      lat: c.lat,
+      lng: c.lng,
+      phone: c.phone,
+      distanceKm: Number(d.toFixed(2)),
+      placeUrl: c.homepage,
+    });
+  }
+  for (const sh of shops) {
+    const d = haversineKm(lat, lng, sh.lat, sh.lng);
+    if (d > km) continue;
+    out.push({
+      id: `opt:${sh.license_no}`,
+      name: sh.name,
+      category: "optical",
+      address: sh.address,
+      roadAddress: sh.address,
+      lat: sh.lat,
+      lng: sh.lng,
+      phone: sh.phone,
+      distanceKm: Number(d.toFixed(2)),
+      placeUrl: null,
+    });
+  }
+  out.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
+  return out;
+}
+
+router.get("/facilities", async (req, res) => {
   const lat = parseOptionalFloat(req.query.lat);
   const lng = parseOptionalFloat(req.query.lng);
   if (lat == null || lng == null) {
@@ -4533,6 +4588,22 @@ router.get("/facilities", async (req, res) => {
     Math.max(parseOptionalFloat(req.query.radius) ?? 10000, 500),
     20000,
   );
+
+  // 명부가 먼저다. 심평원 진료과목으로 확정된 목록이라, 상호명으로 안과를
+  // 추측하던 카카오 결과보다 정확하다. 명부가 아직 비어 있는 배포에서는
+  // 카카오로 떨어진다.
+  const fromDirectory = await directoryFacilities(lat, lng, radius);
+  if (fromDirectory.length > 0) {
+    res.json({ facilities: fromDirectory, source: "directory" });
+    return;
+  }
+
+  if (!KAKAO_REST_KEY) {
+    res
+      .status(503)
+      .json({ error: "facility search unavailable", code: "no_kakao_key" });
+    return;
+  }
 
   const byId = new Map<string, FacilityDTO>();
   const add = (doc: KakaoDoc, category: FacilityCategory) => {
