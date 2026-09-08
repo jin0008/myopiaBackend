@@ -24,8 +24,12 @@ CREATE TABLE "eye_clinic" (
   "homepage"   TEXT,
   "lat"        DOUBLE PRECISION NOT NULL,
   "lng"        DOUBLE PRECISION NOT NULL,
-  -- 기관 전체 의사 수. 안과 전문의 수는 진료과목 API 를 따로 받아야 한다.
+  -- 기관 전체 의사 수. 안과와 무관한 인원이 대부분이라 화면에는 안 쓴다.
   "doctors"    INTEGER,
+  -- 안과 전문의 수(진료과목 API). 이쪽이 부모에게 뜻이 있는 숫자다.
+  -- 상주 전문의만 세는 듯해 0 으로 오는 곳이 있다 - 화면에서는 0 을
+  -- 감춘다. 틀릴 수 있는 숫자로 병원을 깎아내리면 안 된다.
+  "eye_doctors" INTEGER,
   "opened_on"  TEXT,
   "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
   CONSTRAINT "eye_clinic_pkey" PRIMARY KEY ("id")

@@ -1018,22 +1018,24 @@ model email_verification {
 /// 병원 연동이 있어야 쓸 수 있어, 연동 없는 아이는 저장할 곳이 없었다.
 /// 전국 안과 명부(심평원 진료과목 코드 12).
 model eye_clinic {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   /// 심평원 요양기호. 갱신할 때 같은 기관을 알아보는 열쇠다.
-  ykiho      String   @unique
-  name       String
+  ykiho       String   @unique
+  name        String
   /// "university" | "general" | "clinic"
-  kind       String
-  sido       String
-  sigungu    String
-  address    String
-  phone      String?
-  homepage   String?
-  lat        Float
-  lng        Float
-  doctors    Int?
-  opened_on  String?
-  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  kind        String
+  sido        String
+  sigungu     String
+  address     String
+  phone       String?
+  homepage    String?
+  lat         Float
+  lng         Float
+  doctors     Int?
+  /// 안과 전문의 수. 0 으로 오는 곳이 있어 화면에서는 감춘다.
+  eye_doctors Int?
+  opened_on   String?
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
 
   @@index([lat, lng])
   @@index([sido, sigungu])

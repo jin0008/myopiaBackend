@@ -74,6 +74,7 @@ async function main() {
       lat: Number(c.lat),
       lng: Number(c.lng),
       doctors: int(c.doctors),
+      eye_doctors: int(c.eyeDoctors),
       opened_on: c.openedOn || null,
       updated_at: new Date(),
     };

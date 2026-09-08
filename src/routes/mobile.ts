@@ -4394,6 +4394,15 @@ type FacilityDTO = {
   phone: string | null;
   distanceKm: number | null;
   placeUrl: string | null;
+
+  /* 명부에서 온 것에만 붙는다. 카카오 결과에는 없다. */
+  /** 안과 전문의 수. 0 이나 미상이면 안 보낸다 - 화면이 감출지 말지를
+   *  다시 판단하지 않아도 되게, 없는 것은 아예 없는 채로 준다. */
+  eyeDoctors?: number;
+  /** 자동굴절검사기 대수. 아이 시력을 잴 수 있는 곳인지가 여기서 갈린다. */
+  refractometer?: number;
+  /** 개원·인허가 연도. */
+  since?: number;
 };
 
 /** One raw Kakao keyword-search document (only the fields we use). */
@@ -4514,6 +4523,13 @@ async function kakaoKeywordSearch(
   return data.documents ?? [];
 }
 
+/** "19960730" 이나 "2026-09-03" 에서 연도만. 형식이 자료마다 다르다. */
+function yearOf(v: string | null): { since?: number } {
+  if (!v) return {};
+  const y = Number.parseInt(v.slice(0, 4), 10);
+  return Number.isFinite(y) && y >= 1900 && y <= 2100 ? { since: y } : {};
+}
+
 /**
  * 명부에서 반경 안의 안과·안경점을 고른다.
  *
@@ -4554,6 +4570,10 @@ async function directoryFacilities(
       phone: c.phone,
       distanceKm: Number(d.toFixed(2)),
       placeUrl: c.homepage,
+      ...(c.eye_doctors != null && c.eye_doctors > 0
+        ? { eyeDoctors: c.eye_doctors }
+        : {}),
+      ...yearOf(c.opened_on),
     });
   }
   for (const sh of shops) {
@@ -4570,6 +4590,8 @@ async function directoryFacilities(
       phone: sh.phone,
       distanceKm: Number(d.toFixed(2)),
       placeUrl: null,
+      ...(sh.refractometer > 0 ? { refractometer: sh.refractometer } : {}),
+      ...yearOf(sh.licensed_on),
     });
   }
   out.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
