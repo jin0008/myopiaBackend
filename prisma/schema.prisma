@@ -1016,6 +1016,57 @@ model email_verification {
 /// 연동됐을 때 어느 쪽이 병원 것인지 구분할 수 있어야 한다.
 /// 부모가 직접 넣는 근거리·야외 활동. patient 에 매달린 기존 테이블은
 /// 병원 연동이 있어야 쓸 수 있어, 연동 없는 아이는 저장할 곳이 없었다.
+/// 전국 안과 명부(심평원 진료과목 코드 12).
+model eye_clinic {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// 심평원 요양기호. 갱신할 때 같은 기관을 알아보는 열쇠다.
+  ykiho       String   @unique
+  name        String
+  /// "university" | "general" | "clinic"
+  kind        String
+  sido        String
+  sigungu     String
+  address     String
+  phone       String?
+  homepage    String?
+  lat         Float
+  lng         Float
+  doctors     Int?
+  /// 안과 전문의 수. 0 으로 오는 곳이 있어 화면에서는 감춘다.
+  eye_doctors Int?
+  opened_on   String?
+  /// 요일별 진료시간. {"0":["0900","1800"], ...} 월=0. 심평원에 신고한
+  /// 곳만 있어 의원은 셋 중 하나뿐이다.
+  hours       Json?
+  lunch       String?
+  /// 접수 마감. 진료 종료보다 이른 곳이 많다.
+  recv        String?
+  /// "문선빌딩 4층" 같은 층·건물 안내.
+  place       String?
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([lat, lng])
+  @@index([sido, sigungu])
+}
+
+/// 전국 안경업소 명부(지자체 인허가).
+model optical_shop {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  license_no    String   @unique
+  name          String
+  address       String
+  phone         String?
+  lat           Float
+  lng           Float
+  /// 자동굴절검사기 대수.
+  refractometer Int      @default(0)
+  eye_chart     Int      @default(0)
+  licensed_on   String?
+  updated_at    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([lat, lng])
+}
+
 model child_activity_log {
   id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   parent_child_link_id String   @db.Uuid

@@ -4394,6 +4394,25 @@ type FacilityDTO = {
   phone: string | null;
   distanceKm: number | null;
   placeUrl: string | null;
+
+  /* 명부에서 온 것에만 붙는다. 카카오 결과에는 없다. */
+  /** 안과 전문의 수. 0 이나 미상이면 안 보낸다 - 화면이 감출지 말지를
+   *  다시 판단하지 않아도 되게, 없는 것은 아예 없는 채로 준다. */
+  eyeDoctors?: number;
+  /** 자동굴절검사기 대수. 아이 시력을 잴 수 있는 곳인지가 여기서 갈린다. */
+  refractometer?: number;
+  /** 개원·인허가 연도. */
+  since?: number;
+  /** 요일별 진료시간. 신고한 곳만 있다. */
+  hours?: Record<string, [string, string]>;
+  /** 지금 진료 중인지. 진료시간을 모르면 아예 안 보낸다 -
+   *  false 로 보내면 "닫혔다"로 읽히는데, 실은 모르는 것이다. */
+  openNow?: boolean;
+  lunch?: string;
+  /** 접수 마감. 진료 종료보다 이른 곳이 많아 따로 준다. */
+  recv?: string;
+  /** "문선빌딩 4층" 같은 층·건물 안내. */
+  place?: string;
 };
 
 /** One raw Kakao keyword-search document (only the fields we use). */
@@ -4514,14 +4533,173 @@ async function kakaoKeywordSearch(
   return data.documents ?? [];
 }
 
-router.get("/facilities", async (req, res) => {
-  if (!KAKAO_REST_KEY) {
-    res
-      .status(503)
-      .json({ error: "facility search unavailable", code: "no_kakao_key" });
-    return;
-  }
+/** 종류마다 가까운 순으로 이만큼 읽고, 실제 거리로 거른 뒤 합쳐서 자른다. */
+const PER_KIND_LIMIT = 200;
+const TOTAL_LIMIT = 80;
 
+type EyeClinicRow = {
+  ykiho: string;
+  name: string;
+  kind: string;
+  address: string;
+  phone: string | null;
+  homepage: string | null;
+  lat: number;
+  lng: number;
+  eye_doctors: number | null;
+  opened_on: string | null;
+  hours: unknown;
+  lunch: string | null;
+  recv: string | null;
+  place: string | null;
+};
+
+type OpticalShopRow = {
+  license_no: string;
+  name: string;
+  address: string;
+  phone: string | null;
+  lat: number;
+  lng: number;
+  refractometer: number;
+  licensed_on: string | null;
+};
+
+/**
+ * 지금 진료 중인지.
+ *
+ * 모르면 undefined 다. false 로 답하면 화면이 "닫힘"으로 그리는데, 심평원에
+ * 진료시간을 신고한 안과가 셋 중 하나뿐이라 그 대부분이 억울하게 닫힌
+ * 것으로 보인다.
+ *
+ * 서버 시각이 곧 한국 시각이라는 보장이 없어 KST 로 맞춰 읽는다.
+ */
+function openNowIn(hours: unknown): boolean | undefined {
+  if (hours == null || typeof hours !== "object") return undefined;
+  const table = hours as Record<string, unknown>;
+  const kst = new Date(Date.now() + 9 * 3600 * 1000);
+  // getUTC* 를 쓰는 이유는 위에서 이미 9시간을 더했기 때문이다.
+  const day = (kst.getUTCDay() + 6) % 7; // 월=0
+  const slot = table[String(day)];
+  if (!Array.isArray(slot) || slot.length < 2) return false;
+  const [from, to] = slot as [string, string];
+  const now = kst.getUTCHours() * 100 + kst.getUTCMinutes();
+  const a = Number.parseInt(from, 10);
+  const b = Number.parseInt(to, 10);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return undefined;
+  return now >= a && now <= b;
+}
+
+/** 진료시간과 지금 진료 중인지. 없으면 두 필드 다 안 붙인다. */
+function hoursFields(hours: unknown) {
+  if (hours == null) return {};
+  const open = openNowIn(hours);
+  return {
+    hours: hours as Record<string, [string, string]>,
+    ...(open !== undefined ? { openNow: open } : {}),
+  };
+}
+
+/** "19960730" 이나 "2026-09-03" 에서 연도만. 형식이 자료마다 다르다. */
+function yearOf(v: string | null): { since?: number } {
+  if (!v) return {};
+  const y = Number.parseInt(v.slice(0, 4), 10);
+  return Number.isFinite(y) && y >= 1900 && y <= 2100 ? { since: y } : {};
+}
+
+/**
+ * 명부에서 반경 안의 안과·안경점을 고른다.
+ *
+ * 위도 1도는 어디서나 약 111km 지만 경도 1도는 위도에 따라 줄어든다.
+ * 사각형으로 먼저 크게 자르고(인덱스가 듣는다) 그 다음 실제 거리로
+ * 거른다 - 사각형만으로 자르면 모서리 쪽이 반경 밖인데도 들어온다.
+ */
+async function directoryFacilities(
+  lat: number,
+  lng: number,
+  radiusM: number,
+): Promise<FacilityDTO[]> {
+  const km = radiusM / 1000;
+  const dLat = km / 111;
+  const dLng = km / (111 * Math.max(Math.cos((lat * Math.PI) / 180), 0.1));
+  const box = {
+    lat: { gte: lat - dLat, lte: lat + dLat },
+    lng: { gte: lng - dLng, lte: lng + dLng },
+  };
+
+  // 가까운 것부터 자른다. 그냥 take 로 자르면 상자 안에서 아무 300개가
+  // 뽑혀, 서울처럼 밀집한 곳에서는 바로 옆 안과가 목록에 없을 수 있다.
+  // 정렬은 평면 근사로 충분하다 - 순서만 정하면 되고, 실제 거리는 아래에서
+  // 하버사인으로 다시 잰다.
+  const cosLat = Math.max(Math.cos((lat * Math.PI) / 180), 0.1);
+  const order = { lat, lng, cosLat, limit: PER_KIND_LIMIT };
+  const [clinics, shops] = await Promise.all([
+    prisma.$queryRaw<EyeClinicRow[]>`
+      SELECT * FROM "eye_clinic"
+      WHERE lat BETWEEN ${box.lat.gte} AND ${box.lat.lte}
+        AND lng BETWEEN ${box.lng.gte} AND ${box.lng.lte}
+      ORDER BY (lat - ${order.lat}) ^ 2
+             + ((lng - ${order.lng}) * ${order.cosLat}) ^ 2
+      LIMIT ${order.limit}`,
+    prisma.$queryRaw<OpticalShopRow[]>`
+      SELECT * FROM "optical_shop"
+      WHERE lat BETWEEN ${box.lat.gte} AND ${box.lat.lte}
+        AND lng BETWEEN ${box.lng.gte} AND ${box.lng.lte}
+      ORDER BY (lat - ${order.lat}) ^ 2
+             + ((lng - ${order.lng}) * ${order.cosLat}) ^ 2
+      LIMIT ${order.limit}`,
+  ]);
+
+  const out: FacilityDTO[] = [];
+  for (const c of clinics) {
+    const d = haversineKm(lat, lng, c.lat, c.lng);
+    if (d > km) continue;
+    out.push({
+      id: `hira:${c.ykiho}`,
+      name: c.name,
+      category: c.kind as FacilityCategory,
+      address: c.address,
+      roadAddress: c.address,
+      lat: c.lat,
+      lng: c.lng,
+      phone: c.phone,
+      distanceKm: Number(d.toFixed(2)),
+      placeUrl: c.homepage,
+      ...(c.eye_doctors != null && c.eye_doctors > 0
+        ? { eyeDoctors: c.eye_doctors }
+        : {}),
+      ...yearOf(c.opened_on),
+      ...hoursFields(c.hours),
+      ...(c.lunch ? { lunch: c.lunch } : {}),
+      ...(c.recv ? { recv: c.recv } : {}),
+      ...(c.place ? { place: c.place } : {}),
+    });
+  }
+  for (const sh of shops) {
+    const d = haversineKm(lat, lng, sh.lat, sh.lng);
+    if (d > km) continue;
+    out.push({
+      id: `opt:${sh.license_no}`,
+      name: sh.name,
+      category: "optical",
+      address: sh.address,
+      roadAddress: sh.address,
+      lat: sh.lat,
+      lng: sh.lng,
+      phone: sh.phone,
+      distanceKm: Number(d.toFixed(2)),
+      placeUrl: null,
+      ...(sh.refractometer > 0 ? { refractometer: sh.refractometer } : {}),
+      ...yearOf(sh.licensed_on),
+    });
+  }
+  out.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
+  // 화면은 목록을 스크롤해 훑는 자리다. 반경 안이 수백 곳이어도 그만큼
+  // 내려보내면 목록만 무거워진다.
+  return out.slice(0, TOTAL_LIMIT);
+}
+
+router.get("/facilities", async (req, res) => {
   const lat = parseOptionalFloat(req.query.lat);
   const lng = parseOptionalFloat(req.query.lng);
   if (lat == null || lng == null) {
@@ -4533,6 +4711,22 @@ router.get("/facilities", async (req, res) => {
     Math.max(parseOptionalFloat(req.query.radius) ?? 10000, 500),
     20000,
   );
+
+  // 명부가 먼저다. 심평원 진료과목으로 확정된 목록이라, 상호명으로 안과를
+  // 추측하던 카카오 결과보다 정확하다. 명부가 아직 비어 있는 배포에서는
+  // 카카오로 떨어진다.
+  const fromDirectory = await directoryFacilities(lat, lng, radius);
+  if (fromDirectory.length > 0) {
+    res.json({ facilities: fromDirectory, source: "directory" });
+    return;
+  }
+
+  if (!KAKAO_REST_KEY) {
+    res
+      .status(503)
+      .json({ error: "facility search unavailable", code: "no_kakao_key" });
+    return;
+  }
 
   const byId = new Map<string, FacilityDTO>();
   const add = (doc: KakaoDoc, category: FacilityCategory) => {
