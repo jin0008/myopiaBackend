@@ -7,13 +7,14 @@ import {
   loginRequired,
   validateRequestBody,
 } from "../lib/middlewares";
-import { myopia_status, sex } from "@prisma/client";
+import { audit_action, myopia_status, sex } from "@prisma/client";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { decryptSymmetric, encryptSymmetric } from "../services/encrpytion";
 import { isPatientInHospital } from "../lib/authorization";
 import bcrypt from "bcrypt";
 import { hashRegistrationNumber } from "../lib/hash";
 import { auditContextFromRequest, writeAuditLog } from "../services/audit";
+import { createLinkInvite, sendInviteEmail } from "../services/linkInvite";
 
 const router = express.Router();
 
@@ -606,5 +607,86 @@ router.delete("/:patientId", hospitalAdminRequired, async (req, res, next) => {
       next(e);
     });
 });
+
+/* ------------------------------------------------------------------ *
+ * 연동 초대                                                           *
+ *                                                                    *
+ * 부모가 병원 등록번호를 입력해 연동하던 방식은 등록번호가 연속된      *
+ * 숫자라 대입이 가능했다. 병원이 일회용 링크를 건네는 쪽으로 옮긴다.   *
+ * 등록번호 방식은 링크를 잃어버린 사람을 위해 남겨 둔다.               *
+ * ------------------------------------------------------------------ */
+
+const linkInviteSchema = zod.object({
+  /** 있으면 그 주소로 메일을 보낸다. 없으면 링크·QR 만 돌려준다. */
+  email: zod.string().trim().email().max(254).optional(),
+});
+
+/** POST /api/patient/:patientId/link-invite — 자기 병원 환자만. */
+router.post(
+  "/:patientId/link-invite",
+  approvedProfessionalRequired,
+  validateRequestBody(linkInviteSchema),
+  async (req, res) => {
+    const patientId = String(req.params.patientId);
+    const hospitalId = req.healthcare_professional!.hospital_id;
+    if (!(await isPatientInHospital(patientId, hospitalId))) {
+      res.sendStatus(403);
+      return;
+    }
+
+    // 새로 만들면 앞서 준 링크는 못 쓰게 한다. 같은 환자에게 살아 있는
+    // 링크가 여럿이면 어느 것이 유효한지 아무도 모른다.
+    await prisma.child_link_invite.updateMany({
+      where: { patient_id: patientId, used_at: null, revoked_at: null },
+      data: { revoked_at: new Date() },
+    });
+
+    const body = req.body as zod.infer<typeof linkInviteSchema>;
+    const hospital = await prisma.hospital.findUnique({
+      where: { id: hospitalId },
+      select: { name: true },
+    });
+
+    const invite = await createLinkInvite({
+      hospitalId,
+      patientId,
+      createdBy: req.healthcare_professional!.user_id,
+      sentTo: body.email ?? null,
+    });
+
+    // 메일이 실패해도 링크는 이미 유효하다. 발급을 되돌리면 화면에 QR 도
+    // 못 띄우게 되는데, 그건 메일보다 흔히 쓰는 경로다.
+    let emailSent = false;
+    if (body.email) {
+      try {
+        await sendInviteEmail({
+          to: body.email,
+          hospitalName: hospital?.name ?? "",
+          url: invite.url,
+          expiresAt: invite.expiresAt,
+        });
+        emailSent = true;
+      } catch (e) {
+        console.error("[link-invite] email failed", e);
+      }
+    }
+
+    writeAuditLog({
+      ...auditContextFromRequest(req),
+      action: audit_action.CREATE,
+      tableName: "child_link_invite",
+      hospitalId,
+      patientId,
+    }).catch(console.error);
+
+    res.status(201).json({
+      url: invite.url,
+      expiresAt: invite.expiresAt.toISOString(),
+      // 보냈다고 말하려면 실제로 나갔어야 한다. 실패했는데 "전송됨"이라고
+      // 하면 병원은 기다리고 부모는 못 받는다.
+      emailSent,
+    });
+  },
+);
 
 export default router;

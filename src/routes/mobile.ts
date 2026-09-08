@@ -7,6 +7,7 @@ import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Prisma, sex as SexEnum, myopia_status as MyopiaStatusEnum } from "@prisma/client";
 
 import prisma from "../lib/prisma";
+import { resolveInvite } from "../services/linkInvite";
 import { validateRequestBody } from "../lib/middlewares";
 import {
   issueRefreshToken,
@@ -145,7 +146,7 @@ function requireAppUser(req: express.Request): MobileJWTPayload {
  * UUIDs are globally unique so no namespace collision is possible.
  */
 type OwnedChild =
-  | { source: "app"; childId: string; userId: string; appLink: { id: string; user_id: string; nickname: string; date_of_birth: Date; sex: SexEnum } }
+  | { source: "app"; childId: string; userId: string; appLink: { id: string; user_id: string; nickname: string; name: string | null; date_of_birth: Date; sex: SexEnum } }
   | { source: "web"; childId: string; userId: string; patientId: string };
 
 /**
@@ -836,6 +837,7 @@ router.get("/children", requireMobileAuth, async (req, res) => {
       childId: c.id,
       source: "app" as const,
       nickname: c.nickname,
+      name: c.name,
       dateOfBirth: serializeDateOnly(c.date_of_birth),
       sex: c.sex,
       linkedHospitals: await Promise.all(
@@ -889,6 +891,8 @@ router.get("/children", requireMobileAuth, async (req, res) => {
 
 const childCreateSchema = zod.object({
   nickname: zod.string().nonempty().max(80),
+  // 실명. 이 칸이 생기기 전 앱에서는 보내지 않으므로 선택으로 받는다.
+  name: zod.string().trim().min(1).max(80).optional(),
   dateOfBirth: zod.string().date(),
   sex: zod.nativeEnum(SexEnum),
 });
@@ -904,6 +908,7 @@ router.post(
       data: {
         user_id: user.sub,
         nickname: data.nickname,
+        name: data.name ?? null,
         date_of_birth: new Date(data.dateOfBirth),
         sex: data.sex,
       },
@@ -911,6 +916,7 @@ router.post(
     res.status(201).json({
       childId: created.id,
       nickname: created.nickname,
+      name: created.name,
       dateOfBirth: serializeDateOnly(created.date_of_birth),
       sex: created.sex,
       linkedHospitals: [],
@@ -921,6 +927,7 @@ router.post(
 const childPatchSchema = zod
   .object({
     nickname: zod.string().nonempty().max(80).optional(),
+    name: zod.string().trim().min(1).max(80).optional(),
     dateOfBirth: zod.string().date().optional(),
     sex: zod.nativeEnum(SexEnum).optional(),
   })
@@ -955,6 +962,7 @@ router.patch(
       where: { id: child.id },
       data: {
         nickname: data.nickname,
+        name: data.name,
         date_of_birth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
         sex: data.sex,
       },
@@ -962,6 +970,7 @@ router.patch(
     res.json({
       childId: updated.id,
       nickname: updated.nickname,
+      name: updated.name,
       dateOfBirth: serializeDateOnly(updated.date_of_birth),
       sex: updated.sex,
     });
@@ -1740,6 +1749,135 @@ router.post(
       }
       throw e;
     }
+  },
+);
+
+/** 표를 집는 데 실패했을 때. 트랜잭션을 되돌리려고 던진다. */
+class InviteAlreadyUsed extends Error {}
+
+/* ---- 연동 초대 --------------------------------------------------- *
+ *                                                                    *
+ * 병원이 만든 일회용 링크로 잇는다. 등록번호를 묻지 않으므로 대입할     *
+ * 것이 없다. 토큰 자체가 병원이 이 부모에게 건넨 표다.                 *
+ * ------------------------------------------------------------------ */
+
+/** GET /api/mobile/link-invites/:token — 수락 전에 무엇을 잇는지 보여준다. */
+router.get("/link-invites/:token", requireMobileAuth, async (req, res) => {
+  const r = await resolveInvite(String(req.params.token));
+  if ("problem" in r) {
+    return res.status(410).json({ error: "invite unusable", code: r.problem });
+  }
+  // 아이를 특정할 만큼만 보여준다. 부모는 이미 아는 정보이고, 링크를
+  // 주운 사람에게는 이것만으로 누구인지 알 수 없어야 한다.
+  const dob = await decryptSymmetric(r.invite.patient.encrypted_date_of_birth);
+  res.json({
+    hospitalName: r.invite.hospital.name,
+    dateOfBirth: dob,
+    sex: r.invite.patient.sex,
+    expiresAt: r.invite.expires_at.toISOString(),
+  });
+});
+
+const acceptInviteSchema = zod.object({
+  token: zod.string().min(10).max(200),
+  guardianConsent: zod.boolean().optional(),
+});
+
+/** POST /api/mobile/children/:childId/hospital-links/by-invite */
+router.post(
+  "/children/:childId/hospital-links/by-invite",
+  requireMobileAuth,
+  validateRequestBody(acceptInviteSchema),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+
+    const body = req.body as zod.infer<typeof acceptInviteSchema>;
+    const r = await resolveInvite(body.token);
+    if ("problem" in r) {
+      return res.status(410).json({ error: "invite unusable", code: r.problem });
+    }
+    const invite = r.invite;
+
+    // 초대가 곧 병원의 확인이지만, 엉뚱한 아이에 붙이는 실수는 막는다.
+    // 부모가 아이를 여럿 등록해 두고 잘못 고를 수 있다.
+    const patientDOB = await decryptSymmetric(
+      invite.patient.encrypted_date_of_birth,
+    );
+    if (
+      patientDOB !== serializeDateOnly(child.date_of_birth) ||
+      invite.patient.sex !== child.sex
+    ) {
+      return res.status(409).json({
+        error: "child does not match the invited record",
+        code: "mismatch",
+      });
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        // 먼저 표를 쓴다. 조건을 걸어 두면 두 번 눌러도 한 번만 통과한다.
+        const claimed = await tx.child_link_invite.updateMany({
+          where: { id: invite.id, used_at: null, revoked_at: null },
+          data: { used_at: new Date(), used_by: user.sub },
+        });
+        if (claimed.count === 0) {
+          throw new InviteAlreadyUsed();
+        }
+
+        await tx.child_hospital_link.create({
+          data: {
+            parent_child_link_id: child.id,
+            hospital_id: invite.hospital_id,
+            patient_id: invite.patient_id,
+            status: "active",
+          },
+        });
+        await tx.user_patient.upsert({
+          where: {
+            user_id_patient_id: {
+              user_id: user.sub,
+              patient_id: invite.patient_id,
+            },
+          },
+          create: { user_id: user.sub, patient_id: invite.patient_id },
+          update: {},
+        });
+        if (body.guardianConsent) {
+          await tx.patient_consent.create({
+            data: {
+              patient_id: invite.patient_id,
+              given_by: user.sub,
+              role: "legal_guardian",
+              version: CONSENT_VERSION,
+            },
+          });
+        }
+        await backfillToPatient(tx, child.id, invite.patient_id);
+      });
+    } catch (e) {
+      if (e instanceof InviteAlreadyUsed) {
+        return res.status(410).json({ error: "invite unusable", code: "used" });
+      }
+      if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
+        return res.status(409).json({
+          error: "child is already linked to this hospital",
+          code: "validation_error",
+        });
+      }
+      throw e;
+    }
+
+    res.status(201).json({
+      hospitalId: invite.hospital.id,
+      hospitalName: invite.hospital.name,
+      hospitalCode: invite.hospital.code,
+      patientId: invite.patient_id,
+    });
   },
 );
 

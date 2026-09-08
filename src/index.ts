@@ -86,6 +86,12 @@ app.use("/api/mobile/auth/login", authLimiter);
 app.use("/api/mobile/auth/email", authLimiter);
 // 아이디 사용 가능 확인은 성공해도 정보를 내주므로 성공까지 세는 제한을 쓴다.
 app.use("/api/mobile/auth/username-available", lookupLimiter);
+// 병원 등록번호는 대개 연속된 숫자라 순서대로 대입할 수 있다. 맞히면 남의
+// 아이 진료 기록에 붙으므로, 성공까지 세는 제한을 건다. 초대 링크가 주
+// 경로가 됐지만 이 길도 남아 있다.
+app.use("/api/mobile/children/:childId/hospital-links", lookupLimiter);
+// 초대 토큰은 대입할 수 있는 크기가 아니지만, 두드리는 것 자체를 막는다.
+app.use("/api/mobile/link-invites", lookupLimiter);
 app.use("/partner/login", authLimiter);
 // 인증번호 발송은 남의 주소로도 호출할 수 있어 제한이 필요하다.
 app.use("/partner/password", authLimiter);
