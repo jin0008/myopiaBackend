@@ -258,6 +258,9 @@ model patient_nearwork_activity {
   patient_id String   @db.Uuid
   timestamp  DateTime @default(now()) @db.Timestamp(6)
   hours      Int?
+  /// "parent"(보호자가 앱에서) | "clinic"(진료에서). 이 칸이 생기기 전
+  /// 행은 알 수 없으므로 비어 있다.
+  source     String?
   patient    patient  @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_nearwork_activity_patient_fk")
 }
 
@@ -266,6 +269,8 @@ model patient_outdoor_activity {
   patient_id String   @db.Uuid
   timestamp  DateTime @default(now()) @db.Timestamp(6)
   hours      Int?
+  /// "parent" | "clinic". patient_nearwork_activity 참고.
+  source     String?
   patient    patient  @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_outdoor_activity_patient_fk")
 }
 
@@ -274,6 +279,9 @@ model patient_parental_myopia_status {
   parent_sex sex
   patient_id String        @db.Uuid
   status     myopia_status
+  /// 도수(구면, D). 아는 부모만 적는다.
+  sph_od     Float?        @db.Real
+  sph_os     Float?        @db.Real
   timestamp  DateTime      @default(now()) @db.Timestamp(6)
   patient    patient       @relation(fields: [patient_id], references: [id], onDelete: Cascade, map: "patient_parental_myopia_status_patient_fk")
 }
