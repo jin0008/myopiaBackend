@@ -326,11 +326,17 @@ const postPatientDataSchema = zod
     outdoor_activity: zod.object({
       hours: zod.number(),
     }),
+    // 도수는 보호자가 앱에서 적는 값이다. 진료에서 상태만 고칠 때 함께
+    // 돌려보내지 않으면, 새 행에 도수가 비어 그 값이 화면에서 사라진다.
     mother_myopia_status: zod.object({
       status: zod.nativeEnum(myopia_status),
+      sph_od: zod.number().min(-20).max(20).nullish(),
+      sph_os: zod.number().min(-20).max(20).nullish(),
     }),
     father_myopia_status: zod.object({
       status: zod.nativeEnum(myopia_status),
+      sph_od: zod.number().min(-20).max(20).nullish(),
+      sph_os: zod.number().min(-20).max(20).nullish(),
     }),
   })
   .partial();
@@ -358,6 +364,7 @@ router.post(
           data: {
             patient_id: patientId,
             hours: data.nearwork_activity.hours,
+            source: "clinic",
           },
         }),
       );
@@ -368,6 +375,7 @@ router.post(
           data: {
             patient_id: patientId,
             hours: data.outdoor_activity.hours,
+            source: "clinic",
           },
         }),
       );
@@ -379,6 +387,8 @@ router.post(
             patient_id: patientId,
             parent_sex: sex.female,
             status: data.mother_myopia_status.status,
+            sph_od: data.mother_myopia_status.sph_od ?? null,
+            sph_os: data.mother_myopia_status.sph_os ?? null,
           },
         }),
       );
@@ -390,6 +400,8 @@ router.post(
             patient_id: patientId,
             parent_sex: sex.male,
             status: data.father_myopia_status.status,
+            sph_od: data.father_myopia_status.sph_od ?? null,
+            sph_os: data.father_myopia_status.sph_os ?? null,
           },
         }),
       );

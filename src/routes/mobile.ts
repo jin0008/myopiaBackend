@@ -2394,6 +2394,8 @@ router.put(
             patient_id: l.patientId,
             parent_sex: t.sex,
             status: t.status as MyopiaStatusEnum,
+            sph_od: t.sphOd,
+            sph_os: t.sphOs,
           })),
         });
       }
@@ -2469,6 +2471,9 @@ async function createActivity(
     patient_id: l.patientId,
     hours,
     timestamp: recordedAt,
+    // 의사가 진료에서 넣은 것과 구분한다. 표시가 없으면 보호자 기록인 줄
+    // 모르고 문진하며 덮어쓴다.
+    source: "parent",
   }));
   if (kind === "nearwork") {
     await prisma.patient_nearwork_activity.createMany({ data });
@@ -2656,6 +2661,7 @@ async function backfillToPatient(
         patient_id: patientId,
         hours: r.hours,
         timestamp: r.recorded_at,
+        source: "parent",
       }));
   };
 
@@ -2702,6 +2708,8 @@ async function backfillToPatient(
         patient_id: patientId,
         parent_sex: p.parent_sex as SexEnum,
         status: p.status as MyopiaStatusEnum,
+        sph_od: p.sph_od,
+        sph_os: p.sph_os,
         // 옮겨 적는 것이지 지금 답한 것이 아니다. 부모가 적은 날을 남긴다.
         timestamp: p.recorded_at,
       },
