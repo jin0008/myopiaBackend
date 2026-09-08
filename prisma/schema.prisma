@@ -412,7 +412,11 @@ enum myopia_status {
 model parent_child_link {
   id                    String                  @id(map: "parent_child_link_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id               String                  @db.Uuid
+  /// 화면에서 부르는 말. 보호자가 정한다.
   nickname              String
+  /// 실제 이름. 병원 진료 기록에서 이 아이를 찾을 때 쓴다.
+  /// 이 칸이 생기기 전에 등록된 아이는 비어 있다.
+  name                  String?
   date_of_birth         DateTime                @db.Date
   sex                   sex
   created_at            DateTime                @default(now()) @db.Timestamptz(6)

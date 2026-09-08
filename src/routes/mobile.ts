@@ -146,7 +146,7 @@ function requireAppUser(req: express.Request): MobileJWTPayload {
  * UUIDs are globally unique so no namespace collision is possible.
  */
 type OwnedChild =
-  | { source: "app"; childId: string; userId: string; appLink: { id: string; user_id: string; nickname: string; date_of_birth: Date; sex: SexEnum } }
+  | { source: "app"; childId: string; userId: string; appLink: { id: string; user_id: string; nickname: string; name: string | null; date_of_birth: Date; sex: SexEnum } }
   | { source: "web"; childId: string; userId: string; patientId: string };
 
 /**
@@ -837,6 +837,7 @@ router.get("/children", requireMobileAuth, async (req, res) => {
       childId: c.id,
       source: "app" as const,
       nickname: c.nickname,
+      name: c.name,
       dateOfBirth: serializeDateOnly(c.date_of_birth),
       sex: c.sex,
       linkedHospitals: await Promise.all(
@@ -890,6 +891,8 @@ router.get("/children", requireMobileAuth, async (req, res) => {
 
 const childCreateSchema = zod.object({
   nickname: zod.string().nonempty().max(80),
+  // 실명. 이 칸이 생기기 전 앱에서는 보내지 않으므로 선택으로 받는다.
+  name: zod.string().trim().min(1).max(80).optional(),
   dateOfBirth: zod.string().date(),
   sex: zod.nativeEnum(SexEnum),
 });
@@ -905,6 +908,7 @@ router.post(
       data: {
         user_id: user.sub,
         nickname: data.nickname,
+        name: data.name ?? null,
         date_of_birth: new Date(data.dateOfBirth),
         sex: data.sex,
       },
@@ -912,6 +916,7 @@ router.post(
     res.status(201).json({
       childId: created.id,
       nickname: created.nickname,
+      name: created.name,
       dateOfBirth: serializeDateOnly(created.date_of_birth),
       sex: created.sex,
       linkedHospitals: [],
@@ -922,6 +927,7 @@ router.post(
 const childPatchSchema = zod
   .object({
     nickname: zod.string().nonempty().max(80).optional(),
+    name: zod.string().trim().min(1).max(80).optional(),
     dateOfBirth: zod.string().date().optional(),
     sex: zod.nativeEnum(SexEnum).optional(),
   })
@@ -956,6 +962,7 @@ router.patch(
       where: { id: child.id },
       data: {
         nickname: data.nickname,
+        name: data.name,
         date_of_birth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
         sex: data.sex,
       },
@@ -963,6 +970,7 @@ router.patch(
     res.json({
       childId: updated.id,
       nickname: updated.nickname,
+      name: updated.name,
       dateOfBirth: serializeDateOnly(updated.date_of_birth),
       sex: updated.sex,
     });
