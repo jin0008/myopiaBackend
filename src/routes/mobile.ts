@@ -8,6 +8,7 @@ import { Prisma, sex as SexEnum, myopia_status as MyopiaStatusEnum } from "@pris
 
 import prisma from "../lib/prisma";
 import { resolveInvite } from "../services/linkInvite";
+import { axialPercentile } from "../services/percentile";
 import { validateRequestBody } from "../lib/middlewares";
 import {
   issueRefreshToken,
@@ -1245,6 +1246,20 @@ router.get("/children/:childId/progress", requireMobileAuth, async (req, res) =>
     where: { age_sex: { age, sex: child.sex } },
   });
 
+  // 또래 중 어디쯤인지. 숫자 하나만으로는 "괜찮은 건가"에 답이 안 된다.
+  // 더 자란 쪽 눈을 쓴다 - 진행은 그쪽이 이끈다.
+  const worseNow = Math.max(latest.od ?? 0, latest.os ?? 0);
+  const percentile =
+    worseNow > 0
+      ? await axialPercentile({
+          ageYears:
+            (latest.date.getTime() - child.date_of_birth.getTime()) /
+            (365.25 * 24 * 3600 * 1000),
+          sex: child.sex,
+          axial: worseNow,
+        })
+      : null;
+
   // 진행 속도는 1년 안팎으로 떨어진 두 점이 있어야 뜻이 있다. 한 달 간격
   // 두 점으로 연 환산하면 작은 오차가 열두 배로 부풀어 겁을 준다.
   const MIN_GAP_DAYS = 120;
@@ -1290,6 +1305,8 @@ router.get("/children/:childId/progress", requireMobileAuth, async (req, res) =>
     /// 연 환산 증가량(mm). 두 점이 충분히 떨어져 있을 때만 낸다.
     perYear,
     threshold: threshold?.warn_max ?? null,
+    /// 또래 분포. 기준 자료를 못 찾으면 null - 모르는 것을 아는 척하지 않는다.
+    percentile,
   });
 });
 
