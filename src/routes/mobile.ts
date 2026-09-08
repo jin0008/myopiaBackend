@@ -4403,6 +4403,16 @@ type FacilityDTO = {
   refractometer?: number;
   /** 개원·인허가 연도. */
   since?: number;
+  /** 요일별 진료시간. 신고한 곳만 있다. */
+  hours?: Record<string, [string, string]>;
+  /** 지금 진료 중인지. 진료시간을 모르면 아예 안 보낸다 -
+   *  false 로 보내면 "닫혔다"로 읽히는데, 실은 모르는 것이다. */
+  openNow?: boolean;
+  lunch?: string;
+  /** 접수 마감. 진료 종료보다 이른 곳이 많아 따로 준다. */
+  recv?: string;
+  /** "문선빌딩 4층" 같은 층·건물 안내. */
+  place?: string;
 };
 
 /** One raw Kakao keyword-search document (only the fields we use). */
@@ -4523,6 +4533,31 @@ async function kakaoKeywordSearch(
   return data.documents ?? [];
 }
 
+/**
+ * 지금 진료 중인지.
+ *
+ * 모르면 undefined 다. false 로 답하면 화면이 "닫힘"으로 그리는데, 심평원에
+ * 진료시간을 신고한 안과가 셋 중 하나뿐이라 그 대부분이 억울하게 닫힌
+ * 것으로 보인다.
+ *
+ * 서버 시각이 곧 한국 시각이라는 보장이 없어 KST 로 맞춰 읽는다.
+ */
+function openNowIn(hours: unknown): boolean | undefined {
+  if (hours == null || typeof hours !== "object") return undefined;
+  const table = hours as Record<string, unknown>;
+  const kst = new Date(Date.now() + 9 * 3600 * 1000);
+  // getUTC* 를 쓰는 이유는 위에서 이미 9시간을 더했기 때문이다.
+  const day = (kst.getUTCDay() + 6) % 7; // 월=0
+  const slot = table[String(day)];
+  if (!Array.isArray(slot) || slot.length < 2) return false;
+  const [from, to] = slot as [string, string];
+  const now = kst.getUTCHours() * 100 + kst.getUTCMinutes();
+  const a = Number.parseInt(from, 10);
+  const b = Number.parseInt(to, 10);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return undefined;
+  return now >= a && now <= b;
+}
+
 /** "19960730" 이나 "2026-09-03" 에서 연도만. 형식이 자료마다 다르다. */
 function yearOf(v: string | null): { since?: number } {
   if (!v) return {};
@@ -4574,6 +4609,17 @@ async function directoryFacilities(
         ? { eyeDoctors: c.eye_doctors }
         : {}),
       ...yearOf(c.opened_on),
+      ...(c.hours != null
+        ? {
+            hours: c.hours as Record<string, [string, string]>,
+            ...(openNowIn(c.hours) !== undefined
+              ? { openNow: openNowIn(c.hours) }
+              : {}),
+          }
+        : {}),
+      ...(c.lunch ? { lunch: c.lunch } : {}),
+      ...(c.recv ? { recv: c.recv } : {}),
+      ...(c.place ? { place: c.place } : {}),
     });
   }
   for (const sh of shops) {

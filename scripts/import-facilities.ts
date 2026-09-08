@@ -76,6 +76,14 @@ async function main() {
       doctors: int(c.doctors),
       eye_doctors: int(c.eyeDoctors),
       opened_on: c.openedOn || null,
+      hours: c.hours ? (JSON.parse(c.hours) as object) : undefined,
+      lunch: c.lunch || null,
+      recv: c.recv || null,
+      place: c.place || null,
+      hours: c.hours ? (JSON.parse(c.hours) as object) : undefined,
+      lunch: c.lunch || null,
+      recv: c.recv || null,
+      place: c.place || null,
       updated_at: new Date(),
     };
     await prisma.eye_clinic.upsert({

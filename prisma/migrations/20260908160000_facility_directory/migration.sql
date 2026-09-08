@@ -31,6 +31,16 @@ CREATE TABLE "eye_clinic" (
   -- 감춘다. 틀릴 수 있는 숫자로 병원을 깎아내리면 안 된다.
   "eye_doctors" INTEGER,
   "opened_on"  TEXT,
+  -- 요일별 진료시간. {"0":["0900","1800"], ...} 월=0. 심평원에 신고한
+  -- 곳만 있어 의원은 셋 중 하나뿐이다 - 없는 것을 닫힌 것으로 읽히게
+  -- 두면 안 되므로, 화면에서 "정보 없음"을 명시한다.
+  "hours"      JSONB,
+  -- "오후 01시~02시" 처럼 사람이 적은 문장 그대로 온다.
+  "lunch"      TEXT,
+  -- 접수 마감. 진료 종료보다 이른 곳이 많아 따로 둔다.
+  "recv"       TEXT,
+  -- "문선빌딩 4층" 같은 층·건물 안내.
+  "place"      TEXT,
   "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
   CONSTRAINT "eye_clinic_pkey" PRIMARY KEY ("id")
 );
