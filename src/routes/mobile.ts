@@ -4533,6 +4533,38 @@ async function kakaoKeywordSearch(
   return data.documents ?? [];
 }
 
+/** 종류마다 가까운 순으로 이만큼 읽고, 실제 거리로 거른 뒤 합쳐서 자른다. */
+const PER_KIND_LIMIT = 200;
+const TOTAL_LIMIT = 80;
+
+type EyeClinicRow = {
+  ykiho: string;
+  name: string;
+  kind: string;
+  address: string;
+  phone: string | null;
+  homepage: string | null;
+  lat: number;
+  lng: number;
+  eye_doctors: number | null;
+  opened_on: string | null;
+  hours: unknown;
+  lunch: string | null;
+  recv: string | null;
+  place: string | null;
+};
+
+type OpticalShopRow = {
+  license_no: string;
+  name: string;
+  address: string;
+  phone: string | null;
+  lat: number;
+  lng: number;
+  refractometer: number;
+  licensed_on: string | null;
+};
+
 /**
  * 지금 진료 중인지.
  *
@@ -4556,6 +4588,16 @@ function openNowIn(hours: unknown): boolean | undefined {
   const b = Number.parseInt(to, 10);
   if (!Number.isFinite(a) || !Number.isFinite(b)) return undefined;
   return now >= a && now <= b;
+}
+
+/** 진료시간과 지금 진료 중인지. 없으면 두 필드 다 안 붙인다. */
+function hoursFields(hours: unknown) {
+  if (hours == null) return {};
+  const open = openNowIn(hours);
+  return {
+    hours: hours as Record<string, [string, string]>,
+    ...(open !== undefined ? { openNow: open } : {}),
+  };
 }
 
 /** "19960730" 이나 "2026-09-03" 에서 연도만. 형식이 자료마다 다르다. */
@@ -4585,9 +4627,27 @@ async function directoryFacilities(
     lng: { gte: lng - dLng, lte: lng + dLng },
   };
 
+  // 가까운 것부터 자른다. 그냥 take 로 자르면 상자 안에서 아무 300개가
+  // 뽑혀, 서울처럼 밀집한 곳에서는 바로 옆 안과가 목록에 없을 수 있다.
+  // 정렬은 평면 근사로 충분하다 - 순서만 정하면 되고, 실제 거리는 아래에서
+  // 하버사인으로 다시 잰다.
+  const cosLat = Math.max(Math.cos((lat * Math.PI) / 180), 0.1);
+  const order = { lat, lng, cosLat, limit: PER_KIND_LIMIT };
   const [clinics, shops] = await Promise.all([
-    prisma.eye_clinic.findMany({ where: box, take: 300 }),
-    prisma.optical_shop.findMany({ where: box, take: 300 }),
+    prisma.$queryRaw<EyeClinicRow[]>`
+      SELECT * FROM "eye_clinic"
+      WHERE lat BETWEEN ${box.lat.gte} AND ${box.lat.lte}
+        AND lng BETWEEN ${box.lng.gte} AND ${box.lng.lte}
+      ORDER BY (lat - ${order.lat}) ^ 2
+             + ((lng - ${order.lng}) * ${order.cosLat}) ^ 2
+      LIMIT ${order.limit}`,
+    prisma.$queryRaw<OpticalShopRow[]>`
+      SELECT * FROM "optical_shop"
+      WHERE lat BETWEEN ${box.lat.gte} AND ${box.lat.lte}
+        AND lng BETWEEN ${box.lng.gte} AND ${box.lng.lte}
+      ORDER BY (lat - ${order.lat}) ^ 2
+             + ((lng - ${order.lng}) * ${order.cosLat}) ^ 2
+      LIMIT ${order.limit}`,
   ]);
 
   const out: FacilityDTO[] = [];
@@ -4609,14 +4669,7 @@ async function directoryFacilities(
         ? { eyeDoctors: c.eye_doctors }
         : {}),
       ...yearOf(c.opened_on),
-      ...(c.hours != null
-        ? {
-            hours: c.hours as Record<string, [string, string]>,
-            ...(openNowIn(c.hours) !== undefined
-              ? { openNow: openNowIn(c.hours) }
-              : {}),
-          }
-        : {}),
+      ...hoursFields(c.hours),
       ...(c.lunch ? { lunch: c.lunch } : {}),
       ...(c.recv ? { recv: c.recv } : {}),
       ...(c.place ? { place: c.place } : {}),
@@ -4641,7 +4694,9 @@ async function directoryFacilities(
     });
   }
   out.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
-  return out;
+  // 화면은 목록을 스크롤해 훑는 자리다. 반경 안이 수백 곳이어도 그만큼
+  // 내려보내면 목록만 무거워진다.
+  return out.slice(0, TOTAL_LIMIT);
 }
 
 router.get("/facilities", async (req, res) => {
