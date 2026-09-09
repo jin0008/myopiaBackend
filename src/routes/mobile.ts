@@ -2871,6 +2871,7 @@ const TREATMENT_CATEGORIES = [
   "myopiaGlasses",
   "atropine",
   "misight",
+  "lasik",
   "other",
 ] as const;
 
