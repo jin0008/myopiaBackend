@@ -3522,16 +3522,35 @@ router.delete(
  * reply.                                                              *
  * ================================================================== */
 
+/** 환경변수에서 양수 하나. 없거나 이상하면 기본값. 한도를 코드에 박아
+ *  두면 숫자 하나 바꾸는 데 배포가 필요하다 - 베타 중에는 실제 사용량을
+ *  보며 며칠에 한 번씩 조절하게 된다. */
+function envInt(name: string, fallback: number): number {
+  const n = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 const CHAT_CONFIG = {
   model: process.env.CHAT_MODEL || "gemini-3.1-flash-lite",
   embeddingModel: process.env.CHAT_EMBEDDING_MODEL || "gemini-embedding-001",
-  // default true unless explicitly set to "false"/"0"
-  searchFallback:
-    (process.env.CHAT_SEARCH_FALLBACK ?? "true").toLowerCase() !== "false" &&
-    process.env.CHAT_SEARCH_FALLBACK !== "0",
+  /** 검색 보강 2차 호출. 기본은 끔.
+   *
+   *  무료 등급에서는 검색 도구에 할당량이 없어 이 호출이 늘 실패하고, 그때는
+   *  1차 답변을 그대로 쓴다. 즉 켜 두면 질문마다 실패할 호출을 한 번 더 쏘는
+   *  셈이라 처리 가능한 질문 수가 절반이 된다. 유료 등급으로 올리면
+   *  CHAT_SEARCH_FALLBACK=true 로 켠다. */
+  searchFallback: ["true", "1"].includes(
+    (process.env.CHAT_SEARCH_FALLBACK ?? "false").toLowerCase(),
+  ),
   ragTopK: 8,
-  perUserDailyLimit: 30,
-  totalDailyLimit: 500,
+  /** 로그인한 사람 하루 몫. */
+  perUserDailyLimit: envInt("CHAT_USER_DAILY_LIMIT", 10),
+  /** 로그인하지 않은 사람 하루 몫(IP 기준). 맛보기라 짧게 둔다. */
+  perGuestDailyLimit: envInt("CHAT_GUEST_DAILY_LIMIT", 3),
+  /** 전체 하루 몫. 모델의 무료 일일 요청 수보다 낮게 잡아야 한다 - 우리가
+   *  먼저 막지 않으면 구글 쪽에서 막히고, 그때는 사용자에게 '한도를 다
+   *  썼다'가 아니라 '답변을 가져오지 못했다'가 나간다. */
+  totalDailyLimit: envInt("CHAT_TOTAL_DAILY_LIMIT", 500),
   maxInputChars: 500,
   maxOutputTokens: 1400,
   maxHistoryTurns: 6,
@@ -3863,22 +3882,27 @@ async function callGemini(
   return ret;
 }
 
-/** Per-user + global daily usage cap, file-backed (usage-YYYY-MM-DD.json).
- *  Keyed by authenticated user id (not IP). Any fs failure returns "ok"
- *  so a counter problem never blocks a reply. */
+/** 하루 사용량 한도. 계정별(또는 손님은 IP별) + 전체, 파일에 센다
+ *  (usage-YYYY-MM-DD.json). 파일이 말썽이면 "ok" 를 돌려준다 - 세는 장치가
+ *  고장났다고 답을 막을 이유는 없다.
+ *
+ *  손님 칸은 계정 칸과 따로 둔다. 한 곳에 섞으면 IP 하나가 계정 하나처럼
+ *  세어져, 통신사 NAT 뒤의 여러 사람이 서로의 몫을 까먹는다. */
 function checkAndCountUsage(
   today: string,
-  userId: string,
+  key: string,
+  kind: "user" | "guest",
 ): "ok" | "user_limit" | "total_limit" {
   try {
     if (!fs.existsSync(CHAT_CONFIG.dataDir)) {
       fs.mkdirSync(CHAT_CONFIG.dataDir, { recursive: true });
     }
     const file = path.join(CHAT_CONFIG.dataDir, `usage-${today}.json`);
-    let data: { total: number; users: Record<string, number> } = {
-      total: 0,
-      users: {},
-    };
+    let data: {
+      total: number;
+      users: Record<string, number>;
+      guests: Record<string, number>;
+    } = { total: 0, users: {}, guests: {} };
     if (fs.existsSync(file)) {
       try {
         const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -3889,17 +3913,27 @@ function checkAndCountUsage(
               parsed.users && typeof parsed.users === "object"
                 ? parsed.users
                 : {},
+            // 손님 칸은 나중에 생겼다. 예전 파일에는 없으므로 비워서 연다.
+            guests:
+              parsed.guests && typeof parsed.guests === "object"
+                ? parsed.guests
+                : {},
           };
         }
       } catch {
         /* corrupt file — start fresh */
       }
     }
-    const userCount = data.users[userId] ?? 0;
+    const bucket = kind === "user" ? data.users : data.guests;
+    const limit =
+      kind === "user"
+        ? CHAT_CONFIG.perUserDailyLimit
+        : CHAT_CONFIG.perGuestDailyLimit;
+    const count = bucket[key] ?? 0;
     if (data.total >= CHAT_CONFIG.totalDailyLimit) return "total_limit";
-    if (userCount >= CHAT_CONFIG.perUserDailyLimit) return "user_limit";
+    if (count >= limit) return "user_limit";
     data.total += 1;
-    data.users[userId] = userCount + 1;
+    bucket[key] = count + 1;
     fs.writeFileSync(file, JSON.stringify(data));
     return "ok";
   } catch {
@@ -3980,10 +4014,19 @@ const chatSchema = zod.object({
 
 router.post(
   "/chat",
-  requireMobileAuth,
+  // 로그인은 선택이다. 가입 전에 몇 번 물어볼 수 있어야 이 기능이 무엇인지
+  // 알고 가입한다. 대신 손님 몫은 짧게 두고(IP 기준) 계정 몫과 칸을 나눠,
+  // 손님이 많이 몰려도 로그인한 사람의 몫을 까먹지 않게 한다.
+  optionalMobileAuth,
   validateRequestBody(chatSchema),
   async (req, res) => {
-    const userId = req.mobileUser!.sub;
+    const userId = req.mobileUser?.sub ?? null;
+    // IP 는 약한 기준이다 - 통신사 NAT 뒤에서는 여럿이 한 IP 를 쓰고,
+    // 모바일은 IP 가 자주 바뀌어 우회도 쉽다. 완전한 방어가 아니라
+    // 지나가다 장난치는 것을 막는 장치로 둔다. (trust proxy=1 이라
+    // req.ip 는 nginx 가 아니라 실제 요청자다.)
+    const quotaKey = userId ?? `ip:${req.ip ?? "unknown"}`;
+    const quotaKind: "user" | "guest" = userId ? "user" : "guest";
     const body = req.body as zod.infer<typeof chatSchema>;
     const today = new Date().toISOString().slice(0, 10);
 
@@ -4012,12 +4055,15 @@ router.post(
     }
 
     // ── Per-user / global daily cap ─────────────────────────────────
-    const usage = checkAndCountUsage(today, userId);
+    const usage = checkAndCountUsage(today, quotaKey, quotaKind);
     if (usage === "user_limit") {
       return reply({
         mode: "limited",
-        answer:
-          "오늘 이용 가능한 질문 횟수를 모두 사용하셨어요. 내일 다시 이용해 주세요. 급한 증상이 있다면 가까운 안과에 문의해 주세요.",
+        // 손님에게는 내일까지 기다리라고 할 이유가 없다. 지금 할 수 있는
+        // 일(로그인)을 알려주는 편이 맞다.
+        answer: userId
+          ? "오늘 이용 가능한 질문 횟수를 모두 사용하셨어요. 내일 다시 이용해 주세요. 급한 증상이 있다면 가까운 안과에 문의해 주세요."
+          : "둘러보기로 물어볼 수 있는 횟수를 모두 사용하셨어요. 로그인하시면 더 많이 질문하실 수 있습니다. 급한 증상이 있다면 가까운 안과에 문의해 주세요.",
       });
     }
     if (usage === "total_limit") {
@@ -4032,7 +4078,8 @@ router.post(
     if (isEmergencyText(question)) {
       chatLogLine({
         ts: new Date().toISOString(),
-        user: userId,
+        user: userId ?? quotaKey,
+        guest: userId === null,
         mode: "emergency",
         filter: "keyword",
         q: question,
@@ -4083,7 +4130,8 @@ router.post(
     if (r.err !== null) {
       chatLogLine({
         ts: new Date().toISOString(),
-        user: userId,
+        user: userId ?? quotaKey,
+        guest: userId === null,
         mode: "error",
         q: question,
         err: r.err.slice(0, 300),
@@ -4151,7 +4199,11 @@ router.post(
 
     chatLogLine({
       ts: new Date().toISOString(),
-      user: userId,
+      user: userId ?? quotaKey,
+      guest: userId === null,
+      // 이 대화의 몇 번째 질문인지. 한 번 묻고 끝내는지 이어서 파고드는지는
+      // 이 값 없이는 알 수 없다 - 로그가 질문 단위라 대화가 흩어져 보인다.
+      turn: Math.floor(trimmed.length / 2) + 1,
       mode,
       q: question,
       a: answer.slice(0, 800),
