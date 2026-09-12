@@ -23,17 +23,24 @@ const info = (s: string) => console.log("       " + s);
 async function main() {
   if (!email) {
     console.log(
-      "사용법: npx tsx scripts/diagnose-link.ts <보호자이메일> [병원코드] [등록번호]",
+      "사용법: npx tsx scripts/diagnose-link.ts <보호자이메일|userId> [병원코드] [등록번호]",
     );
     return;
   }
 
   console.log("\n[1] 보호자 계정");
-  const user = await prisma.user.findUnique({ where: { email } });
+  // 소셜 로그인 계정은 이메일이 비어 있을 수 있다. 그때는 user id 로도
+  // 찾을 수 있어야 한다 - diagnose-invites 가 찍어 주는 값이 id 다.
+  const isUuid =
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(email);
+  const user = isUuid
+    ? await prisma.user.findUnique({ where: { id: email } })
+    : await prisma.user.findUnique({ where: { email } });
   if (user == null) {
-    bad(`${email} 로 가입한 계정이 없습니다.`);
+    bad(`'${email}' 로 가입한 계정이 없습니다.`);
     info("앱에서 가입할 때 쓴 주소가 맞는지 확인하세요.");
     info("소셜 로그인은 앱에 보이는 주소와 다를 수 있습니다.");
+    info("이메일 대신 user id(UUID)를 넣어도 됩니다.");
     return;
   }
   ok(`user ${user.id}`);
