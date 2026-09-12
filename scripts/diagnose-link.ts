@@ -10,7 +10,7 @@
  *
  * 등록번호를 모르면 뒤 두 개를 빼고 보호자 계정 상태만 볼 수도 있다.
  */
-import { prisma } from "../src/lib/prisma";
+import prisma from "../src/lib/prisma";
 import { hashRegistrationNumber } from "../src/lib/hash";
 import { decryptSymmetric } from "../src/services/encrpytion";
 

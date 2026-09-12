@@ -1,0 +1,15 @@
+{
+  // scripts/ 는 빌드 대상이 아니라 tsconfig.json 의 include(src/**/*) 밖에
+  // 있다. 그래서 `npm run build` 도 `tsc --noEmit` 도 이 폴더를 보지 않아,
+  // import 하나가 틀린 채로 서버까지 올라간 적이 있다(diagnose-link.ts 가
+  // prisma 를 named import 로 가져와 실행 즉시 터졌다).
+  //
+  // 여기서는 검사만 한다 - rootDir 이 src 라 scripts 를 emit 대상에 넣으면
+  // 빌드가 깨진다.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*", "scripts/**/*"]
+}
