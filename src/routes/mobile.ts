@@ -1669,9 +1669,14 @@ router.post(
   validateRequestBody(hospitalLinkSchema),
   async (req, res) => {
     const user = requireAppUser(req);
+    // 어디서 막혔는지 서로 다른 code 로 돌려준다. 전부 "no matching record"
+    // 로 뭉뚱그리면, 병원에서 "정보는 다 맞는데 연동이 안 된다"는 말만
+    // 돌아오고 서버 로그를 뒤지기 전에는 아무도 원인을 모른다.
     const child = await loadOwnedChild(user.sub, String(req.params.childId));
     if (child == null) {
-      res.status(404).json({ error: "child not found", code: "not_found" });
+      res
+        .status(404)
+        .json({ error: "child not linkable", code: "child_not_linkable" });
       return;
     }
     const body = req.body as zod.infer<typeof hospitalLinkSchema>;
@@ -1679,7 +1684,9 @@ router.post(
       where: { code: body.hospitalCode },
     });
     if (hospital == null) {
-      res.status(404).json({ error: "no matching record", code: "not_found" });
+      res
+        .status(404)
+        .json({ error: "hospital not found", code: "hospital_not_found" });
       return;
     }
 
@@ -1694,7 +1701,10 @@ router.post(
       },
     });
     if (patient == null) {
-      res.status(404).json({ error: "no matching record", code: "not_found" });
+      res.status(404).json({
+        error: "registration number not found at this hospital",
+        code: "registration_not_found",
+      });
       return;
     }
 
@@ -1702,7 +1712,9 @@ router.post(
     const patientDOB = await decryptSymmetric(patient.encrypted_date_of_birth);
     const childDOB = serializeDateOnly(child.date_of_birth);
     if (dateOnly(patientDOB) !== dateOnly(childDOB) || patient.sex !== child.sex) {
-      res.status(404).json({ error: "no matching record", code: "not_found" });
+      res
+        .status(404)
+        .json({ error: "child does not match the record", code: "mismatch" });
       return;
     }
 
@@ -1822,7 +1834,9 @@ router.post(
     const user = requireAppUser(req);
     const child = await loadOwnedChild(user.sub, String(req.params.childId));
     if (child == null) {
-      res.status(404).json({ error: "child not found", code: "not_found" });
+      res
+        .status(404)
+        .json({ error: "child not linkable", code: "child_not_linkable" });
       return;
     }
 
