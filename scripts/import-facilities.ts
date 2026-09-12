@@ -65,10 +65,6 @@ async function main() {
       lunch: c.lunch || null,
       recv: c.recv || null,
       place: c.place || null,
-      hours: c.hours ? (JSON.parse(c.hours) as object) : undefined,
-      lunch: c.lunch || null,
-      recv: c.recv || null,
-      place: c.place || null,
       updated_at: new Date(),
     };
     await prisma.eye_clinic.upsert({
