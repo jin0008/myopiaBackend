@@ -15,6 +15,7 @@ import bcrypt from "bcrypt";
 import { hashRegistrationNumber } from "../lib/hash";
 import { auditContextFromRequest, writeAuditLog } from "../services/audit";
 import { createLinkInvite, sendInviteEmail } from "../services/linkInvite";
+import { notify } from "../lib/notify";
 
 const router = express.Router();
 
@@ -159,6 +160,19 @@ router.post(
 
     if (!authorized) {
       res.sendStatus(403);
+      return;
+    }
+
+    // 연동이 걸려 있으면 환자 삭제가 외래키에 막힌다. 트랜잭션이 통째로
+    // 되돌아가 삭제 요청까지 남으므로, 무엇을 먼저 해야 하는지 알린다.
+    const linked = await prisma.child_hospital_link.count({
+      where: { patient_id: patientId },
+    });
+    if (linked > 0) {
+      res.status(409).json({
+        error: "patient is linked to a guardian app",
+        code: "app_linked",
+      });
       return;
     }
 
@@ -616,9 +630,162 @@ router.delete("/:patientId", hospitalAdminRequired, async (req, res, next) => {
         res.sendStatus(404);
         return;
       }
+      // 보호자 앱 연동이 걸려 있으면 외래키가 삭제를 막는다. 그대로
+      // 흘리면 500 이 나가고, 화면에는 아무 설명도 없어 왜 안 되는지
+      // 알 수 없다. 무엇을 먼저 해야 하는지 말해 준다.
+      if (e instanceof PrismaClientKnownRequestError && e.code === "P2003") {
+        res.status(409).json({
+          error: "patient is linked to a guardian app",
+          code: "app_linked",
+        });
+        return;
+      }
       next(e);
     });
 });
+
+/* ------------------------------------------------------------------ *
+ * 보호자 앱 연동 현황 / 해제                                          *
+ *                                                                    *
+ * 연동을 끊는 길이 보호자 앱에만 있었다. 그래서 보호자가 누구인지      *
+ * 모르거나 연락이 닿지 않으면 병원은 아무것도 할 수 없었다 - 환자를    *
+ * 지우려 해도 연동이 걸려 실패하고, 왜 실패했는지도 화면에 나오지      *
+ * 않았다. 병원에도 같은 길을 낸다.                                     *
+ * ------------------------------------------------------------------ */
+
+/** GET /api/patient/:patientId/app-links — 이 환자에 붙은 보호자 앱 연동. */
+router.get(
+  "/:patientId/app-links",
+  approvedProfessionalRequired,
+  async (req, res) => {
+    const patientId = String(req.params.patientId);
+    const authorized = await isPatientInHospital(
+      patientId,
+      req.healthcare_professional!.hospital_id,
+    );
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
+
+    const links = await prisma.child_hospital_link.findMany({
+      where: {
+        patient_id: patientId,
+        hospital_id: req.healthcare_professional!.hospital_id,
+      },
+      orderBy: { linked_at: "desc" },
+      include: {
+        parent_child_link: {
+          select: {
+            id: true,
+            nickname: true,
+            user: { select: { id: true, email: true } },
+          },
+        },
+      },
+    });
+
+    res.json(
+      links.map((l) => ({
+        linkId: l.id,
+        childNickname: l.parent_child_link.nickname,
+        // 병원이 연락할 수 있어야 해제 전에 사정을 물어볼 수 있다.
+        // 이 주소는 애초에 병원이 초대를 보낸 곳이다.
+        guardianEmail: l.parent_child_link.user.email,
+        linkedAt: l.linked_at.toISOString(),
+        status: l.status,
+      })),
+    );
+  },
+);
+
+/** DELETE /api/patient/:patientId/app-links/:linkId — 병원이 연동을 끊는다. */
+router.delete(
+  "/:patientId/app-links/:linkId",
+  hospitalAdminRequired,
+  async (req, res) => {
+    const patientId = String(req.params.patientId);
+    const hospitalId = req.healthcare_professional!.hospital_id;
+    const authorized = await isPatientInHospital(patientId, hospitalId);
+    if (!authorized) {
+      res.sendStatus(403);
+      return;
+    }
+
+    // 병원·환자까지 함께 걸어 둔다. linkId 만 믿으면 남의 병원 연동을
+    // 끊을 수 있다.
+    const link = await prisma.child_hospital_link.findFirst({
+      where: {
+        id: String(req.params.linkId),
+        patient_id: patientId,
+        hospital_id: hospitalId,
+      },
+      include: {
+        parent_child_link: { select: { id: true, user_id: true, nickname: true } },
+        hospital: { select: { name: true } },
+      },
+    });
+    if (link == null) {
+      res.sendStatus(404);
+      return;
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.child_hospital_link.delete({ where: { id: link.id } });
+
+      // 보호자 앱의 해제와 같은 뒷정리를 한다(mobile.ts 의 연동 해제).
+      // child_hospital_link 만 지우면 user_patient 미러가 남아, 그 아이가
+      // 앱에 '웹에서 넘어온 자녀'로 되살아난다 - 보호자는 끊긴 줄 아는데
+      // 목록에는 그대로 있는 셈이다.
+      //
+      // 이 환자를 가리키는 다른 연동이 그 보호자에게 남아 있으면 두지
+      // 않는다. 미러는 보호자-환자 하나에 하나뿐이라 먼저 지우면 남은
+      // 연동까지 함께 끊는 꼴이 된다.
+      const stillLinked = await tx.child_hospital_link.findFirst({
+        where: {
+          patient_id: link.patient_id,
+          parent_child_link: { user_id: link.parent_child_link.user_id },
+        },
+      });
+      if (stillLinked == null) {
+        await tx.user_patient.deleteMany({
+          where: {
+            user_id: link.parent_child_link.user_id,
+            patient_id: link.patient_id,
+          },
+        });
+      }
+    });
+
+    // 끊는 순간 보호자 앱의 차트에서 이 병원 측정값이 사라진다. 예고 없이
+    // 아이 기록 일부가 없어지는 셈이라 반드시 알린다.
+    await notify({
+      userId: link.parent_child_link.user_id,
+      actorUserId: null,
+      type: "hospital_unlinked",
+      targetType: "child",
+      targetId: link.parent_child_link.id,
+      title: link.hospital.name,
+      preview: link.parent_child_link.nickname,
+    });
+
+    writeAuditLog({
+      ...auditContextFromRequest(req),
+      tableName: "child_hospital_link",
+      recordId: link.id,
+      action: audit_action.DELETE,
+      hospitalId,
+      patientId,
+      oldValue: {
+        parent_child_link_id: link.parent_child_link_id,
+        linked_at: link.linked_at,
+        status: link.status,
+      },
+    }).catch(console.error);
+
+    res.sendStatus(200);
+  },
+);
 
 /* ------------------------------------------------------------------ *
  * 연동 초대                                                           *

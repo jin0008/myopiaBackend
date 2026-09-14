@@ -1,6 +1,9 @@
 import prisma from "./prisma";
 
 export type NotificationType =
+  /** 병원이 보호자 앱과의 연동을 끊었다. 예고 없이 차트에서 그 병원의
+   *  측정값이 사라지므로 반드시 알려야 한다. */
+  | "hospital_unlinked"
   | "post_comment"
   | "post_reply"
   | "post_like"
@@ -32,7 +35,7 @@ export async function notify(args: {
   userId: string;
   actorUserId: string | null;
   type: NotificationType;
-  targetType: "post" | "poll";
+  targetType: "post" | "poll" | "child";
   targetId: string;
   title?: string | null;
   preview?: string | null;
