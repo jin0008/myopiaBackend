@@ -730,7 +730,32 @@ router.delete(
       return;
     }
 
-    await prisma.child_hospital_link.delete({ where: { id: link.id } });
+    await prisma.$transaction(async (tx) => {
+      await tx.child_hospital_link.delete({ where: { id: link.id } });
+
+      // 보호자 앱의 해제와 같은 뒷정리를 한다(mobile.ts 의 연동 해제).
+      // child_hospital_link 만 지우면 user_patient 미러가 남아, 그 아이가
+      // 앱에 '웹에서 넘어온 자녀'로 되살아난다 - 보호자는 끊긴 줄 아는데
+      // 목록에는 그대로 있는 셈이다.
+      //
+      // 이 환자를 가리키는 다른 연동이 그 보호자에게 남아 있으면 두지
+      // 않는다. 미러는 보호자-환자 하나에 하나뿐이라 먼저 지우면 남은
+      // 연동까지 함께 끊는 꼴이 된다.
+      const stillLinked = await tx.child_hospital_link.findFirst({
+        where: {
+          patient_id: link.patient_id,
+          parent_child_link: { user_id: link.parent_child_link.user_id },
+        },
+      });
+      if (stillLinked == null) {
+        await tx.user_patient.deleteMany({
+          where: {
+            user_id: link.parent_child_link.user_id,
+            patient_id: link.patient_id,
+          },
+        });
+      }
+    });
 
     // 끊는 순간 보호자 앱의 차트에서 이 병원 측정값이 사라진다. 예고 없이
     // 아이 기록 일부가 없어지는 셈이라 반드시 알린다.
