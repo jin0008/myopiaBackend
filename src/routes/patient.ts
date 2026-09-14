@@ -40,13 +40,20 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
         id: req.healthcare_professional!.hospital_id,
       },
       include: {
-        patient: true,
+        patient: {
+          include: {
+            // 목록에서 연동 여부를 바로 보이게 한다. 없으면 어느 환자가
+            // 보호자 앱과 이어져 있는지 카드를 하나씩 열어 봐야 알 수
+            // 있고, 삭제가 왜 막히는지도 열어 보기 전에는 모른다.
+            _count: { select: { child_hospital_link: true } },
+          },
+        },
       },
     })
     .then((data) => data?.patient ?? [])
     .then(async (patients) => {
       return Promise.all(
-        patients.map(async (patient) => ({
+        patients.map(async ({ _count, ...patient }) => ({
           ...patient,
           date_of_birth: await decryptSymmetric(
             patient.encrypted_date_of_birth,
@@ -54,6 +61,7 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
           registration_number: await decryptSymmetric(
             patient.encrypted_registration_number,
           ),
+          appLinkCount: _count.child_hospital_link,
         })),
       );
     })
