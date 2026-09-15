@@ -4834,12 +4834,23 @@ async function splitPromoted(
     .filter((k): k is { kind: string; key: string } => k != null);
   if (keys.length === 0) return { ads: [], places: list };
 
+  // 종류별로 묶어 IN 두 개로 묻는다. {kind,key} 쌍을 그대로 OR 로 늘어놓으면
+  // 반경 안이 빽빽한 곳에서 조건이 수십 개가 되는데, 이 자리는 찾기 화면을
+  // 열 때마다 도는 곳이다.
+  const eyeKeys = keys.filter((k) => k.kind === "eye").map((k) => k.key);
+  const opticalKeys = keys.filter((k) => k.kind === "optical").map((k) => k.key);
+
   const now = new Date();
   let rows: { kind: string; key: string; tier: string }[] = [];
   try {
     rows = await prisma.facility_promotion.findMany({
       where: {
-        OR: keys.map((k) => ({ kind: k.kind, key: k.key })),
+        OR: [
+          ...(eyeKeys.length > 0 ? [{ kind: "eye", key: { in: eyeKeys } }] : []),
+          ...(opticalKeys.length > 0
+            ? [{ kind: "optical", key: { in: opticalKeys } }]
+            : []),
+        ],
         starts_at: { lte: now },
         ends_at: { gte: now },
       },
