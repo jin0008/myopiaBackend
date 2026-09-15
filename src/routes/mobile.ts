@@ -4703,6 +4703,48 @@ function yearOf(v: string | null): { since?: number } {
  * 사각형으로 먼저 크게 자르고(인덱스가 듣는다) 그 다음 실제 거리로
  * 거른다 - 사각형만으로 자르면 모서리 쪽이 반경 밖인데도 들어온다.
  */
+/** 명부 한 줄 → 화면이 읽는 모양. 목록과 광고가 같은 함수를 쓴다 -
+ *  두 군데에 같은 매핑을 두면 한쪽만 고치는 일이 생긴다. */
+function clinicToDTO(c: EyeClinicRow, distanceKm: number): FacilityDTO {
+  return {
+    id: `hira:${c.ykiho}`,
+    name: c.name,
+    category: c.kind as FacilityCategory,
+    address: c.address,
+    roadAddress: c.address,
+    lat: c.lat,
+    lng: c.lng,
+    phone: c.phone,
+    distanceKm: Number(distanceKm.toFixed(2)),
+    placeUrl: c.homepage,
+    ...(c.eye_doctors != null && c.eye_doctors > 0
+      ? { eyeDoctors: c.eye_doctors }
+      : {}),
+    ...yearOf(c.opened_on),
+    ...hoursFields(c.hours),
+    ...(c.lunch ? { lunch: c.lunch } : {}),
+    ...(c.recv ? { recv: c.recv } : {}),
+    ...(c.place ? { place: c.place } : {}),
+  };
+}
+
+function shopToDTO(sh: OpticalShopRow, distanceKm: number): FacilityDTO {
+  return {
+    id: `opt:${sh.license_no}`,
+    name: sh.name,
+    category: "optical",
+    address: sh.address,
+    roadAddress: sh.address,
+    lat: sh.lat,
+    lng: sh.lng,
+    phone: sh.phone,
+    distanceKm: Number(distanceKm.toFixed(2)),
+    placeUrl: null,
+    ...(sh.refractometer > 0 ? { refractometer: sh.refractometer } : {}),
+    ...yearOf(sh.licensed_on),
+  };
+}
+
 async function directoryFacilities(
   lat: number,
   lng: number,
@@ -4746,44 +4788,12 @@ async function directoryFacilities(
   for (const c of clinics) {
     const d = haversineKm(lat, lng, c.lat, c.lng);
     if (d > km) continue;
-    out.push({
-      id: `hira:${c.ykiho}`,
-      name: c.name,
-      category: c.kind as FacilityCategory,
-      address: c.address,
-      roadAddress: c.address,
-      lat: c.lat,
-      lng: c.lng,
-      phone: c.phone,
-      distanceKm: Number(d.toFixed(2)),
-      placeUrl: c.homepage,
-      ...(c.eye_doctors != null && c.eye_doctors > 0
-        ? { eyeDoctors: c.eye_doctors }
-        : {}),
-      ...yearOf(c.opened_on),
-      ...hoursFields(c.hours),
-      ...(c.lunch ? { lunch: c.lunch } : {}),
-      ...(c.recv ? { recv: c.recv } : {}),
-      ...(c.place ? { place: c.place } : {}),
-    });
+    out.push(clinicToDTO(c, d));
   }
   for (const sh of shops) {
     const d = haversineKm(lat, lng, sh.lat, sh.lng);
     if (d > km) continue;
-    out.push({
-      id: `opt:${sh.license_no}`,
-      name: sh.name,
-      category: "optical",
-      address: sh.address,
-      roadAddress: sh.address,
-      lat: sh.lat,
-      lng: sh.lng,
-      phone: sh.phone,
-      distanceKm: Number(d.toFixed(2)),
-      placeUrl: null,
-      ...(sh.refractometer > 0 ? { refractometer: sh.refractometer } : {}),
-      ...yearOf(sh.licensed_on),
-    });
+    out.push(shopToDTO(sh, d));
   }
   out.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
   // 화면은 목록을 스크롤해 훑는 자리다. 반경 안이 수백 곳이어도 그만큼
@@ -4818,39 +4828,29 @@ function promotionKeyOf(f: FacilityDTO): { kind: string; key: string } | null {
 }
 
 /**
- * 거리순 목록에서 광고를 갈라낸다.
+ * 광고를 뽑아 목록 위로 올린다.
+ *
+ * 살아 있는 광고에서 출발한다. 검색 결과에서 고르면 안 된다 - 목록은
+ * 가까운 80곳으로 잘려 나가는데, 강남처럼 안경점이 빽빽한 곳에서는 3km
+ * 떨어진 광고주가 80등 밖으로 밀려 아예 후보에 들지 못한다. 돈을 낸
+ * 업체가 빽빽한 동네일수록 안 보이는 셈이었다.
+ *
+ * 살아 있는 광고는 많아야 수십 건이라 통째로 읽어도 된다.
  *
  * 뽑은 것은 목록에서 뺀다. 위아래에 같은 가게가 두 번 나오면 광고인지
  * 검색 결과인지 헷갈리고, 목록이 한 칸 낭비된다.
  */
-async function splitPromoted(
-  list: FacilityDTO[],
-): Promise<{ ads: FacilityDTO[]; places: FacilityDTO[] }> {
-  const near = list.filter(
-    (f) => f.distanceKm != null && f.distanceKm <= AD_RADIUS_KM,
-  );
-  const keys = near
-    .map((f) => promotionKeyOf(f))
-    .filter((k): k is { kind: string; key: string } => k != null);
-  if (keys.length === 0) return { ads: [], places: list };
-
-  // 종류별로 묶어 IN 두 개로 묻는다. {kind,key} 쌍을 그대로 OR 로 늘어놓으면
-  // 반경 안이 빽빽한 곳에서 조건이 수십 개가 되는데, 이 자리는 찾기 화면을
-  // 열 때마다 도는 곳이다.
-  const eyeKeys = keys.filter((k) => k.kind === "eye").map((k) => k.key);
-  const opticalKeys = keys.filter((k) => k.kind === "optical").map((k) => k.key);
-
+async function promotedFacilities(
+  lat: number,
+  lng: number,
+  kind: "eye" | "optical" | "both",
+): Promise<FacilityDTO[]> {
   const now = new Date();
   let rows: { kind: string; key: string; tier: string }[] = [];
   try {
     rows = await prisma.facility_promotion.findMany({
       where: {
-        OR: [
-          ...(eyeKeys.length > 0 ? [{ kind: "eye", key: { in: eyeKeys } }] : []),
-          ...(opticalKeys.length > 0
-            ? [{ kind: "optical", key: { in: opticalKeys } }]
-            : []),
-        ],
+        ...(kind === "both" ? {} : { kind }),
         starts_at: { lte: now },
         ends_at: { gte: now },
       },
@@ -4858,27 +4858,48 @@ async function splitPromoted(
     });
   } catch {
     // 광고를 못 읽는다고 검색이 멈출 이유는 없다.
-    return { ads: [], places: list };
+    return [];
   }
-  if (rows.length === 0) return { ads: [], places: list };
+  if (rows.length === 0) return [];
+
+  const eyeKeys = rows.filter((r) => r.kind === "eye").map((r) => r.key);
+  const opticalKeys = rows.filter((r) => r.kind === "optical").map((r) => r.key);
+  const [clinics, shops] = await Promise.all([
+    eyeKeys.length > 0
+      ? prisma.eye_clinic.findMany({ where: { ykiho: { in: eyeKeys } } })
+      : Promise.resolve([]),
+    opticalKeys.length > 0
+      ? prisma.optical_shop.findMany({ where: { license_no: { in: opticalKeys } } })
+      : Promise.resolve([]),
+  ]);
 
   const tierOf = new Map(rows.map((r) => [`${r.kind}:${r.key}`, r.tier]));
-  const ads: FacilityDTO[] = [];
-  const rest: FacilityDTO[] = [];
-  for (const f of list) {
-    const k = promotionKeyOf(f);
-    const tier =
-      k != null && f.distanceKm != null && f.distanceKm <= AD_RADIUS_KM
-        ? tierOf.get(`${k.kind}:${k.key}`)
-        : undefined;
-    if (tier != null && ads.length < AD_SLOTS) {
-      // 이미 거리순이므로 가까운 광고부터 채워진다.
-      ads.push({ ...f, promotion: { tier } });
-    } else {
-      rest.push(f);
-    }
+  const out: FacilityDTO[] = [];
+  for (const c of clinics) {
+    const d = haversineKm(lat, lng, c.lat, c.lng);
+    if (d > AD_RADIUS_KM) continue;
+    out.push({
+      ...clinicToDTO(c, d),
+      promotion: { tier: tierOf.get(`eye:${c.ykiho}`) ?? "premium" },
+    });
   }
-  return { ads, places: rest };
+  for (const sh of shops) {
+    const d = haversineKm(lat, lng, sh.lat, sh.lng);
+    if (d > AD_RADIUS_KM) continue;
+    out.push({
+      ...shopToDTO(sh, d),
+      promotion: { tier: tierOf.get(`optical:${sh.license_no}`) ?? "premium" },
+    });
+  }
+  out.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
+  return out.slice(0, AD_SLOTS);
+}
+
+/** 광고로 올라간 것을 목록에서 뺀다. */
+function withoutAds(list: FacilityDTO[], ads: FacilityDTO[]): FacilityDTO[] {
+  if (ads.length === 0) return list;
+  const taken = new Set(ads.map((a) => a.id));
+  return list.filter((f) => !taken.has(f.id));
 }
 
 router.get("/facilities", async (req, res) => {
@@ -4907,8 +4928,8 @@ router.get("/facilities", async (req, res) => {
   if (fromDirectory.length > 0) {
     // 키 이름은 카카오 경로와 같아야 한다. 앱은 places 를 읽는데 명부만
     // facilities 로 보내고 있어, 200 을 받고도 목록이 늘 비었다.
-    const { ads, places } = await splitPromoted(fromDirectory);
-    res.json({ places, ads, source: "directory" });
+    const ads = await promotedFacilities(lat, lng, kind);
+    res.json({ places: withoutAds(fromDirectory, ads), ads, source: "directory" });
     return;
   }
 
