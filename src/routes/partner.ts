@@ -567,6 +567,46 @@ const promotionSchema = zod.object({
   note: zod.string().trim().max(200).optional(),
 });
 
+/** GET /partner/facilities?q=... — 광고 걸 업체를 이름으로 찾는다.
+ *
+ *  번호를 손으로 옮겨 적게 했더니 25자짜리 인허가번호에서 앞 네 글자가
+ *  빠진 채 저장되는 일이 났다. 등록은 성공한 것처럼 보이고 광고만 안
+ *  나간다. 고르게 하면 그 실수가 아예 생기지 않는다. */
+router.get("/facilities", siteAdminRequired, async (req, res) => {
+  const q = String(req.query.q ?? "").trim();
+  if (q.length < 2) {
+    res.json([]);
+    return;
+  }
+  const like = { contains: q, mode: "insensitive" as const };
+  const [clinics, shops] = await Promise.all([
+    prisma.eye_clinic.findMany({
+      where: { OR: [{ name: like }, { address: like }] },
+      select: { ykiho: true, name: true, address: true },
+      take: 15,
+    }),
+    prisma.optical_shop.findMany({
+      where: { OR: [{ name: like }, { address: like }] },
+      select: { license_no: true, name: true, address: true },
+      take: 15,
+    }),
+  ]);
+  res.json([
+    ...clinics.map((c) => ({
+      kind: "eye" as const,
+      key: c.ykiho,
+      name: c.name,
+      address: c.address,
+    })),
+    ...shops.map((sh) => ({
+      kind: "optical" as const,
+      key: sh.license_no,
+      name: sh.name,
+      address: sh.address,
+    })),
+  ]);
+});
+
 router.get("/promotions", siteAdminRequired, async (_req, res) => {
   const rows = await prisma.facility_promotion.findMany({
     orderBy: [{ ends_at: "desc" }],
