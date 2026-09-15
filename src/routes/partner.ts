@@ -572,12 +572,44 @@ router.get("/promotions", siteAdminRequired, async (_req, res) => {
     orderBy: [{ ends_at: "desc" }],
     include: { account: { select: { id: true, hospital_name: true, email: true } } },
   });
+
+  // 번호만 보여 주면 어느 업체인지 알 수 없다. 명부에서 상호와 주소를
+  // 끌어와 함께 보인다 - 번호가 틀려 아무 데도 안 붙는 광고를 등록한
+  // 경우도 여기서 드러난다(이름이 비어 나온다).
+  const eyeKeys = rows.filter((r) => r.kind === "eye").map((r) => r.key);
+  const opticalKeys = rows.filter((r) => r.kind === "optical").map((r) => r.key);
+  const [clinics, shops] = await Promise.all([
+    eyeKeys.length > 0
+      ? prisma.eye_clinic.findMany({
+          where: { ykiho: { in: eyeKeys } },
+          select: { ykiho: true, name: true, address: true },
+        })
+      : Promise.resolve([]),
+    opticalKeys.length > 0
+      ? prisma.optical_shop.findMany({
+          where: { license_no: { in: opticalKeys } },
+          select: { license_no: true, name: true, address: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  const facility = new Map<string, { name: string; address: string }>([
+    ...clinics.map(
+      (c) => [`eye:${c.ykiho}`, { name: c.name, address: c.address }] as const,
+    ),
+    ...shops.map(
+      (sh) =>
+        [`optical:${sh.license_no}`, { name: sh.name, address: sh.address }] as const,
+    ),
+  ]);
+
   const now = Date.now();
   res.json(
     rows.map((r) => ({
       id: r.id,
       kind: r.kind,
       key: r.key,
+      facilityName: facility.get(`${r.kind}:${r.key}`)?.name ?? null,
+      facilityAddress: facility.get(`${r.kind}:${r.key}`)?.address ?? null,
       tier: r.tier,
       startsOn: r.starts_at.toISOString().slice(0, 10),
       endsOn: r.ends_at.toISOString().slice(0, 10),
