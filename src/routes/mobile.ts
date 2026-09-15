@@ -4907,8 +4907,52 @@ function withoutAds(list: FacilityDTO[], ads: FacilityDTO[]): FacilityDTO[] {
   return list.filter((f) => !taken.has(f.id));
 }
 
+/** 한 곳만. 통합 검색에서 고른 시설을 찾기 화면이 바로 펼치는 데 쓴다 -
+ *  고른 곳이 내 주변 목록에 없을 수 있어(먼 동네) 목록에서 찾을 수 없다.
+ *  id 는 `hira:요양기호` 또는 `opt:인허가번호` 다. */
+router.get("/facilities/by-id", async (req, res) => {
+  const id = String(req.query.id ?? "");
+  const lat = parseOptionalFloat(req.query.lat);
+  const lng = parseOptionalFloat(req.query.lng);
+  const [prefix, ...rest] = id.split(":");
+  const key = rest.join(":");
+  if (key === "") {
+    res.status(400).json({ error: "bad id", code: "bad_request" });
+    return;
+  }
+  const here = lat != null && lng != null;
+
+  if (prefix === "hira") {
+    const c = await prisma.eye_clinic.findUnique({ where: { ykiho: key } });
+    if (c == null) {
+      res.status(404).json({ error: "not found", code: "not_found" });
+      return;
+    }
+    const f = clinicToDTO(c, here ? haversineKm(lat, lng, c.lat, c.lng) : 0);
+    if (!here) f.distanceKm = null;
+    res.json(f);
+    return;
+  }
+  if (prefix === "opt") {
+    const sh = await prisma.optical_shop.findUnique({ where: { license_no: key } });
+    if (sh == null) {
+      res.status(404).json({ error: "not found", code: "not_found" });
+      return;
+    }
+    const f = shopToDTO(sh, here ? haversineKm(lat, lng, sh.lat, sh.lng) : 0);
+    if (!here) f.distanceKm = null;
+    res.json(f);
+    return;
+  }
+  res.status(404).json({ error: "not found", code: "not_found" });
+});
+
 /**
  * 이름으로 안과·안경점을 찾는다.
+ *
+ * 경로를 /facilities/search 로 두었다가 치료탭이 쓰던 같은 이름의 라우트를
+ * 덮어버렸다. Express 는 먼저 등록된 쪽이 이기므로, 나중 것이 죽은 줄도
+ * 모르고 남는다. 하는 일이 다르니 이름도 달라야 한다.
  *
  * 주변 찾기와 다른 길이다. 사람들은 "우리 동네 어디 있지"만 궁금한 게
  * 아니라 "그 병원 정보 좀"으로도 온다. 그때 좌표는 순서를 정하는 데만
@@ -4916,7 +4960,7 @@ function withoutAds(list: FacilityDTO[], ads: FacilityDTO[]): FacilityDTO[] {
  *
  * 주소도 함께 본다. "압구정 안경"처럼 지역을 섞어 치는 사람이 많다.
  */
-router.get("/facilities/search", async (req, res) => {
+router.get("/facilities/by-name", async (req, res) => {
   const q = String(req.query.q ?? "").trim();
   if (q.length < 2) {
     res.json({ places: [] as FacilityDTO[] });
