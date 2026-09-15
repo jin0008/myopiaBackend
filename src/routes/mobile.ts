@@ -4843,8 +4843,13 @@ function promotionKeyOf(f: FacilityDTO): { kind: string; key: string } | null {
 async function promotedFacilities(
   lat: number,
   lng: number,
+  radiusM: number,
   kind: "eye" | "optical" | "both",
 ): Promise<FacilityDTO[]> {
+  // 광고 반경은 따로 좁게 잡지만, 사용자가 더 좁게 찾고 있으면 그쪽을
+  // 따른다. 1km 만 보겠다는 사람에게 4km 밖 광고를 올리면 그건 검색
+  // 결과가 아니라 끼워 넣은 것이다.
+  const adKm = Math.min(AD_RADIUS_KM, radiusM / 1000);
   const now = new Date();
   let rows: { kind: string; key: string; tier: string }[] = [];
   try {
@@ -4877,7 +4882,7 @@ async function promotedFacilities(
   const out: FacilityDTO[] = [];
   for (const c of clinics) {
     const d = haversineKm(lat, lng, c.lat, c.lng);
-    if (d > AD_RADIUS_KM) continue;
+    if (d > adKm) continue;
     out.push({
       ...clinicToDTO(c, d),
       promotion: { tier: tierOf.get(`eye:${c.ykiho}`) ?? "premium" },
@@ -4885,7 +4890,7 @@ async function promotedFacilities(
   }
   for (const sh of shops) {
     const d = haversineKm(lat, lng, sh.lat, sh.lng);
-    if (d > AD_RADIUS_KM) continue;
+    if (d > adKm) continue;
     out.push({
       ...shopToDTO(sh, d),
       promotion: { tier: tierOf.get(`optical:${sh.license_no}`) ?? "premium" },
@@ -4985,7 +4990,7 @@ router.get("/facilities", async (req, res) => {
   if (fromDirectory.length > 0) {
     // 키 이름은 카카오 경로와 같아야 한다. 앱은 places 를 읽는데 명부만
     // facilities 로 보내고 있어, 200 을 받고도 목록이 늘 비었다.
-    const ads = await promotedFacilities(lat, lng, kind);
+    const ads = await promotedFacilities(lat, lng, radius, kind);
     res.json({ places: withoutAds(fromDirectory, ads), ads, source: "directory" });
     return;
   }
