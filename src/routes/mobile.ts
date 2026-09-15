@@ -4902,6 +4902,63 @@ function withoutAds(list: FacilityDTO[], ads: FacilityDTO[]): FacilityDTO[] {
   return list.filter((f) => !taken.has(f.id));
 }
 
+/**
+ * 이름으로 안과·안경점을 찾는다.
+ *
+ * 주변 찾기와 다른 길이다. 사람들은 "우리 동네 어디 있지"만 궁금한 게
+ * 아니라 "그 병원 정보 좀"으로도 온다. 그때 좌표는 순서를 정하는 데만
+ * 쓰고, 없으면 이름순으로 낸다.
+ *
+ * 주소도 함께 본다. "압구정 안경"처럼 지역을 섞어 치는 사람이 많다.
+ */
+router.get("/facilities/search", async (req, res) => {
+  const q = String(req.query.q ?? "").trim();
+  if (q.length < 2) {
+    res.json({ places: [] as FacilityDTO[] });
+    return;
+  }
+  const kindParam = String(req.query.kind ?? "");
+  const kind =
+    kindParam === "eye" || kindParam === "optical" ? kindParam : "both";
+  const lat = parseOptionalFloat(req.query.lat);
+  const lng = parseOptionalFloat(req.query.lng);
+
+  const like = { contains: q, mode: "insensitive" as const };
+  const [clinics, shops] = await Promise.all([
+    kind === "optical"
+      ? Promise.resolve([])
+      : prisma.eye_clinic.findMany({
+          where: { OR: [{ name: like }, { address: like }] },
+          take: 40,
+        }),
+    kind === "eye"
+      ? Promise.resolve([])
+      : prisma.optical_shop.findMany({
+          where: { OR: [{ name: like }, { address: like }] },
+          take: 40,
+        }),
+  ]);
+
+  const hasHere = lat != null && lng != null;
+  const out: FacilityDTO[] = [
+    ...clinics.map((c) =>
+      clinicToDTO(c, hasHere ? haversineKm(lat, lng, c.lat, c.lng) : 0),
+    ),
+    ...shops.map((sh) =>
+      shopToDTO(sh, hasHere ? haversineKm(lat, lng, sh.lat, sh.lng) : 0),
+    ),
+  ];
+  // 좌표를 모르면 거리를 지운다. 0km 로 보이면 바로 앞에 있다는 뜻이 된다.
+  if (!hasHere) for (const f of out) f.distanceKm = null;
+
+  out.sort((a, b) =>
+    hasHere
+      ? (a.distanceKm ?? 0) - (b.distanceKm ?? 0)
+      : a.name.localeCompare(b.name),
+  );
+  res.json({ places: out.slice(0, 40) });
+});
+
 router.get("/facilities", async (req, res) => {
   const lat = parseOptionalFloat(req.query.lat);
   const lng = parseOptionalFloat(req.query.lng);
