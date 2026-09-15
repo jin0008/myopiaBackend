@@ -4497,6 +4497,11 @@ type FacilityDTO = {
   recv?: string;
   /** "문선빌딩 4층" 같은 층·건물 안내. */
   place?: string;
+
+  /** 유료 노출. 광고 자리에 올라간 것에만 붙는다. 화면은 이것이 있으면
+   *  '광고'라고 밝혀야 한다 - 돈 받은 자리를 검색 결과처럼 보이게 하면
+   *  안 된다. */
+  promotion?: { tier: string };
 };
 
 /** One raw Kakao keyword-search document (only the fields we use). */
@@ -4786,6 +4791,96 @@ async function directoryFacilities(
   return out.slice(0, TOTAL_LIMIT);
 }
 
+/* ---- 유료 노출 ---------------------------------------------------- *
+ *                                                                     *
+ * 광고는 목록 위에 따로 둔다. 거리순 안에 섞어 올리면 "내 주변 찾기"      *
+ * 라는 말이 무너진다 - 9km 떨어진 광고가 100m 안 가게보다 위에 온다.     *
+ * ------------------------------------------------------------------- */
+
+/** 광고 자리 수. 한 지역에 프리미엄이 열 곳이면 첫 화면이 전부 광고가
+ *  된다. */
+const AD_SLOTS = 3;
+
+/** 광고에는 검색 반경보다 좁은 자를 댄다. 반경 10km 를 그대로 쓰면 9km
+ *  밖 업체가 맨 위에 붙어, 광고 자체를 믿지 않게 된다. */
+const AD_RADIUS_KM = 5;
+
+/** 검색 결과의 id 에서 광고 대조용 열쇠를 꺼낸다.
+ *  id 는 `hira:요양기호` 또는 `opt:인허가번호` 로 만들어진다. */
+function promotionKeyOf(f: FacilityDTO): { kind: string; key: string } | null {
+  const [prefix, ...rest] = f.id.split(":");
+  const key = rest.join(":");
+  if (key === "") return null;
+  if (prefix === "hira") return { kind: "eye", key };
+  if (prefix === "opt") return { kind: "optical", key };
+  // 카카오로 떨어진 결과는 열쇠가 없다. 광고도 붙일 수 없다.
+  return null;
+}
+
+/**
+ * 거리순 목록에서 광고를 갈라낸다.
+ *
+ * 뽑은 것은 목록에서 뺀다. 위아래에 같은 가게가 두 번 나오면 광고인지
+ * 검색 결과인지 헷갈리고, 목록이 한 칸 낭비된다.
+ */
+async function splitPromoted(
+  list: FacilityDTO[],
+): Promise<{ ads: FacilityDTO[]; places: FacilityDTO[] }> {
+  const near = list.filter(
+    (f) => f.distanceKm != null && f.distanceKm <= AD_RADIUS_KM,
+  );
+  const keys = near
+    .map((f) => promotionKeyOf(f))
+    .filter((k): k is { kind: string; key: string } => k != null);
+  if (keys.length === 0) return { ads: [], places: list };
+
+  // 종류별로 묶어 IN 두 개로 묻는다. {kind,key} 쌍을 그대로 OR 로 늘어놓으면
+  // 반경 안이 빽빽한 곳에서 조건이 수십 개가 되는데, 이 자리는 찾기 화면을
+  // 열 때마다 도는 곳이다.
+  const eyeKeys = keys.filter((k) => k.kind === "eye").map((k) => k.key);
+  const opticalKeys = keys.filter((k) => k.kind === "optical").map((k) => k.key);
+
+  const now = new Date();
+  let rows: { kind: string; key: string; tier: string }[] = [];
+  try {
+    rows = await prisma.facility_promotion.findMany({
+      where: {
+        OR: [
+          ...(eyeKeys.length > 0 ? [{ kind: "eye", key: { in: eyeKeys } }] : []),
+          ...(opticalKeys.length > 0
+            ? [{ kind: "optical", key: { in: opticalKeys } }]
+            : []),
+        ],
+        starts_at: { lte: now },
+        ends_at: { gte: now },
+      },
+      select: { kind: true, key: true, tier: true },
+    });
+  } catch {
+    // 광고를 못 읽는다고 검색이 멈출 이유는 없다.
+    return { ads: [], places: list };
+  }
+  if (rows.length === 0) return { ads: [], places: list };
+
+  const tierOf = new Map(rows.map((r) => [`${r.kind}:${r.key}`, r.tier]));
+  const ads: FacilityDTO[] = [];
+  const rest: FacilityDTO[] = [];
+  for (const f of list) {
+    const k = promotionKeyOf(f);
+    const tier =
+      k != null && f.distanceKm != null && f.distanceKm <= AD_RADIUS_KM
+        ? tierOf.get(`${k.kind}:${k.key}`)
+        : undefined;
+    if (tier != null && ads.length < AD_SLOTS) {
+      // 이미 거리순이므로 가까운 광고부터 채워진다.
+      ads.push({ ...f, promotion: { tier } });
+    } else {
+      rest.push(f);
+    }
+  }
+  return { ads, places: rest };
+}
+
 router.get("/facilities", async (req, res) => {
   const lat = parseOptionalFloat(req.query.lat);
   const lng = parseOptionalFloat(req.query.lng);
@@ -4812,7 +4907,8 @@ router.get("/facilities", async (req, res) => {
   if (fromDirectory.length > 0) {
     // 키 이름은 카카오 경로와 같아야 한다. 앱은 places 를 읽는데 명부만
     // facilities 로 보내고 있어, 200 을 받고도 목록이 늘 비었다.
-    res.json({ places: fromDirectory, source: "directory" });
+    const { ads, places } = await splitPromoted(fromDirectory);
+    res.json({ places, ads, source: "directory" });
     return;
   }
 

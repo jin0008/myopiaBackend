@@ -549,6 +549,94 @@ router.get("/unclaimed-profiles", siteAdminRequired, async (_req, res) => {
 
 router.use(uploadErrorHandler);
 
+/* ---- site-admin manages paid placement -------------------------------- *
+ *                                                                         *
+ * 등급은 관리자만 켠다. 파트너가 스스로 올릴 수 있으면 돈을 내지 않고도      *
+ * 프리미엄이 된다 - verified 배지를 관리자 전용으로 둔 것과 같은 이유다.     *
+ * ----------------------------------------------------------------------- */
+
+const promotionSchema = zod.object({
+  /** "eye" 면 심평원 요양기호, "optical" 이면 지자체 인허가번호. */
+  kind: zod.enum(["eye", "optical"]),
+  key: zod.string().trim().min(1).max(64),
+  tier: zod.enum(["premium"]),
+  /** YYYY-MM-DD. 끝나는 날은 그날 끝까지 유효하게 잡는다. */
+  startsOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  endsOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  accountId: zod.string().uuid().optional(),
+  note: zod.string().trim().max(200).optional(),
+});
+
+router.get("/promotions", siteAdminRequired, async (_req, res) => {
+  const rows = await prisma.facility_promotion.findMany({
+    orderBy: [{ ends_at: "desc" }],
+    include: { account: { select: { id: true, hospital_name: true, email: true } } },
+  });
+  const now = Date.now();
+  res.json(
+    rows.map((r) => ({
+      id: r.id,
+      kind: r.kind,
+      key: r.key,
+      tier: r.tier,
+      startsOn: r.starts_at.toISOString().slice(0, 10),
+      endsOn: r.ends_at.toISOString().slice(0, 10),
+      // 기간이 지났는지는 화면이 다시 재지 않아도 되게 서버가 답한다.
+      active: r.starts_at.getTime() <= now && r.ends_at.getTime() >= now,
+      accountId: r.account?.id ?? null,
+      accountName: r.account?.hospital_name ?? null,
+      accountEmail: r.account?.email ?? null,
+      note: r.note,
+    })),
+  );
+});
+
+router.put("/promotions", siteAdminRequired, async (req, res) => {
+  const parsed = promotionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "invalid body", code: "validation_error" });
+    return;
+  }
+  const b = parsed.data;
+  // 끝나는 날 23:59:59 까지 살아 있게 한다. 날짜만 받아 그대로 쓰면 그날
+  // 0시에 광고가 꺼져, 하루를 덜 받은 셈이 된다.
+  const startsAt = new Date(`${b.startsOn}T00:00:00+09:00`);
+  const endsAt = new Date(`${b.endsOn}T23:59:59+09:00`);
+  if (endsAt.getTime() < startsAt.getTime()) {
+    res.status(400).json({ error: "ends before starts", code: "validation_error" });
+    return;
+  }
+
+  const row = await prisma.facility_promotion.upsert({
+    where: { kind_key: { kind: b.kind, key: b.key } },
+    create: {
+      kind: b.kind,
+      key: b.key,
+      tier: b.tier,
+      starts_at: startsAt,
+      ends_at: endsAt,
+      account_id: b.accountId ?? null,
+      note: b.note ?? null,
+    },
+    update: {
+      tier: b.tier,
+      starts_at: startsAt,
+      ends_at: endsAt,
+      account_id: b.accountId ?? null,
+      note: b.note ?? null,
+      updated_at: new Date(),
+    },
+  });
+  res.status(201).json({ id: row.id });
+});
+
+router.delete("/promotions/:id", siteAdminRequired, async (req, res) => {
+  await prisma.facility_promotion
+    .delete({ where: { id: String(req.params.id) } })
+    .catch(() => null);
+  res.sendStatus(200);
+});
+
 export default router;
 
 /* ---- 소식 (clinic notices) --------------------------------------------- *

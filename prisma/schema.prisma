@@ -541,6 +541,8 @@ model hospital_account {
   password_changed_at DateTime? @db.Timestamptz(6)
   created_at          DateTime  @default(now()) @db.Timestamptz(6)
   updated_at          DateTime  @default(now()) @db.Timestamptz(6)
+
+  facility_promotion facility_promotion[]
 }
 
 model hospital_profile {
@@ -1050,6 +1052,33 @@ model eye_clinic {
 }
 
 /// 전국 안경업소 명부(지자체 인허가).
+/// 안과·안경점 검색 결과의 유료 노출.
+///
+/// eye_clinic / optical_shop 에 컬럼을 붙이지 않는다. 그 두 표는 공공
+/// 자료를 다시 받아 덮어쓰는 대상이라, 광고 설정을 함께 두면 갱신할 때
+/// 날아갈 수 있다.
+model facility_promotion {
+  id         String   @id(map: "facility_promotion_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// "eye" | "optical"
+  kind       String
+  /// 안과면 요양기호(ykiho), 안경점이면 인허가번호(license_no).
+  key        String
+  /// 지금은 premium 하나뿐이다. 등급이 늘면 여기에 붙인다.
+  tier       String   @default("premium")
+  starts_at  DateTime @db.Timestamptz(6)
+  ends_at    DateTime @db.Timestamptz(6)
+  /// 어느 파트너 계정의 광고인지. 계정이 지워져도 이력은 남긴다.
+  account_id String?  @db.Uuid
+  note       String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  account hospital_account? @relation(fields: [account_id], references: [id], onDelete: SetNull, map: "facility_promotion_account_fk")
+
+  @@unique([kind, key], map: "facility_promotion_unique")
+  @@index([kind, ends_at], map: "idx_facility_promotion_active")
+}
+
 model optical_shop {
   id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   license_no    String   @unique
