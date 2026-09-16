@@ -539,6 +539,14 @@ model hospital_account {
   /// 발급된 토큰을 거절해야, 비밀번호를 바꾸는 것이 실제로 남을 내보내는
   /// 일이 된다. 없으면 "바꿨다"는 말이 아무 효력이 없다.
   password_changed_at DateTime? @db.Timestamptz(6)
+  /// 이 계정이 어느 가게인지. "eye" | "optical".
+  ///
+  /// 프로필(hospital_profile)은 카카오 장소로 식별되는데 광고는 심평원
+  /// 요양기호·인허가번호로 걸린다. 그 둘을 잇는 곳이 여기다. 운영자가
+  /// 한 번 묶어 주고, 파트너는 묶인 가게로만 프리미엄을 신청할 수 있다.
+  facility_kind       String?
+  /// 안과면 요양기호(ykiho), 안경점이면 인허가번호(license_no).
+  facility_key        String?
   created_at          DateTime  @default(now()) @db.Timestamptz(6)
   updated_at          DateTime  @default(now()) @db.Timestamptz(6)
 
