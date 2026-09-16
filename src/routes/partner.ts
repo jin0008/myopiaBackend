@@ -5,6 +5,7 @@ import express from "express";
 import bcrypt from "bcrypt";
 import multer from "multer";
 import zod from "zod";
+import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
 import {
   KakaoLookupError,
@@ -572,12 +573,10 @@ const promotionSchema = zod.object({
  *  번호를 손으로 옮겨 적게 했더니 25자짜리 인허가번호에서 앞 네 글자가
  *  빠진 채 저장되는 일이 났다. 등록은 성공한 것처럼 보이고 광고만 안
  *  나간다. 고르게 하면 그 실수가 아예 생기지 않는다. */
-router.get("/facilities", siteAdminRequired, async (req, res) => {
-  const q = String(req.query.q ?? "").trim();
-  if (q.length < 2) {
-    res.json([]);
-    return;
-  }
+/** 이름·주소로 명부를 뒤진다. 운영자와 파트너가 같은 것을 고르므로 한
+ *  군데서 만든다 - 따로 두면 한쪽에만 보이는 업체가 생긴다. */
+async function facilitiesByName(q: string) {
+  if (q.length < 2) return [];
   const like = { contains: q, mode: "insensitive" as const };
   const [clinics, shops] = await Promise.all([
     prisma.eye_clinic.findMany({
@@ -591,7 +590,7 @@ router.get("/facilities", siteAdminRequired, async (req, res) => {
       take: 15,
     }),
   ]);
-  res.json([
+  return [
     ...clinics.map((c) => ({
       kind: "eye" as const,
       key: c.ykiho,
@@ -604,7 +603,339 @@ router.get("/facilities", siteAdminRequired, async (req, res) => {
       name: sh.name,
       address: sh.address,
     })),
-  ]);
+  ];
+}
+
+/** 운영자가 광고를 걸 업체를 찾는다. */
+router.get("/facilities", siteAdminRequired, async (req, res) => {
+  res.json(await facilitiesByName(String(req.query.q ?? "").trim()));
+});
+
+/** 파트너가 신청서에 자기 가게를 고른다.
+ *
+ *  명부 자체는 공개 자료지만 로그인은 걸어 둔다. 여기서 나오는 것은 곧
+ *  광고를 걸 수 있는 대상 목록이라, 아무나 훑어 갈 이유가 없다. */
+router.get("/my/facilities", partnerRequired, async (req, res) => {
+  res.json(await facilitiesByName(String(req.query.q ?? "").trim()));
+});
+
+/* ---- 프리미엄 신청 ------------------------------------------------------
+ *
+ * 파트너가 신청하고 운영자가 허락하면 광고가 걸린다. 결제는 아직 없다 -
+ * 승인이 곧 결제 확인 자리다. 나중에 결제창이 들어오면 "승인"이 "입금
+ * 확인"으로 바뀌고 나머지 흐름은 그대로 쓴다.
+ */
+
+/** 이미 처리된 신청. 트랜잭션 밖으로 알리려고 쓴다. */
+class AlreadyReviewed extends Error {}
+
+const promotionRequestSchema = zod.object({
+  kind: zod.enum(["eye", "optical"]),
+  key: zod.string().trim().min(1).max(64),
+  facilityName: zod.string().trim().min(1).max(200),
+  startsOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  months: zod.number().int().min(1).max(12),
+  note: zod.string().trim().max(500).optional(),
+});
+
+/** 하루의 시작과 끝을 KST 로 잡는다. 업체가 말하는 "9월 1일부터"는
+ *  한국 시각 9월 1일 0시다. */
+function kstDayStart(day: string): Date {
+  return new Date(`${day}T00:00:00+09:00`);
+}
+function kstDayEnd(day: string): Date {
+  return new Date(`${day}T23:59:59+09:00`);
+}
+
+/** DATE 칸에 넣을 값. 날짜만 담는 칸이라 시각이 붙으면 시간대에 따라
+ *  하루가 밀린다 - KST 자정을 넣으면 UTC 서버에서는 전날로 저장된다.
+ *  달력의 그 날을 그대로 담으려면 UTC 자정이어야 한다. */
+function dateOnly(day: string): Date {
+  return new Date(`${day}T00:00:00Z`);
+}
+
+/** 그 달의 마지막 날. */
+function daysInMonth(year: number, month0: number): number {
+  return new Date(Date.UTC(year, month0 + 1, 0)).getUTCDate();
+}
+
+/**
+ * 시작일에 개월 수를 더한 마지막 날(KST).
+ *
+ * 달력 계산은 정수로 한다. Date 의 setMonth/getDate 는 서버의 지역 시각을
+ * 따르는데, 서버가 한국 시각이라는 보장이 없어 하루씩 밀린다.
+ *
+ * 도착한 달에 그 날짜가 없으면 그 달의 말일까지다(민법 제160조). 1/31 에
+ * 한 달을 더하면 2/31 은 없으니 2/28 까지이고, 거기서 하루를 더 빼면
+ * 안 된다 - 2월에 신청한 업체만 하루를 손해 본다.
+ */
+function endOfTerm(startsOn: string, months: number): Date {
+  const [y, m, d] = startsOn.split("-").map(Number);
+  const targetMonth0 = m - 1 + months;
+  const ty = y + Math.floor(targetMonth0 / 12);
+  const tm0 = ((targetMonth0 % 12) + 12) % 12;
+  const dim = daysInMonth(ty, tm0);
+  // 같은 날짜가 있으면 그 전날까지가 한 달이다(9/1 시작 1개월 → 9/30).
+  // 없으면 그 달의 말일까지다(1/31 시작 1개월 → 2/28).
+  const end =
+    d > dim
+      ? new Date(Date.UTC(ty, tm0, dim))
+      : new Date(Date.UTC(ty, tm0, d - 1));
+  const yy = end.getUTCFullYear();
+  const mm = String(end.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(end.getUTCDate()).padStart(2, "0");
+  return kstDayEnd(`${yy}-${mm}-${dd}`);
+}
+
+/**
+ * 이어 붙일 때의 새 종료일.
+ *
+ * 남아 있는 기간의 다음 날부터 개월 수를 달력으로 센다. 밀리초로 더하면
+ * 2월에 이어 붙인 "한 달"이 28일이 되고 7월에 이어 붙이면 31일이 된다 -
+ * 업체가 산 것은 한 달이지 며칠이 아니다.
+ */
+function extendTerm(currentEnd: Date, months: number): Date {
+  // 종료 시각은 KST 23:59:59 다. 9시간을 더해 읽으면 그 날짜가 나온다.
+  const kst = new Date(currentEnd.getTime() + 9 * 3600 * 1000);
+  const next = new Date(
+    Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate() + 1),
+  );
+  return endOfTerm(next.toISOString().slice(0, 10), months);
+}
+
+function requestToDTO(r: {
+  id: string;
+  kind: string;
+  key: string;
+  facility_name: string;
+  starts_on: Date;
+  months: number;
+  status: string;
+  note: string | null;
+  review_note: string | null;
+  reviewed_at: Date | null;
+  created_at: Date;
+}) {
+  return {
+    id: r.id,
+    kind: r.kind,
+    key: r.key,
+    facilityName: r.facility_name,
+    startsOn: r.starts_on.toISOString().slice(0, 10),
+    months: r.months,
+    status: r.status,
+    note: r.note,
+    reviewNote: r.review_note,
+    reviewedAt: r.reviewed_at?.toISOString() ?? null,
+    createdAt: r.created_at.toISOString(),
+  };
+}
+
+/** 파트너가 프리미엄을 신청한다. */
+router.post("/promotion-requests", partnerRequired, async (req, res) => {
+  const parsed = promotionRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "bad request", code: "bad_request" });
+    return;
+  }
+  const b = parsed.data;
+
+  // 고른 것이 실제로 명부에 있는 시설인지 본다. 화면에서 고르게 해 두었
+  // 지만 창구는 화면 없이도 불릴 수 있고, 없는 번호로 신청이 들어오면
+  // 운영자가 승인한 뒤에야 광고가 아무 데도 안 붙는 것을 알게 된다.
+  const exists =
+    b.kind === "eye"
+      ? await prisma.eye_clinic.findUnique({ where: { ykiho: b.key }, select: { name: true } })
+      : await prisma.optical_shop.findUnique({ where: { license_no: b.key }, select: { name: true } });
+  if (exists == null) {
+    res.status(404).json({ error: "facility not found", code: "facility_not_found" });
+    return;
+  }
+
+  try {
+    const row = await prisma.promotion_request.create({
+      data: {
+        account_id: req.partner!.sub,
+        kind: b.kind,
+        key: b.key,
+        // 명부의 이름을 쓴다. 신청자가 적어 낸 이름은 오타가 섞인다.
+        facility_name: exists.name,
+        starts_on: dateOnly(b.startsOn),
+        months: b.months,
+        note: b.note ?? null,
+      },
+    });
+    res.status(201).json(requestToDTO(row));
+  } catch (e) {
+    // 처리되지 않은 신청은 시설당 하나뿐이다(부분 유니크 인덱스). 같은
+    // 곳을 두 번 신청하면 운영자가 같은 건을 두 번 승인하게 된다.
+    if (
+      e instanceof Prisma.PrismaClientKnownRequestError &&
+      e.code === "P2002"
+    ) {
+      res.status(409).json({
+        error: "already pending",
+        code: "already_pending",
+      });
+      return;
+    }
+    throw e;
+  }
+});
+
+/** 파트너가 자기 신청 내역을 본다. */
+router.get("/promotion-requests/mine", partnerRequired, async (req, res) => {
+  const rows = await prisma.promotion_request.findMany({
+    where: { account_id: req.partner!.sub },
+    orderBy: [{ created_at: "desc" }],
+  });
+  res.json(rows.map(requestToDTO));
+});
+
+/** 파트너가 아직 처리되지 않은 신청을 거둬들인다. */
+router.delete("/promotion-requests/:id", partnerRequired, async (req, res) => {
+  const row = await prisma.promotion_request.findUnique({
+    where: { id: String(req.params.id) },
+  });
+  // 남의 신청인지 없는 신청인지 구분해 주지 않는다. 구분해 주면 남의
+  // 신청 id 를 넣어 보는 것만으로 있는지 없는지 알 수 있다.
+  if (row == null || row.account_id !== req.partner!.sub) {
+    res.sendStatus(404);
+    return;
+  }
+  if (row.status !== "pending") {
+    res.status(409).json({ error: "already reviewed", code: "already_reviewed" });
+    return;
+  }
+  await prisma.promotion_request.update({
+    where: { id: row.id },
+    data: { status: "cancelled", updated_at: new Date() },
+  });
+  res.sendStatus(204);
+});
+
+/** 운영자가 신청을 훑는다. 처리할 것이 먼저 온다. */
+router.get("/promotion-requests", siteAdminRequired, async (req, res) => {
+  const status = String(req.query.status ?? "");
+  const rows = await prisma.promotion_request.findMany({
+    where: status !== "" ? { status } : undefined,
+    orderBy: [{ created_at: "desc" }],
+    include: {
+      account: { select: { id: true, hospital_name: true, email: true, contact_name: true } },
+    },
+  });
+  res.json(
+    rows.map((r) => ({
+      ...requestToDTO(r),
+      accountId: r.account.id,
+      accountName: r.account.hospital_name,
+      accountEmail: r.account.email,
+      contactName: r.account.contact_name,
+    })),
+  );
+});
+
+/**
+ * 운영자가 허락한다. 여기서 광고가 생긴다.
+ *
+ * 나중에 결제가 붙으면 이 자리가 "입금 확인"이 된다. 흐름은 그대로다.
+ */
+router.post("/promotion-requests/:id/approve", siteAdminRequired, async (req, res) => {
+  const id = String(req.params.id);
+  const reviewNote =
+    typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 500) || null : null;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // 신청을 먼저 집어 든다. 바깥에서 상태를 읽고 여기까지 오는 사이에
+      // 다른 창에서 먼저 승인했을 수 있고, 두 번 승인되면 기간이 두 번
+      // 이어 붙어 받은 돈보다 오래 나간다. 상태를 조건에 넣은 갱신이
+      // 성공한 쪽만 계속 간다.
+      const claimed = await tx.promotion_request.updateMany({
+        where: { id, status: "pending" },
+        data: {
+          status: "approved",
+          reviewed_at: new Date(),
+          review_note: reviewNote,
+          updated_at: new Date(),
+        },
+      });
+      if (claimed.count !== 1) throw new AlreadyReviewed();
+
+      const row = await tx.promotion_request.findUniqueOrThrow({ where: { id } });
+      const startsOn = row.starts_on.toISOString().slice(0, 10);
+      const startsAt = kstDayStart(startsOn);
+
+      // 이미 광고가 걸린 곳이면 기간을 이어 붙인다. 덮어쓰면 남은 기간이
+      // 사라져 돈을 낸 만큼 나가지 않는다.
+      //
+      // 반대로 지난 광고가 남아 있는 곳이면 시작일도 함께 새로 잡는다.
+      // 끝나는 날만 미루면 옛 시작일이 그대로 남아, 광고가 없던 사이
+      // 기간까지 살아 있는 것으로 계산된다 - 돈을 안 받은 달에 광고가
+      // 나간다.
+      const existing = await tx.facility_promotion.findUnique({
+        where: { kind_key: { kind: row.kind, key: row.key } },
+      });
+      const stillRunning = existing != null && existing.ends_at > startsAt;
+
+      await tx.facility_promotion.upsert({
+        where: { kind_key: { kind: row.kind, key: row.key } },
+        create: {
+          kind: row.kind,
+          key: row.key,
+          tier: "premium",
+          starts_at: startsAt,
+          ends_at: endOfTerm(startsOn, row.months),
+          account_id: row.account_id,
+          note: row.note,
+        },
+        update: {
+          starts_at: stillRunning ? existing!.starts_at : startsAt,
+          ends_at: stillRunning
+            ? extendTerm(existing!.ends_at, row.months)
+            : endOfTerm(startsOn, row.months),
+          // 계정을 다시 맞춰 둔다. 이 고리가 있어야 파트너가 자기 숫자를 본다.
+          account_id: row.account_id,
+          updated_at: new Date(),
+        },
+      });
+    });
+  } catch (e) {
+    if (e instanceof AlreadyReviewed) {
+      // 없는 신청인지 이미 처리된 신청인지는 운영자에게는 같은 말이다 -
+      // 어느 쪽이든 지금 할 일이 없다.
+      res.status(409).json({ error: "already reviewed", code: "already_reviewed" });
+      return;
+    }
+    throw e;
+  }
+  res.sendStatus(204);
+});
+
+/** 운영자가 거절한다. 사유는 파트너 화면에 그대로 보인다. */
+router.post("/promotion-requests/:id/reject", siteAdminRequired, async (req, res) => {
+  const note = String(req.body?.note ?? "").trim();
+  if (note === "") {
+    // 사유 없이 거절하면 업체는 무엇을 고쳐 다시 내야 할지 알 수 없다.
+    res.status(400).json({ error: "note required", code: "note_required" });
+    return;
+  }
+  // 승인과 같은 이유로 상태를 조건에 넣는다. 이미 승인된 건을 거절로
+  // 덮으면 광고는 걸린 채 신청만 거절로 남는다.
+  const done = await prisma.promotion_request.updateMany({
+    where: { id: String(req.params.id), status: "pending" },
+    data: {
+      status: "rejected",
+      review_note: note.slice(0, 500),
+      reviewed_at: new Date(),
+      updated_at: new Date(),
+    },
+  });
+  if (done.count !== 1) {
+    res.status(409).json({ error: "already reviewed", code: "already_reviewed" });
+    return;
+  }
+  res.sendStatus(204);
 });
 
 /** 날짜별 집계를 읽어 합계와 일자별 줄을 만든다. 파트너 화면과 어드민이
