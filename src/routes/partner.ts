@@ -612,10 +612,16 @@ router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
   const key = String(req.body?.key ?? "").trim();
 
   if (key === "") {
-    await prisma.hospital_account.update({
+    // 없는 계정이면 update 가 P2025 로 터져 500 이 된다. 운영자에게는
+    // "그런 계정이 없다"가 맞는 말이다.
+    const gone = await prisma.hospital_account.updateMany({
       where: { id },
       data: { facility_kind: null, facility_key: null, updated_at: new Date() },
     });
+    if (gone.count !== 1) {
+      res.sendStatus(404);
+      return;
+    }
     res.sendStatus(204);
     return;
   }
@@ -633,10 +639,14 @@ router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
     return;
   }
   try {
-    await prisma.hospital_account.update({
+    const done = await prisma.hospital_account.updateMany({
       where: { id },
       data: { facility_kind: kind, facility_key: key, updated_at: new Date() },
     });
+    if (done.count !== 1) {
+      res.sendStatus(404);
+      return;
+    }
   } catch (e) {
     // 한 가게에 계정 하나다. 둘이 같은 가게를 들고 있으면 누구의 광고인지,
     // 누구에게 성적을 보여 줄지가 갈린다.
@@ -853,7 +863,9 @@ router.post("/promotion-requests", partnerRequired, async (req, res) => {
   const kind = account?.facility_kind;
   const key = account?.facility_key;
   if (kind == null || key == null) {
-    res.status(409).json({ error: "facility not linked", code: "facility_not_linked" });
+    // 409 가 아니라 403 이다. 409 는 "이미 기다리는 신청이 있다"에 쓰고
+    // 있는데, 둘 다 409 면 화면이 둘을 가릴 수 없어 엉뚱한 안내를 한다.
+    res.status(403).json({ error: "facility not linked", code: "facility_not_linked" });
     return;
   }
 
@@ -1102,8 +1114,28 @@ function statsFrom(days: number): Date {
  */
 router.get("/promotions/mine", partnerRequired, async (req, res) => {
   const days = Math.min(Math.max(Number(req.query.days ?? 30) || 30, 1), 180);
+
+  // 계정에 달린 광고와, 계정에 묶인 가게의 광고를 함께 본다.
+  //
+  // 둘 다 봐야 하는 이유는 광고가 이 흐름보다 먼저 있었기 때문이다.
+  // 운영자가 어드민에서 직접 등록한 줄에는 계정이 안 붙어 있을 수 있다.
+  // 그것까지 못 보면, 가게를 묶어 줘도 파트너 화면은 여전히 비어 있다.
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: req.partner!.sub },
+    select: { facility_kind: true, facility_key: true },
+  });
+  const linked =
+    account?.facility_kind != null && account.facility_key != null
+      ? { kind: account.facility_kind, key: account.facility_key }
+      : null;
+
   const mine = await prisma.facility_promotion.findMany({
-    where: { account_id: req.partner!.sub },
+    where: {
+      OR: [
+        { account_id: req.partner!.sub },
+        ...(linked != null ? [linked] : []),
+      ],
+    },
     orderBy: [{ ends_at: "desc" }],
   });
   const stats = await promotionStats(mine, statsFrom(days));
