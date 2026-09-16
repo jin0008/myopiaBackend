@@ -86,7 +86,11 @@ const signupSchema = zod.object({
   email: zod.string().email(),
   password: zod.string().min(8),
   contact_name: zod.string().min(1),
+  /// 상호. 병원이면 병원명, 안경점이면 안경점 이름.
   hospital_name: zod.string().min(1),
+  /// 안 보내면 병원이다. 안경점 가입이 생기기 전 화면이 아직 남아 있을 수
+  /// 있고, 그 화면이 보내는 것은 언제나 병원이다.
+  business_kind: zod.enum(["hospital", "optical"]).default("hospital"),
 });
 
 router.post("/signup", async (req, res) => {
@@ -104,6 +108,7 @@ router.post("/signup", async (req, res) => {
         password_hash: hash,
         contact_name: d.contact_name,
         hospital_name: d.hospital_name,
+        business_kind: d.business_kind,
       },
     })
     .catch(() => null);
@@ -222,7 +227,15 @@ router.post("/login", async (req, res) => {
     return;
   }
   const { token, expiresIn } = signPartnerToken(account.id);
-  res.json({ token, expiresIn, status: account.status });
+  // 업종을 함께 낸다. 로그인 뒤 어디로 보낼지가 여기서 갈리는데, 이것
+  // 하나 때문에 /me 를 한 번 더 부르면 그 호출이 실패할 때 로그인까지
+  // 실패한 것처럼 보인다 - 토큰은 이미 받아 둔 채로.
+  res.json({
+    token,
+    expiresIn,
+    status: account.status,
+    businessKind: account.business_kind,
+  });
 });
 
 router.get("/me", partnerRequired, async (req, res) => {
@@ -233,12 +246,38 @@ router.get("/me", partnerRequired, async (req, res) => {
     res.sendStatus(404);
     return;
   }
+  // 묶인 가게의 상호도 함께 낸다. 번호만 주면 화면이 "내 가게가 맞나"를
+  // 보여 줄 수 없다.
+  let facility: { kind: string; key: string; name: string; address: string } | null = null;
+  if (account.facility_kind != null && account.facility_key != null) {
+    const f =
+      account.facility_kind === "eye"
+        ? await prisma.eye_clinic.findUnique({
+            where: { ykiho: account.facility_key },
+            select: { name: true, address: true },
+          })
+        : await prisma.optical_shop.findUnique({
+            where: { license_no: account.facility_key },
+            select: { name: true, address: true },
+          });
+    if (f != null) {
+      facility = {
+        kind: account.facility_kind,
+        key: account.facility_key,
+        name: f.name,
+        address: f.address,
+      };
+    }
+  }
+
   res.json({
     id: account.id,
     email: account.email,
     contactName: account.contact_name,
     hospitalName: account.hospital_name,
+    businessKind: account.business_kind,
     status: account.status,
+    facility,
   });
 });
 
@@ -427,10 +466,44 @@ router.get("/accounts", siteAdminRequired, async (_req, res) => {
     where: { owner_account_id: { in: rows.map((a) => a.id) } },
   });
   const byOwner = new Map(profiles.map((p) => [p.owner_account_id, p]));
+
+  // 묶인 가게의 상호. 번호만 보이면 운영자도 맞게 묶였는지 알 수 없다.
+  const [clinics, shops] = await Promise.all([
+    prisma.eye_clinic.findMany({
+      where: {
+        ykiho: {
+          in: rows.filter((a) => a.facility_kind === "eye" && a.facility_key != null).map((a) => a.facility_key!),
+        },
+      },
+      select: { ykiho: true, name: true, address: true },
+    }),
+    prisma.optical_shop.findMany({
+      where: {
+        license_no: {
+          in: rows.filter((a) => a.facility_kind === "optical" && a.facility_key != null).map((a) => a.facility_key!),
+        },
+      },
+      select: { license_no: true, name: true, address: true },
+    }),
+  ]);
+  const facilities = new Map<string, { name: string; address: string }>([
+    ...clinics.map((c) => [`eye:${c.ykiho}`, { name: c.name, address: c.address }] as const),
+    ...shops.map((sh) => [`optical:${sh.license_no}`, { name: sh.name, address: sh.address }] as const),
+  ]);
+
   res.json(
     rows.map((a) => {
       const p = byOwner.get(a.id);
+      const f =
+        a.facility_key != null
+          ? facilities.get(`${a.facility_kind}:${a.facility_key}`)
+          : undefined;
       return {
+        businessKind: a.business_kind,
+        facilityKind: a.facility_kind,
+        facilityKey: a.facility_key,
+        facilityName: f?.name ?? null,
+        facilityAddress: f?.address ?? null,
         id: a.id,
         email: a.email,
         contactName: a.contact_name,
@@ -539,6 +612,94 @@ router.post("/accounts/:id/claim-profile", siteAdminRequired, async (req, res) =
 });
 
 /** 주인이 없는 프로필 목록 — 승인 화면에서 넘길 대상을 고르는 데 쓴다. */
+/**
+ * PUT /partner/accounts/:id/facility — 이 계정이 어느 가게인지 정한다.
+ *
+ * 프로필은 카카오 장소로, 광고는 심평원 번호로 식별된다. 그 둘을 잇는
+ * 일이라 사람이 한 번 해야 한다 - 계정이 정말 그 가게인지는 서류나 통화로
+ * 확인할 수밖에 없다. 신청할 때마다가 아니라 계정당 한 번이면 된다.
+ *
+ * key 를 비우면 묶음을 푼다.
+ */
+router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
+  const id = String(req.params.id);
+  const kind = String(req.body?.kind ?? "");
+  const key = String(req.body?.key ?? "").trim();
+
+  if (key === "") {
+    // 없는 계정이면 update 가 P2025 로 터져 500 이 된다. 운영자에게는
+    // "그런 계정이 없다"가 맞는 말이다.
+    const gone = await prisma.hospital_account.updateMany({
+      where: { id },
+      data: { facility_kind: null, facility_key: null, updated_at: new Date() },
+    });
+    if (gone.count !== 1) {
+      res.sendStatus(404);
+      return;
+    }
+    res.sendStatus(204);
+    return;
+  }
+  if (kind !== "eye" && kind !== "optical") {
+    res.status(400).json({ error: "bad kind", code: "bad_request" });
+    return;
+  }
+
+  // 업종과 가게 종류가 맞아야 한다. 병원 계정에 안경점을, 안경점 계정에
+  // 안과를 묶는 것은 손이 미끄러진 것이지 뜻이 있는 조합이 아니다. 막지
+  // 않으면 광고는 걸리는데 엉뚱한 곳에 걸리고, 그 사실은 아무 데서도
+  // 드러나지 않는다.
+  const target = await prisma.hospital_account.findUnique({
+    where: { id },
+    select: { business_kind: true },
+  });
+  if (target == null) {
+    res.sendStatus(404);
+    return;
+  }
+  const expected = target.business_kind === "optical" ? "optical" : "eye";
+  if (kind !== expected) {
+    res.status(400).json({
+      error: "kind mismatch",
+      code: "kind_mismatch",
+      message:
+        target.business_kind === "optical"
+          ? "안경점 계정에는 안경점만 묶을 수 있습니다."
+          : "병원 계정에는 안과만 묶을 수 있습니다.",
+    });
+    return;
+  }
+
+  // 명부에 없는 번호를 묶으면 신청도 광고도 아무 데도 안 붙는다.
+  const exists =
+    kind === "eye"
+      ? await prisma.eye_clinic.findUnique({ where: { ykiho: key }, select: { name: true } })
+      : await prisma.optical_shop.findUnique({ where: { license_no: key }, select: { name: true } });
+  if (exists == null) {
+    res.status(404).json({ error: "facility not found", code: "facility_not_found" });
+    return;
+  }
+  try {
+    const done = await prisma.hospital_account.updateMany({
+      where: { id },
+      data: { facility_kind: kind, facility_key: key, updated_at: new Date() },
+    });
+    if (done.count !== 1) {
+      res.sendStatus(404);
+      return;
+    }
+  } catch (e) {
+    // 한 가게에 계정 하나다. 둘이 같은 가게를 들고 있으면 누구의 광고인지,
+    // 누구에게 성적을 보여 줄지가 갈린다.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      res.status(409).json({ error: "taken", code: "facility_taken" });
+      return;
+    }
+    throw e;
+  }
+  res.sendStatus(204);
+});
+
 router.get("/unclaimed-profiles", siteAdminRequired, async (_req, res) => {
   const rows = await prisma.hospital_profile.findMany({
     where: { owner_account_id: null },
@@ -611,13 +772,6 @@ router.get("/facilities", siteAdminRequired, async (req, res) => {
   res.json(await facilitiesByName(String(req.query.q ?? "").trim()));
 });
 
-/** 파트너가 신청서에 자기 가게를 고른다.
- *
- *  명부 자체는 공개 자료지만 로그인은 걸어 둔다. 여기서 나오는 것은 곧
- *  광고를 걸 수 있는 대상 목록이라, 아무나 훑어 갈 이유가 없다. */
-router.get("/my/facilities", partnerRequired, async (req, res) => {
-  res.json(await facilitiesByName(String(req.query.q ?? "").trim()));
-});
 
 /* ---- 프리미엄 신청 ------------------------------------------------------
  *
@@ -630,9 +784,7 @@ router.get("/my/facilities", partnerRequired, async (req, res) => {
 class AlreadyReviewed extends Error {}
 
 const promotionRequestSchema = zod.object({
-  kind: zod.enum(["eye", "optical"]),
-  key: zod.string().trim().min(1).max(64),
-  facilityName: zod.string().trim().min(1).max(200),
+  // 가게는 받지 않는다. 계정에 묶인 것을 쓴다.
   startsOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   months: zod.number().int().min(1).max(12),
   note: zod.string().trim().max(500).optional(),
@@ -740,13 +892,30 @@ router.post("/promotion-requests", partnerRequired, async (req, res) => {
   }
   const b = parsed.data;
 
-  // 고른 것이 실제로 명부에 있는 시설인지 본다. 화면에서 고르게 해 두었
-  // 지만 창구는 화면 없이도 불릴 수 있고, 없는 번호로 신청이 들어오면
-  // 운영자가 승인한 뒤에야 광고가 아무 데도 안 붙는 것을 알게 된다.
+  // 가게는 신청서가 정하지 않는다. 운영자가 계정에 묶어 둔 것을 쓴다.
+  //
+  // 예전에는 신청할 때 고르게 했는데, 그러면 남의 가게로 신청할 수 있고 -
+  // 더 나쁘게는, 처리 대기 중인 신청이 시설당 하나뿐이라 남의 가게로
+  // 걸어만 두어도 진짜 주인이 신청하지 못한다.
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: req.partner!.sub },
+    select: { facility_kind: true, facility_key: true },
+  });
+  const kind = account?.facility_kind;
+  const key = account?.facility_key;
+  if (kind == null || key == null) {
+    // 409 가 아니라 403 이다. 409 는 "이미 기다리는 신청이 있다"에 쓰고
+    // 있는데, 둘 다 409 면 화면이 둘을 가릴 수 없어 엉뚱한 안내를 한다.
+    res.status(403).json({ error: "facility not linked", code: "facility_not_linked" });
+    return;
+  }
+
+  // 묶인 번호가 명부에 남아 있는지 본다. 명부는 주기적으로 다시 받으므로
+  // 폐업 등으로 사라졌을 수 있다.
   const exists =
-    b.kind === "eye"
-      ? await prisma.eye_clinic.findUnique({ where: { ykiho: b.key }, select: { name: true } })
-      : await prisma.optical_shop.findUnique({ where: { license_no: b.key }, select: { name: true } });
+    kind === "eye"
+      ? await prisma.eye_clinic.findUnique({ where: { ykiho: key }, select: { name: true } })
+      : await prisma.optical_shop.findUnique({ where: { license_no: key }, select: { name: true } });
   if (exists == null) {
     res.status(404).json({ error: "facility not found", code: "facility_not_found" });
     return;
@@ -756,8 +925,8 @@ router.post("/promotion-requests", partnerRequired, async (req, res) => {
     const row = await prisma.promotion_request.create({
       data: {
         account_id: req.partner!.sub,
-        kind: b.kind,
-        key: b.key,
+        kind,
+        key,
         // 명부의 이름을 쓴다. 신청자가 적어 낸 이름은 오타가 섞인다.
         facility_name: exists.name,
         starts_on: dateOnly(b.startsOn),
@@ -986,8 +1155,28 @@ function statsFrom(days: number): Date {
  */
 router.get("/promotions/mine", partnerRequired, async (req, res) => {
   const days = Math.min(Math.max(Number(req.query.days ?? 30) || 30, 1), 180);
+
+  // 계정에 달린 광고와, 계정에 묶인 가게의 광고를 함께 본다.
+  //
+  // 둘 다 봐야 하는 이유는 광고가 이 흐름보다 먼저 있었기 때문이다.
+  // 운영자가 어드민에서 직접 등록한 줄에는 계정이 안 붙어 있을 수 있다.
+  // 그것까지 못 보면, 가게를 묶어 줘도 파트너 화면은 여전히 비어 있다.
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: req.partner!.sub },
+    select: { facility_kind: true, facility_key: true },
+  });
+  const linked =
+    account?.facility_kind != null && account.facility_key != null
+      ? { kind: account.facility_kind, key: account.facility_key }
+      : null;
+
   const mine = await prisma.facility_promotion.findMany({
-    where: { account_id: req.partner!.sub },
+    where: {
+      OR: [
+        { account_id: req.partner!.sub },
+        ...(linked != null ? [linked] : []),
+      ],
+    },
     orderBy: [{ ends_at: "desc" }],
   });
   const stats = await promotionStats(mine, statsFrom(days));
