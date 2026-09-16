@@ -477,6 +477,34 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         return;
       }
 
+      // 보호자가 앱에 옮겨 적은 검사값.
+      //
+      // 병원이 잰 값(measurement)과 한 배열로 합치지 않는다. 안축장은
+      // 병원이 재는 값이고 이쪽은 부모가 듣고 옮겨 적은 값이라, 섞이면
+      // 어느 것이 측정이고 어느 것이 기억인지 구분할 수 없다. 그 숫자로
+      // 근시 진행을 판단하는 자리다.
+      //
+      // 그래도 보여는 준다. myopiamanage 를 쓰지 않는 다른 병원에서 받은
+      // 검사는 보호자가 옮겨 적는 것이 유일한 통로인데, 안 보이면 그
+      // 환자가 다른 곳에도 다녔다는 사실 자체가 차트에서 사라진다.
+      // 구분해 두고 걸러 볼 수 있게 하는 편이, 숨기는 것보다 낫다.
+      const parentRecords = await prisma.child_record.findMany({
+        where: {
+          parent_child_link: {
+            child_hospital_link: { some: { patient_id: data.id, status: "active" } },
+          },
+          OR: [{ axial_od: { not: null } }, { axial_os: { not: null } }],
+        },
+        orderBy: { recorded_on: "asc" },
+        select: {
+          id: true,
+          recorded_on: true,
+          axial_od: true,
+          axial_os: true,
+          memo: true,
+        },
+      });
+
       // High-risk read: full patient record with decrypted PII (reg. number,
       // DOB) plus all clinical measurements.
       writeAuditLog({
@@ -490,6 +518,16 @@ router.get("/:patientId", loginRequired, async (req, res) => {
 
       res.json({
         ...data,
+        // measurement 와 같은 모양으로 낸다. 화면이 한 그래프에 두 종류를
+        // 얹을 때 형태가 다르면 그 자리에서 변환하게 되고, 변환하는 곳이
+        // 늘어나면 어긋난다.
+        parent_record: parentRecords.map((r) => ({
+          id: r.id,
+          date: r.recorded_on,
+          od: r.axial_od,
+          os: r.axial_os,
+          memo: r.memo,
+        })),
         date_of_birth: await decryptSymmetric(data.encrypted_date_of_birth),
         registration_number: await decryptSymmetric(
           data.encrypted_registration_number,

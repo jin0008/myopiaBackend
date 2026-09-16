@@ -667,7 +667,7 @@ router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
       code: "kind_mismatch",
       message:
         target.business_kind === "optical"
-          ? "안경점 계정에는 안경점만 연결할 수 있습니다."
+          ? "안경원 계정에는 안경원만 연결할 수 있습니다."
           : "병원 계정에는 안과만 연결할 수 있습니다.",
     });
     return;
