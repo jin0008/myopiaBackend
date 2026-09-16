@@ -164,6 +164,56 @@ model treatment {
   patient_treatment patient_treatment[]
 }
 
+/// 폰으로 알림을 보낼 기기. 한 사람이 폰과 태블릿을 함께 쓸 수 있다.
+model push_token {
+  id           String   @id(map: "push_token_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id      String   @db.Uuid
+  /// Expo 푸시 토큰. 애플·구글 토큰을 직접 들지 않는 이유는 Expo 가 그
+  /// 둘을 가려 주기 때문이다.
+  token        String   @unique(map: "push_token_unique")
+  /// "ios" | "android". 보낼 때가 아니라 문제를 쫓을 때 쓴다.
+  platform     String?
+  /// 앱이 켜질 때마다 갱신한다. 오래 안 보인 토큰은 지운 앱이다.
+  last_seen_at DateTime @default(now()) @db.Timestamptz(6)
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  user user @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "push_token_user_fk")
+
+  @@index([user_id], map: "idx_push_token_user")
+}
+
+/// 무엇을 받을지. 줄이 없으면 전부 받는 것으로 본다 - 기존 사용자에게
+/// 기본값 줄을 미리 만들어 둘 필요가 없다.
+model notification_pref {
+  user_id    String   @id(map: "notification_pref_pk") @db.Uuid
+  /// 내 글의 댓글·답글·좋아요
+  community  Boolean  @default(true)
+  /// 매일 하는 치료를 아직 체크하지 않았을 때
+  care_daily Boolean  @default(true)
+  /// 그 시각(KST)에 보낸다. 정시로 제한해 크론이 한 시간에 한 번만 돌게 한다.
+  care_hour  Int      @default(21)
+  /// 진료 예정일·렌즈 교체일
+  reminder   Boolean  @default(true)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  user user @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "notification_pref_user_fk")
+}
+
+/// 같은 알림을 두 번 보내지 않기 위한 자국. 크론이 겹쳐 돌아도 먼저
+/// 꽂은 쪽만 보낸다.
+model push_sent {
+  user_id String   @db.Uuid
+  /// "care_daily" | "reminder:<child_reminder.id>"
+  kind    String
+  day     DateTime @db.Date
+  sent_at DateTime @default(now()) @db.Timestamptz(6)
+
+  user user @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "push_sent_user_fk")
+
+  @@id([user_id, kind, day], map: "push_sent_pk")
+}
+
 model user {
   id                      String                   @id(map: "user_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   created_at              DateTime                 @default(now()) @db.Timestamp(6)
@@ -197,6 +247,9 @@ model user {
   study_visit             study_visit[]
   invites_created         child_link_invite[]      @relation("invite_creator")
   invites_used            child_link_invite[]      @relation("invite_user")
+  push_token              push_token[]
+  notification_pref       notification_pref?
+  push_sent               push_sent[]
 }
 
 model user_patient {
@@ -1259,7 +1312,11 @@ model child_record {
 model child_care_log {
   id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   parent_child_link_id String   @db.Uuid
-  /// atropine · lens
+  /// atropine · lens · outdoor
+  ///
+  /// 야외활동이 같은 표에 있다는 것을 놓치기 쉽다. 치료를 챙겼는지 묻는
+  /// 곳에서는 outdoor 를 빼야 한다 - 산책을 기록했다고 안약을 넣은 것은
+  /// 아니다.
   kind                 String
   done_on              DateTime @db.Date
   created_at           DateTime @default(now()) @db.Timestamptz(6)

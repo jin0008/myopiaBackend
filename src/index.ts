@@ -31,6 +31,7 @@ import columnRoutes from "./routes/column";
 import bannerRoutes from "./routes/banner";
 import hospitalProfileRoutes from "./routes/hospital_profile";
 import partnerRoutes from "./routes/partner";
+import { runPushReminders } from "./jobs/pushReminders";
 
 import { authLimiter, lookupLimiter } from "./lib/security";
 
@@ -144,3 +145,22 @@ app.use(prismaErrorHandler);
 app.use(globalErrorHandler);
 
 app.listen(3000, () => console.log("Listening on port 3000"));
+
+/**
+ * 정해진 시각에 보내는 알림(치료 체크·일정).
+ *
+ * 크론 대신 서버 안에서 돈다. 프로세스가 하나뿐이라 겹칠 일이 없고,
+ * 별도 크론을 두면 배포할 때 그쪽도 함께 챙겨야 한다. 그래도 겹쳐 돌 때를
+ * 대비해 보낸 자국(push_sent)으로 한 번 더 막는다.
+ *
+ * 매시 정각에 맞춰 첫 실행을 미룬다. 서버를 3시 50분에 재시작하면 그때부터
+ * 한 시간마다가 되어, 매시 50분에 도는 크론이 된다.
+ */
+{
+  const HOUR = 3600 * 1000;
+  const untilNextHour = HOUR - (Date.now() % HOUR);
+  setTimeout(() => {
+    void runPushReminders();
+    setInterval(() => void runPushReminders(), HOUR);
+  }, untilNextHour);
+}
