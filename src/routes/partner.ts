@@ -626,6 +626,9 @@ router.get("/my/facilities", partnerRequired, async (req, res) => {
  * 확인"으로 바뀌고 나머지 흐름은 그대로 쓴다.
  */
 
+/** 이미 처리된 신청. 트랜잭션 밖으로 알리려고 쓴다. */
+class AlreadyReviewed extends Error {}
+
 const promotionRequestSchema = zod.object({
   kind: zod.enum(["eye", "optical"]),
   key: zod.string().trim().min(1).max(64),
@@ -682,6 +685,22 @@ function endOfTerm(startsOn: string, months: number): Date {
   const mm = String(end.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(end.getUTCDate()).padStart(2, "0");
   return kstDayEnd(`${yy}-${mm}-${dd}`);
+}
+
+/**
+ * 이어 붙일 때의 새 종료일.
+ *
+ * 남아 있는 기간의 다음 날부터 개월 수를 달력으로 센다. 밀리초로 더하면
+ * 2월에 이어 붙인 "한 달"이 28일이 되고 7월에 이어 붙이면 31일이 된다 -
+ * 업체가 산 것은 한 달이지 며칠이 아니다.
+ */
+function extendTerm(currentEnd: Date, months: number): Date {
+  // 종료 시각은 KST 23:59:59 다. 9시간을 더해 읽으면 그 날짜가 나온다.
+  const kst = new Date(currentEnd.getTime() + 9 * 3600 * 1000);
+  const next = new Date(
+    Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate() + 1),
+  );
+  return endOfTerm(next.toISOString().slice(0, 10), months);
 }
 
 function requestToDTO(r: {
@@ -822,68 +841,74 @@ router.get("/promotion-requests", siteAdminRequired, async (req, res) => {
  * 나중에 결제가 붙으면 이 자리가 "입금 확인"이 된다. 흐름은 그대로다.
  */
 router.post("/promotion-requests/:id/approve", siteAdminRequired, async (req, res) => {
-  const row = await prisma.promotion_request.findUnique({
-    where: { id: String(req.params.id) },
-  });
-  if (row == null) {
-    res.sendStatus(404);
-    return;
+  const id = String(req.params.id);
+  const reviewNote =
+    typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 500) || null : null;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      // 신청을 먼저 집어 든다. 바깥에서 상태를 읽고 여기까지 오는 사이에
+      // 다른 창에서 먼저 승인했을 수 있고, 두 번 승인되면 기간이 두 번
+      // 이어 붙어 받은 돈보다 오래 나간다. 상태를 조건에 넣은 갱신이
+      // 성공한 쪽만 계속 간다.
+      const claimed = await tx.promotion_request.updateMany({
+        where: { id, status: "pending" },
+        data: {
+          status: "approved",
+          reviewed_at: new Date(),
+          review_note: reviewNote,
+          updated_at: new Date(),
+        },
+      });
+      if (claimed.count !== 1) throw new AlreadyReviewed();
+
+      const row = await tx.promotion_request.findUniqueOrThrow({ where: { id } });
+      const startsOn = row.starts_on.toISOString().slice(0, 10);
+      const startsAt = kstDayStart(startsOn);
+
+      // 이미 광고가 걸린 곳이면 기간을 이어 붙인다. 덮어쓰면 남은 기간이
+      // 사라져 돈을 낸 만큼 나가지 않는다.
+      //
+      // 반대로 지난 광고가 남아 있는 곳이면 시작일도 함께 새로 잡는다.
+      // 끝나는 날만 미루면 옛 시작일이 그대로 남아, 광고가 없던 사이
+      // 기간까지 살아 있는 것으로 계산된다 - 돈을 안 받은 달에 광고가
+      // 나간다.
+      const existing = await tx.facility_promotion.findUnique({
+        where: { kind_key: { kind: row.kind, key: row.key } },
+      });
+      const stillRunning = existing != null && existing.ends_at > startsAt;
+
+      await tx.facility_promotion.upsert({
+        where: { kind_key: { kind: row.kind, key: row.key } },
+        create: {
+          kind: row.kind,
+          key: row.key,
+          tier: "premium",
+          starts_at: startsAt,
+          ends_at: endOfTerm(startsOn, row.months),
+          account_id: row.account_id,
+          note: row.note,
+        },
+        update: {
+          starts_at: stillRunning ? existing!.starts_at : startsAt,
+          ends_at: stillRunning
+            ? extendTerm(existing!.ends_at, row.months)
+            : endOfTerm(startsOn, row.months),
+          // 계정을 다시 맞춰 둔다. 이 고리가 있어야 파트너가 자기 숫자를 본다.
+          account_id: row.account_id,
+          updated_at: new Date(),
+        },
+      });
+    });
+  } catch (e) {
+    if (e instanceof AlreadyReviewed) {
+      // 없는 신청인지 이미 처리된 신청인지는 운영자에게는 같은 말이다 -
+      // 어느 쪽이든 지금 할 일이 없다.
+      res.status(409).json({ error: "already reviewed", code: "already_reviewed" });
+      return;
+    }
+    throw e;
   }
-  if (row.status !== "pending") {
-    res.status(409).json({ error: "already reviewed", code: "already_reviewed" });
-    return;
-  }
-
-  const startsOn = row.starts_on.toISOString().slice(0, 10);
-  const startsAt = kstDayStart(startsOn);
-  const endsAt = endOfTerm(startsOn, row.months);
-
-  // 이미 광고가 걸린 곳이면 기간을 이어 붙인다. 덮어쓰면 남은 기간이
-  // 사라져 돈을 낸 만큼 나가지 않는다.
-  //
-  // 반대로 지난 광고가 남아 있는 곳이면 시작일도 함께 새로 잡는다. 끝나는
-  // 날만 미루면 옛 시작일이 그대로 남아, 광고가 없던 사이 기간까지 살아
-  // 있는 것으로 계산된다 - 돈을 안 받은 달에 광고가 나간다.
-  const existing = await prisma.facility_promotion.findUnique({
-    where: { kind_key: { kind: row.kind, key: row.key } },
-  });
-  const stillRunning = existing != null && existing.ends_at > startsAt;
-  const term = endsAt.getTime() - startsAt.getTime();
-  const nextStarts = stillRunning ? existing!.starts_at : startsAt;
-  const nextEnds = stillRunning
-    ? new Date(existing!.ends_at.getTime() + term)
-    : endsAt;
-
-  await prisma.$transaction([
-    prisma.facility_promotion.upsert({
-      where: { kind_key: { kind: row.kind, key: row.key } },
-      create: {
-        kind: row.kind,
-        key: row.key,
-        tier: "premium",
-        starts_at: startsAt,
-        ends_at: endsAt,
-        account_id: row.account_id,
-        note: row.note,
-      },
-      update: {
-        starts_at: nextStarts,
-        ends_at: nextEnds,
-        // 계정을 다시 맞춰 둔다. 이 고리가 있어야 파트너가 자기 숫자를 본다.
-        account_id: row.account_id,
-        updated_at: new Date(),
-      },
-    }),
-    prisma.promotion_request.update({
-      where: { id: row.id },
-      data: {
-        status: "approved",
-        reviewed_at: new Date(),
-        review_note: typeof req.body?.note === "string" ? req.body.note : null,
-        updated_at: new Date(),
-      },
-    }),
-  ]);
   res.sendStatus(204);
 });
 
@@ -895,19 +920,10 @@ router.post("/promotion-requests/:id/reject", siteAdminRequired, async (req, res
     res.status(400).json({ error: "note required", code: "note_required" });
     return;
   }
-  const row = await prisma.promotion_request.findUnique({
-    where: { id: String(req.params.id) },
-  });
-  if (row == null) {
-    res.sendStatus(404);
-    return;
-  }
-  if (row.status !== "pending") {
-    res.status(409).json({ error: "already reviewed", code: "already_reviewed" });
-    return;
-  }
-  await prisma.promotion_request.update({
-    where: { id: row.id },
+  // 승인과 같은 이유로 상태를 조건에 넣는다. 이미 승인된 건을 거절로
+  // 덮으면 광고는 걸린 채 신청만 거절로 남는다.
+  const done = await prisma.promotion_request.updateMany({
+    where: { id: String(req.params.id), status: "pending" },
     data: {
       status: "rejected",
       review_note: note.slice(0, 500),
@@ -915,6 +931,10 @@ router.post("/promotion-requests/:id/reject", siteAdminRequired, async (req, res
       updated_at: new Date(),
     },
   });
+  if (done.count !== 1) {
+    res.status(409).json({ error: "already reviewed", code: "already_reviewed" });
+    return;
+  }
   res.sendStatus(204);
 });
 
