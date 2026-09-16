@@ -531,7 +531,17 @@ model hospital_account {
   email               String    @unique(map: "hospital_account_email_key")
   password_hash       String
   contact_name        String
+  /// 상호. 병원이면 병원명, 안경점이면 안경점 이름이다. 칸 이름이 병원인
+  /// 것은 안경점 가입 길이 없던 시절의 흔적이다.
   hospital_name       String
+  /// "hospital" | "optical". 가입할 때 정해지고 바뀌지 않는다.
+  ///
+  /// 화면을 가르는 데 쓴다 - 안경점에는 병원 프로필 편집기(카카오 장소,
+  /// 진료시간, 의사, 치료항목)를 보여 줄 이유가 없다.
+  ///
+  /// facility_kind 와 다르다. 저쪽은 운영자가 확인해 묶어 준 광고 대상이고
+  /// 이쪽은 본인이 가입할 때 고른 업종이다. 묶이기 전에도 알아야 한다.
+  business_kind       String   @default("hospital")
   status              String    @default("pending")
   /// 비밀번호를 마지막으로 바꾼 시각.
   ///

@@ -86,7 +86,11 @@ const signupSchema = zod.object({
   email: zod.string().email(),
   password: zod.string().min(8),
   contact_name: zod.string().min(1),
+  /// 상호. 병원이면 병원명, 안경점이면 안경점 이름.
   hospital_name: zod.string().min(1),
+  /// 안 보내면 병원이다. 안경점 가입이 생기기 전 화면이 아직 남아 있을 수
+  /// 있고, 그 화면이 보내는 것은 언제나 병원이다.
+  business_kind: zod.enum(["hospital", "optical"]).default("hospital"),
 });
 
 router.post("/signup", async (req, res) => {
@@ -104,6 +108,7 @@ router.post("/signup", async (req, res) => {
         password_hash: hash,
         contact_name: d.contact_name,
         hospital_name: d.hospital_name,
+        business_kind: d.business_kind,
       },
     })
     .catch(() => null);
@@ -262,6 +267,7 @@ router.get("/me", partnerRequired, async (req, res) => {
     email: account.email,
     contactName: account.contact_name,
     hospitalName: account.hospital_name,
+    businessKind: account.business_kind,
     status: account.status,
     facility,
   });
@@ -485,6 +491,7 @@ router.get("/accounts", siteAdminRequired, async (_req, res) => {
           ? facilities.get(`${a.facility_kind}:${a.facility_key}`)
           : undefined;
       return {
+        businessKind: a.business_kind,
         facilityKind: a.facility_kind,
         facilityKey: a.facility_key,
         facilityName: f?.name ?? null,
