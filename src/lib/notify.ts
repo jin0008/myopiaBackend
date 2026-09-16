@@ -72,8 +72,18 @@ export async function notify(args: {
     //
     // 병원 연동 해제는 끄지 못한다. 예고 없이 차트에서 그 병원의 측정값이
     // 사라지는 일이라, 모르고 지나가면 안 된다.
+    // 좋아요는 폰을 울리지 않는다. 앱 안 목록에는 그대로 남는다.
+    //
+    // 글 하나가 조금만 퍼져도 좋아요는 수십 개가 되는데, 그때마다 폰이
+    // 울리면 그 사람이 가장 먼저 하는 일은 커뮤니티 알림을 통째로 끄는
+    // 것이다. 그러면 정작 답이 달렸을 때도 모르게 된다. 울릴 값어치가
+    // 있는 것은 누가 말을 걸었을 때다.
+    const silent =
+      args.type === "post_like" ||
+      args.type === "comment_like" ||
+      args.type === "poll_comment_like";
     const forced = args.type === "hospital_unlinked";
-    if (forced || (await wantsPush(args.userId, "community"))) {
+    if (!silent && (forced || (await wantsPush(args.userId, "community")))) {
       await pushToUser(args.userId, {
         title: pushTitle(args.type, args.title),
         body: snippet(args.preview, 120) ?? snippet(args.title, 120) ?? "",

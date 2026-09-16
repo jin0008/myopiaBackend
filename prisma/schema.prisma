@@ -1312,7 +1312,11 @@ model child_record {
 model child_care_log {
   id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   parent_child_link_id String   @db.Uuid
-  /// atropine · lens
+  /// atropine · lens · outdoor
+  ///
+  /// 야외활동이 같은 표에 있다는 것을 놓치기 쉽다. 치료를 챙겼는지 묻는
+  /// 곳에서는 outdoor 를 빼야 한다 - 산책을 기록했다고 안약을 넣은 것은
+  /// 아니다.
   kind                 String
   done_on              DateTime @db.Date
   created_at           DateTime @default(now()) @db.Timestamptz(6)
