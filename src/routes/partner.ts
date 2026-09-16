@@ -613,13 +613,16 @@ router.post("/accounts/:id/claim-profile", siteAdminRequired, async (req, res) =
 
 /** 주인이 없는 프로필 목록 — 승인 화면에서 넘길 대상을 고르는 데 쓴다. */
 /**
- * PUT /partner/accounts/:id/facility — 이 계정이 어느 가게인지 정한다.
+ * PUT /partner/accounts/:id/facility — 이 계정이 실제로 어느 업체인지 정한다.
+ *
+ * 가입 폼의 상호는 자유 입력이라 누구나 남의 상호를 칠 수 있다. 운영자가
+ * 사업자등록증이나 통화로 확인한 뒤 명부의 실제 업체를 지정한다.
  *
  * 프로필은 카카오 장소로, 광고는 심평원 번호로 식별된다. 그 둘을 잇는
  * 일이라 사람이 한 번 해야 한다 - 계정이 정말 그 가게인지는 서류나 통화로
  * 확인할 수밖에 없다. 신청할 때마다가 아니라 계정당 한 번이면 된다.
  *
- * key 를 비우면 묶음을 푼다.
+ * key 를 비우면 연결을 푼다.
  */
 router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
   const id = String(req.params.id);
@@ -664,8 +667,8 @@ router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
       code: "kind_mismatch",
       message:
         target.business_kind === "optical"
-          ? "안경점 계정에는 안경점만 묶을 수 있습니다."
-          : "병원 계정에는 안과만 묶을 수 있습니다.",
+          ? "안경점 계정에는 안경점만 연결할 수 있습니다."
+          : "병원 계정에는 안과만 연결할 수 있습니다.",
     });
     return;
   }
