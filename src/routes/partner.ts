@@ -607,6 +607,98 @@ router.get("/facilities", siteAdminRequired, async (req, res) => {
   ]);
 });
 
+/** 날짜별 집계를 읽어 합계와 일자별 줄을 만든다. 파트너 화면과 어드민이
+ *  같은 숫자를 봐야 해서 한 군데서 만든다 - 따로 세면 반드시 어긋난다. */
+async function promotionStats(
+  facilities: { kind: string; key: string }[],
+  fromDay: Date,
+) {
+  if (facilities.length === 0) return new Map<string, { impressions: number; clicks: number; days: { day: string; impressions: number; clicks: number }[] }>();
+  const rows = await prisma.promotion_stat_daily.findMany({
+    where: { OR: facilities.map((f) => ({ kind: f.kind, key: f.key })), day: { gte: fromDay } },
+    orderBy: { day: "asc" },
+  });
+  const out = new Map<string, { impressions: number; clicks: number; days: { day: string; impressions: number; clicks: number }[] }>();
+  for (const r of rows) {
+    const k = r.kind + ":" + r.key;
+    const cur = out.get(k) ?? { impressions: 0, clicks: 0, days: [] };
+    cur.impressions += r.impressions;
+    cur.clicks += r.clicks;
+    cur.days.push({
+      day: r.day.toISOString().slice(0, 10),
+      impressions: r.impressions,
+      clicks: r.clicks,
+    });
+    out.set(k, cur);
+  }
+  return out;
+}
+
+/** 지난 N 일의 시작(KST). 기본 30 일. */
+function statsFrom(days: number): Date {
+  const kst = new Date(Date.now() + 9 * 3600 * 1000);
+  const start = new Date(
+    Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()),
+  );
+  start.setUTCDate(start.getUTCDate() - (days - 1));
+  return start;
+}
+
+/**
+ * GET /partner/promotions/mine — 내 광고와 그 성적.
+ *
+ * 파트너가 자기 숫자를 직접 보게 한다. 지금까지는 어드민만 볼 수 있어,
+ * 광고비를 받고도 "얼마나 보였냐"에 사람이 손으로 답해야 했다.
+ *
+ * 계정과 시설을 잇는 것은 facility_promotion.account_id 하나다. 어드민이
+ * 광고를 등록할 때 계정을 고르지 않았다면 여기서는 아무것도 안 보인다.
+ */
+router.get("/promotions/mine", partnerRequired, async (req, res) => {
+  const days = Math.min(Math.max(Number(req.query.days ?? 30) || 30, 1), 180);
+  const mine = await prisma.facility_promotion.findMany({
+    where: { account_id: req.partner!.sub },
+    orderBy: [{ ends_at: "desc" }],
+  });
+  const stats = await promotionStats(mine, statsFrom(days));
+
+  // 상호를 함께 낸다. 번호만 보여 주면 자기 가게인지도 알 수 없다.
+  const [clinics, shops] = await Promise.all([
+    prisma.eye_clinic.findMany({
+      where: { ykiho: { in: mine.filter((p) => p.kind === "eye").map((p) => p.key) } },
+      select: { ykiho: true, name: true, address: true },
+    }),
+    prisma.optical_shop.findMany({
+      where: { license_no: { in: mine.filter((p) => p.kind === "optical").map((p) => p.key) } },
+      select: { license_no: true, name: true, address: true },
+    }),
+  ]);
+  const names = new Map<string, { name: string; address: string }>();
+  for (const c of clinics) names.set("eye:" + c.ykiho, { name: c.name, address: c.address });
+  for (const sh of shops) names.set("optical:" + sh.license_no, { name: sh.name, address: sh.address });
+
+  const now = new Date();
+  res.json(
+    mine.map((p) => {
+      const k = p.kind + ":" + p.key;
+      const s = stats.get(k) ?? { impressions: 0, clicks: 0, days: [] };
+      return {
+        id: p.id,
+        kind: p.kind,
+        key: p.key,
+        name: names.get(k)?.name ?? null,
+        address: names.get(k)?.address ?? null,
+        tier: p.tier,
+        startsAt: p.starts_at.toISOString(),
+        endsAt: p.ends_at.toISOString(),
+        live: p.starts_at <= now && p.ends_at >= now,
+        impressions: s.impressions,
+        clicks: s.clicks,
+        days: s.days,
+      };
+    }),
+  );
+});
+
 router.get("/promotions", siteAdminRequired, async (_req, res) => {
   const rows = await prisma.facility_promotion.findMany({
     orderBy: [{ ends_at: "desc" }],
@@ -642,12 +734,18 @@ router.get("/promotions", siteAdminRequired, async (_req, res) => {
     ),
   ]);
 
+  // 지난 30일 성적을 같이 낸다. 어드민이 파트너와 같은 숫자를 봐야
+  // 문의가 왔을 때 화면을 맞춰 놓고 이야기할 수 있다.
+  const stats = await promotionStats(rows, statsFrom(30));
+
   const now = Date.now();
   res.json(
     rows.map((r) => ({
       id: r.id,
       kind: r.kind,
       key: r.key,
+      impressions30d: stats.get(`${r.kind}:${r.key}`)?.impressions ?? 0,
+      clicks30d: stats.get(`${r.kind}:${r.key}`)?.clicks ?? 0,
       facilityName: facility.get(`${r.kind}:${r.key}`)?.name ?? null,
       facilityAddress: facility.get(`${r.kind}:${r.key}`)?.address ?? null,
       tier: r.tier,

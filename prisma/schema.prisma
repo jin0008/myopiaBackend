@@ -1057,6 +1057,28 @@ model eye_clinic {
 /// eye_clinic / optical_shop 에 컬럼을 붙이지 않는다. 그 두 표는 공공
 /// 자료를 다시 받아 덮어쓰는 대상이라, 광고 설정을 함께 두면 갱신할 때
 /// 날아갈 수 있다.
+/// 유료 노출이 얼마나 보였고 얼마나 눌렸는지, 하루 한 줄.
+///
+/// facility_promotion 을 FK 로 가리키지 않는다. 광고가 끝나거나 지워져도
+/// 집계는 남아야 한다(정산·분쟁). 변하지 않는 신원은 시설(kind+key)이고
+/// 광고는 그 위를 스쳐 가는 기간이다.
+model promotion_stat_daily {
+  id          String   @id(map: "promotion_stat_daily_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// "eye" | "optical"
+  kind        String
+  /// 안과면 요양기호(ykiho), 안경점이면 인허가번호(license_no).
+  key         String
+  /// 집계 날짜(KST). 광고주가 보는 달력이 한국 달력이다.
+  day         DateTime @db.Date
+  impressions Int      @default(0)
+  clicks      Int      @default(0)
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([kind, key, day], map: "promotion_stat_daily_unique")
+  @@index([kind, key, day(sort: Desc)], map: "idx_promotion_stat_daily_facility")
+}
+
 model facility_promotion {
   id         String   @id(map: "facility_promotion_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   /// "eye" | "optical"

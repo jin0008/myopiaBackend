@@ -4910,6 +4910,108 @@ function withoutAds(list: FacilityDTO[], ads: FacilityDTO[]): FacilityDTO[] {
 /** 한 곳만. 통합 검색에서 고른 시설을 찾기 화면이 바로 펼치는 데 쓴다 -
  *  고른 곳이 내 주변 목록에 없을 수 있어(먼 동네) 목록에서 찾을 수 없다.
  *  id 는 `hira:요양기호` 또는 `opt:인허가번호` 다. */
+/** 시설 id(`hira:…` / `opt:…`) 를 광고 표가 쓰는 (kind, key) 로 옮긴다.
+ *  찾기 화면은 자료 출처로 이름을 붙였고 광고 표는 업종으로 붙였다. */
+function facilityIdToPromotionKey(
+  id: string,
+): { kind: "eye" | "optical"; key: string } | null {
+  const [prefix, ...rest] = id.split(":");
+  const key = rest.join(":");
+  if (key === "") return null;
+  if (prefix === "hira") return { kind: "eye", key };
+  if (prefix === "opt") return { kind: "optical", key };
+  return null;
+}
+
+/** 오늘(KST)의 날짜. 광고주가 보는 달력은 한국 달력이다.
+ *  서버 시각이 곧 한국 시각이라는 보장이 없어 9시간을 더해 읽는다. */
+function todayInKST(): Date {
+  const kst = new Date(Date.now() + 9 * 3600 * 1000);
+  return new Date(
+    Date.UTC(kst.getUTCFullYear(), kst.getUTCMonth(), kst.getUTCDate()),
+  );
+}
+
+/**
+ * 유료 노출이 보이거나 눌린 것을 센다.
+ *
+ * 낱개로 쌓지 않고 하루 한 줄에 더한다. 목록을 한 번 그릴 때마다 최대
+ * 3줄이 생기고 스크롤하면 또 생기니, 낱개로 두면 한 달에 수백만 줄이
+ * 되는데 정작 보여줄 것은 "그날 몇 번"이다.
+ *
+ * 광고가 걸린 시설만 센다. 아무 시설이나 세면 표가 안 팔린 곳으로 가득
+ * 차고, 밖에서 아무 id 나 밀어 넣어 남의 숫자를 부풀릴 수도 있다.
+ *
+ * 로그인 없이 부른다 - 비로그인 사용자도 광고를 본다. 그래서 이 창구는
+ * 위조할 수 있다. 지금은 살아 있는 광고로만 범위를 좁히고 한 번에 받는
+ * 개수를 막아 두는 선까지다. 돈을 받기 시작하면 더 단단히 해야 한다.
+ */
+router.post("/facilities/promotion-events", async (req, res) => {
+  const raw = Array.isArray(req.body?.events) ? req.body.events : [];
+  // 한 번에 받는 개수를 막는다. 화면 하나가 낼 수 있는 양을 훨씬 넘는다.
+  const events = raw.slice(0, 60);
+
+  // 같은 시설이 여러 번 들어오면 미리 합친다. UPSERT 를 이벤트 수만큼
+  // 치지 않고 시설 수만큼만 친다.
+  const tally = new Map<string, { kind: "eye" | "optical"; key: string; impressions: number; clicks: number }>();
+  for (const e of events) {
+    const parsed = facilityIdToPromotionKey(String(e?.id ?? ""));
+    if (parsed == null) continue;
+    const type = String(e?.type ?? "");
+    if (type !== "impression" && type !== "click") continue;
+    const mapKey = parsed.kind + ":" + parsed.key;
+    const row =
+      tally.get(mapKey) ?? { ...parsed, impressions: 0, clicks: 0 };
+    if (type === "impression") row.impressions += 1;
+    else row.clicks += 1;
+    tally.set(mapKey, row);
+  }
+  if (tally.size === 0) {
+    res.status(204).end();
+    return;
+  }
+
+  // 광고가 살아 있는 것만 남긴다.
+  const now = new Date();
+  const live = await prisma.facility_promotion.findMany({
+    where: {
+      OR: [...tally.values()].map((r) => ({ kind: r.kind, key: r.key })),
+      starts_at: { lte: now },
+      ends_at: { gte: now },
+    },
+    select: { kind: true, key: true },
+  });
+  const allowed = new Set(live.map((p) => p.kind + ":" + p.key));
+
+  const day = todayInKST();
+  await Promise.all(
+    [...tally.entries()]
+      .filter(([mapKey]) => allowed.has(mapKey))
+      .map(([, r]) =>
+        prisma.promotion_stat_daily.upsert({
+          where: {
+            kind_key_day: { kind: r.kind, key: r.key, day },
+          },
+          create: {
+            kind: r.kind,
+            key: r.key,
+            day,
+            impressions: r.impressions,
+            clicks: r.clicks,
+          },
+          update: {
+            impressions: { increment: r.impressions },
+            clicks: { increment: r.clicks },
+            updated_at: new Date(),
+          },
+        }),
+      ),
+  );
+
+  // 화면이 기다릴 것이 없다. 실패해도 사용자가 할 일은 없다.
+  res.status(204).end();
+});
+
 router.get("/facilities/by-id", async (req, res) => {
   const id = String(req.query.id ?? "");
   const lat = parseOptionalFloat(req.query.lat);
