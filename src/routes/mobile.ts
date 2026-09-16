@@ -1152,6 +1152,64 @@ router.post(
   },
 );
 
+/**
+ * PUT /api/mobile/children/:childId/records/:recordId
+ *
+ * 적어 둔 값을 고친다. 옮겨 적는 일이라 오타가 나고, 날짜를 잘못 고르는
+ * 일도 흔하다. 고칠 길이 없으면 지우고 다시 적어야 하는데, 지우는 것은
+ * 되돌릴 수 없어 사람들은 대신 틀린 줄을 그냥 둔다 - 그러면 차트가
+ * 틀린 채로 남는다.
+ *
+ * 새로 만들 때와 같은 규칙을 그대로 쓴다. 값이 하나도 없는 줄은 여기서도
+ * 만들 수 없다 - 고쳐서 빈 줄이 되는 길을 열어 두면 결국 같은 자리에
+ * 날짜만 남은 줄이 생긴다.
+ */
+router.put(
+  "/children/:childId/records/:recordId",
+  requireMobileAuth,
+  validateRequestBody(childRecordSchema),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const d = req.body as zod.infer<typeof childRecordSchema>;
+    const hasValue = [d.axialOd, d.axialOs, d.sphOd, d.sphOs, d.cylOd, d.cylOs].some(
+      (v) => v != null,
+    );
+    if (!hasValue) {
+      res
+        .status(400)
+        .json({ error: "값을 하나 이상 입력해 주세요.", code: "validation_error" });
+      return;
+    }
+    // 아이까지 조건에 넣는다. id 만으로 고치면 남의 기록을 고칠 수 있다.
+    const { count } = await prisma.child_record.updateMany({
+      where: { id: String(req.params.recordId), parent_child_link_id: child.id },
+      data: {
+        recorded_on: new Date(d.recordedOn),
+        axial_od: d.axialOd ?? null,
+        axial_os: d.axialOs ?? null,
+        sph_od: d.sphOd ?? null,
+        sph_os: d.sphOs ?? null,
+        cyl_od: d.cylOd ?? null,
+        cyl_os: d.cylOs ?? null,
+        memo: d.memo ?? null,
+      },
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "record not found", code: "not_found" });
+      return;
+    }
+    const row = await prisma.child_record.findUniqueOrThrow({
+      where: { id: String(req.params.recordId) },
+    });
+    res.json(recordDTO(row));
+  },
+);
+
 /** DELETE /api/mobile/children/:childId/records/:recordId */
 router.delete(
   "/children/:childId/records/:recordId",
@@ -2032,11 +2090,7 @@ router.get(
   async (req, res) => {
     const loaded = await guardChild(req, res);
     if (!loaded) return;
-    const { patients } = loaded;
-    if (patients.length === 0) {
-      res.json([]);
-      return;
-    }
+    const { child, patients } = loaded;
     const range = parseDateRange(req.query);
     if (range == null) {
       res
@@ -2045,20 +2099,38 @@ router.get(
       return;
     }
 
-    const rows = await prisma.measurement.findMany({
-      where: {
-        patient_id: { in: patients.map((p) => p.patientId) },
-        date: { gte: range.from, lte: range.to },
-      },
-      include: { instrument: { select: { name: true, id: true } } },
-      orderBy: { date: "asc" },
-    });
+    // 연동이 없어도 빈 배열로 끝내지 않는다. 보호자가 옮겨 적은 값은
+    // 연동과 무관하게 쌓이는데, 여기서 잘라 내면 병원을 연결하기 전까지는
+    // 자기가 적은 것도 차트에 못 올린다.
+    const [rows, own] = await Promise.all([
+      patients.length > 0
+        ? prisma.measurement.findMany({
+            where: {
+              patient_id: { in: patients.map((p) => p.patientId) },
+              date: { gte: range.from, lte: range.to },
+            },
+            include: { instrument: { select: { name: true, id: true } } },
+            orderBy: { date: "asc" },
+          })
+        : Promise.resolve([]),
+      prisma.child_record.findMany({
+        where: {
+          parent_child_link_id: child.childId,
+          recorded_on: { gte: range.from, lte: range.to },
+          OR: [{ axial_od: { not: null } }, { axial_os: { not: null } }],
+        },
+        orderBy: { recorded_on: "asc" },
+      }),
+    ]);
 
     const byPatient = new Map(patients.map((p) => [p.patientId, p]));
-    res.json(
-      rows.map((m) => {
+    // 한 배열로 내되 출처를 붙인다. 화면이 갈라 그릴 수 있어야 하고,
+    // 합친 것을 다시 가르려면 결국 같은 표시가 필요하다.
+    const out = [
+      ...rows.map((m) => {
         const meta = byPatient.get(m.patient_id)!;
         return {
+          source: "hospital" as const,
           date: serializeDateOnly(m.date),
           od: m.od,
           os: m.os,
@@ -2068,7 +2140,20 @@ router.get(
           hospitalName: meta.hospitalName,
         };
       }),
-    );
+      ...own.map((r) => ({
+        source: "parent" as const,
+        date: serializeDateOnly(r.recorded_on),
+        od: r.axial_od,
+        os: r.axial_os,
+        instrumentId: null,
+        instrumentName: null,
+        hospitalId: null,
+        hospitalName: null,
+        memo: r.memo,
+      })),
+    ].sort((a, b) => a.date.localeCompare(b.date));
+
+    res.json(out);
   },
 );
 
