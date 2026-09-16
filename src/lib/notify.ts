@@ -83,12 +83,18 @@ export async function notify(args: {
       args.type === "comment_like" ||
       args.type === "poll_comment_like";
     const forced = args.type === "hospital_unlinked";
-    if (!silent && (forced || (await wantsPush(args.userId, "community")))) {
-      await pushToUser(args.userId, {
-        title: pushTitle(args.type, args.title),
-        body: snippet(args.preview, 120) ?? snippet(args.title, 120) ?? "",
-        path: pushPath(args.targetType, args.targetId),
-      });
+    if (!silent) {
+      // 기다리지 않는다. 이 함수는 댓글 달기가 await 하는 자리인데, 여기서
+      // Expo 로 가는 왕복을 기다리면 남의 서버가 느린 날 댓글이 안 써지는
+      // 것처럼 보인다. 알림 줄은 이미 위에서 넣었으니 앱 안 목록은 맞다.
+      void (async () => {
+        if (!forced && !(await wantsPush(args.userId, "community"))) return;
+        await pushToUser(args.userId, {
+          title: pushTitle(args.type, args.title),
+          body: snippet(args.preview, 120) ?? snippet(args.title, 120) ?? "",
+          path: pushPath(args.targetType, args.targetId),
+        });
+      })().catch((err) => console.error("[notify] push failed", err));
     }
   } catch (err) {
     console.error("[notify] failed", err);

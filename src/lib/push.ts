@@ -38,6 +38,9 @@ async function postChunk(messages: unknown[]): Promise<void> {
       Accept: "application/json",
     },
     body: JSON.stringify(messages),
+    // fetch 는 기본 시간 제한이 없다. Expo 가 응답을 안 주면 이 요청이
+    // 영영 매달려 있고, 알림이 잦은 시각에는 그런 것이 쌓인다.
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     console.error("[push] expo rejected", res.status, await res.text().catch(() => ""));
