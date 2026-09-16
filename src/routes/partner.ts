@@ -227,7 +227,15 @@ router.post("/login", async (req, res) => {
     return;
   }
   const { token, expiresIn } = signPartnerToken(account.id);
-  res.json({ token, expiresIn, status: account.status });
+  // 업종을 함께 낸다. 로그인 뒤 어디로 보낼지가 여기서 갈리는데, 이것
+  // 하나 때문에 /me 를 한 번 더 부르면 그 호출이 실패할 때 로그인까지
+  // 실패한 것처럼 보인다 - 토큰은 이미 받아 둔 채로.
+  res.json({
+    token,
+    expiresIn,
+    status: account.status,
+    businessKind: account.business_kind,
+  });
 });
 
 router.get("/me", partnerRequired, async (req, res) => {
@@ -636,6 +644,32 @@ router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
     res.status(400).json({ error: "bad kind", code: "bad_request" });
     return;
   }
+
+  // 업종과 가게 종류가 맞아야 한다. 병원 계정에 안경점을, 안경점 계정에
+  // 안과를 묶는 것은 손이 미끄러진 것이지 뜻이 있는 조합이 아니다. 막지
+  // 않으면 광고는 걸리는데 엉뚱한 곳에 걸리고, 그 사실은 아무 데서도
+  // 드러나지 않는다.
+  const target = await prisma.hospital_account.findUnique({
+    where: { id },
+    select: { business_kind: true },
+  });
+  if (target == null) {
+    res.sendStatus(404);
+    return;
+  }
+  const expected = target.business_kind === "optical" ? "optical" : "eye";
+  if (kind !== expected) {
+    res.status(400).json({
+      error: "kind mismatch",
+      code: "kind_mismatch",
+      message:
+        target.business_kind === "optical"
+          ? "안경점 계정에는 안경점만 묶을 수 있습니다."
+          : "병원 계정에는 안과만 묶을 수 있습니다.",
+    });
+    return;
+  }
+
   // 명부에 없는 번호를 묶으면 신청도 광고도 아무 데도 안 붙는다.
   const exists =
     kind === "eye"
