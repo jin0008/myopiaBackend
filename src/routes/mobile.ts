@@ -1058,9 +1058,27 @@ router.delete("/children/:childId", requireMobileAuth, async (req, res) => {
  * ------------------------------------------------------------------ */
 
 /** 안축장은 성인도 24mm 안팎이다. 범위를 벗어난 값은 오타로 본다. */
-const axialField = zod.number().min(15).max(35).nullable().optional();
+/**
+ * 눈 길이(mm). 사람 눈은 이 범위를 벗어나지 않는다.
+ *
+ * 왜 거절했는지 말해 준다. 공용 validateRequestBody 는 어느 칸이 문제든
+ * "wrong arguments" 하나만 내는데, 그러면 화면은 "저장하지 못했습니다"
+ * 밖에 못 띄우고 사용자는 같은 값을 다시 누른다. 24.35 를 2435 로
+ * 적거나 단위를 착각하는 일이 흔한 칸이라 더 그렇다.
+ */
+const axialField = zod
+  .number()
+  .min(15, { message: "안축장은 15~35mm 사이여야 합니다." })
+  .max(35, { message: "안축장은 15~35mm 사이여야 합니다." })
+  .nullable()
+  .optional();
 /** 처방 도수. 소아 근시에서 이 범위를 벗어나는 일은 없다. */
-const dioptreField = zod.number().min(-30).max(30).nullable().optional();
+const dioptreField = zod
+  .number()
+  .min(-30, { message: "도수는 -30~+30D 사이여야 합니다." })
+  .max(30, { message: "도수는 -30~+30D 사이여야 합니다." })
+  .nullable()
+  .optional();
 
 const childRecordSchema = zod.object({
   recordedOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -1072,6 +1090,33 @@ const childRecordSchema = zod.object({
   cylOs: dioptreField,
   memo: zod.string().max(500).nullable().optional(),
 });
+
+/**
+ * 기록 칸 검증. 어느 칸이 왜 틀렸는지 그대로 전한다.
+ *
+ * 공용 validateRequestBody 를 쓰지 않는 이유는 그쪽이 사연을 지우기
+ * 때문이다. 여기는 사람이 손으로 옮겨 적는 칸이라, 틀렸다는 말보다
+ * 어떻게 틀렸는지가 훨씬 쓸모 있다.
+ */
+function validateChildRecord(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): void {
+  const parsed = childRecordSchema.safeParse(req.body);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    res.status(400).json({
+      error: first?.message ?? "입력값을 확인해 주세요.",
+      code: "validation_error",
+      field: first?.path.join("."),
+    });
+    return;
+  }
+  req.body = parsed.data;
+  next();
+}
+
 
 const recordDTO = (r: {
   id: string;
@@ -1115,7 +1160,7 @@ router.get("/children/:childId/records", requireMobileAuth, async (req, res) => 
 router.post(
   "/children/:childId/records",
   requireMobileAuth,
-  validateRequestBody(childRecordSchema),
+  validateChildRecord,
   async (req, res) => {
     const user = requireAppUser(req);
     const child = await loadOwnedChild(user.sub, String(req.params.childId));
@@ -1167,7 +1212,7 @@ router.post(
 router.put(
   "/children/:childId/records/:recordId",
   requireMobileAuth,
-  validateRequestBody(childRecordSchema),
+  validateChildRecord,
   async (req, res) => {
     const user = requireAppUser(req);
     const child = await loadOwnedChild(user.sub, String(req.params.childId));
