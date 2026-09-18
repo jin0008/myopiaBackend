@@ -750,6 +750,7 @@ model community_post {
   @@index([user_id], map: "idx_community_post_user")
   @@index([category, created_at(sort: Desc)], map: "idx_community_post_category")
   @@index([treatment_category, created_at(sort: Desc)], map: "idx_community_post_treatment")
+  @@index([image_urls], type: Gin, map: "idx_community_post_image_urls")
 }
 
 /// One row per comment OR reply. A reply is just a comment with

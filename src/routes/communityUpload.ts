@@ -5,6 +5,7 @@ import express from "express";
 import multer from "multer";
 import rateLimit from "express-rate-limit";
 
+import prisma from "../lib/prisma";
 import { requireMobileAuth } from "../lib/mobileAuth";
 
 /**
@@ -24,6 +25,9 @@ import { requireMobileAuth } from "../lib/mobileAuth";
 
 // ponytail: 로컬 디스크. 서버를 옮기면 uploads/ 도 함께 옮겨야 한다. 용량이
 // 문제가 되거나 서버가 둘이 되면 오브젝트 스토리지로.
+// ponytail: 파일은 지우지 않는다 - 글에서 빠진 사진은 아래 GET 이 내주지 않을
+// 뿐 디스크에는 남는다. 디스크가 문제가 되면, 어느 살아 있는 글에도 없고
+// 하루 넘게 지난 파일을 지우는 스크립트를 돌린다.
 const UPLOAD_DIR = path.join(__dirname, "../../uploads/community");
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -82,11 +86,30 @@ router.post(
   },
 );
 
-/** GET /api/mobile/community/uploads/:filename — 공개. 글을 읽는 데 로그인이 필요 없듯이. */
-router.get("/community/uploads/:filename", (req, res) => {
-  const filePath = path.join(UPLOAD_DIR, path.basename(String(req.params.filename)));
-  // 파일 이름에 uuid 가 들어 있어 내용이 바뀌는 일이 없다.
-  res.sendFile(filePath, { maxAge: "365d", immutable: true }, (err) => {
+/**
+ * GET /api/mobile/community/uploads/:filename
+ *
+ * 살아 있는 글에 붙은 사진만 내준다. 로그인은 보지 않는다 - 글을 읽는 데
+ * 로그인이 필요 없듯이.
+ *
+ * 주소만 알면 누구나 열 수 있으니, 글이 사라지면 사진도 함께 닫혀야 한다.
+ * 아이 사진과 처방전이 올라오는 곳이다. 글이 사라지는 길은 여럿인데(작성자
+ * 삭제, 신고로 숨김, 수정하며 사진을 뺌, 올려 놓고 글을 안 씀) 모두 결국
+ * "이 주소를 가진 살아 있는 글이 없다"로 모인다. 그래서 길마다 파일을
+ * 지우지 않고 여기 한 곳에서 본다.
+ */
+router.get("/community/uploads/:filename", async (req, res) => {
+  const name = path.basename(String(req.params.filename));
+  const live = await prisma.community_post.findFirst({
+    where: { deleted_at: null, image_urls: { has: PUBLIC_BASE + name } },
+    select: { id: true },
+  });
+  if (!live) {
+    res.sendStatus(404);
+    return;
+  }
+  // 오래 두면 글이 지워진 뒤에도 캐시에서 계속 보인다.
+  res.sendFile(path.join(UPLOAD_DIR, name), { maxAge: "5m" }, (err) => {
     if (err && !res.headersSent) res.sendStatus(404);
   });
 });
