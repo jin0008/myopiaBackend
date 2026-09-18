@@ -33,6 +33,7 @@ import { notify } from "../lib/notify";
 import { hotScore, popularSince } from "../lib/ranking";
 import { toDistrictAddress } from "../lib/kakaoPlaces";
 import { CONSENT_VERSION } from "../lib/consent";
+import { isCommunityImageUrl } from "./communityUpload";
 
 /**
  * Mobile API — mounted at /api/mobile in src/index.ts.
@@ -2943,6 +2944,7 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
       category: p.category,
       treatmentCategory: p.treatment_category,
       bodyPreview: p.body.length > 200 ? p.body.slice(0, 200) + "…" : p.body,
+      imageUrls: p.image_urls,
       author: {
         id: p.user_id,
         username: p.user.password_auth?.username ?? null,
@@ -2974,11 +2976,17 @@ const TREATMENT_CATEGORIES = [
   "other",
 ] as const;
 
+/** 먼저 POST /community/uploads 로 올리고 받은 주소를 적는다. */
+const imageUrlsSchema = zod
+  .array(zod.string().refine(isCommunityImageUrl, "not an uploaded community image"))
+  .max(3);
+
 const createPostSchema = zod.object({
   title: zod.string().trim().min(1).max(200),
   body: zod.string().trim().min(1).max(20_000),
   category: zod.enum(POST_CATEGORIES).optional(),
   treatmentCategory: zod.enum(TREATMENT_CATEGORIES).nullish(),
+  imageUrls: imageUrlsSchema.optional(),
 });
 
 /** 치료 태그는 치료후기에만 의미가 있다. 자유수다 글에 드림렌즈 태그가
@@ -2997,7 +3005,7 @@ router.post(
   validateRequestBody(createPostSchema),
   async (req, res) => {
     const userId = req.mobileUser!.sub;
-    const { title, body, category, treatmentCategory } = req.body as zod.infer<
+    const { title, body, category, treatmentCategory, imageUrls } = req.body as zod.infer<
       typeof createPostSchema
     >;
     const resolved = category ?? "general";
@@ -3008,6 +3016,7 @@ router.post(
         body,
         category: resolved,
         treatment_category: treatmentTagFor(resolved, treatmentCategory),
+        image_urls: imageUrls ?? [],
       },
     });
     res.status(201).json({
@@ -3016,6 +3025,7 @@ router.post(
       body: post.body,
       category: post.category,
       treatmentCategory: post.treatment_category,
+      imageUrls: post.image_urls,
       author: await authorDTO(userId, userId),
       createdAt: post.created_at.toISOString(),
       updatedAt: post.updated_at.toISOString(),
@@ -3188,6 +3198,7 @@ router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
     body: post.body,
     category: post.category,
     treatmentCategory: post.treatment_category,
+    imageUrls: post.image_urls,
     viewCount: post.view_count,
     author: {
       id: post.user_id,
@@ -3206,6 +3217,8 @@ const updatePostSchema = zod.object({
   title: zod.string().trim().min(1).max(200).optional(),
   body: zod.string().trim().min(1).max(20_000).optional(),
   treatmentCategory: zod.enum(TREATMENT_CATEGORIES).nullish(),
+  /** 보내면 통째로 바꾼다. 지운 사진은 목록에서 빼고 보낸다. */
+  imageUrls: imageUrlsSchema.optional(),
 });
 
 /** PATCH /api/mobile/community/posts/:id — author only */
@@ -3224,13 +3237,14 @@ router.patch(
     if (post.user_id !== userId) {
       return res.status(403).json({ error: "not your post" });
     }
-    const { treatmentCategory, ...data } = req.body as zod.infer<
+    const { treatmentCategory, imageUrls, ...data } = req.body as zod.infer<
       typeof updatePostSchema
     >;
     if (
       data.title == null &&
       data.body == null &&
-      treatmentCategory === undefined
+      treatmentCategory === undefined &&
+      imageUrls === undefined
     ) {
       return res.status(400).json({ error: "nothing to update" });
     }
@@ -3242,6 +3256,7 @@ router.patch(
         ...(treatmentCategory !== undefined && {
           treatment_category: treatmentTagFor(post.category, treatmentCategory),
         }),
+        ...(imageUrls !== undefined && { image_urls: imageUrls }),
       },
     });
     res.json({
@@ -3249,6 +3264,7 @@ router.patch(
       title: updated.title,
       body: updated.body,
       treatmentCategory: updated.treatment_category,
+      imageUrls: updated.image_urls,
       updatedAt: updated.updated_at.toISOString(),
     });
   },

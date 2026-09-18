@@ -24,6 +24,7 @@ import studyRoutes from "./routes/study";
 import alertSettingRoutes from "./routes/alert_setting";
 import mobileRoutes from "./routes/mobile";
 import pollRoutes from "./routes/poll";
+import communityUploadRoutes from "./routes/communityUpload";
 import moderationRoutes, { moderationAdminRouter } from "./routes/moderation";
 import notificationRoutes from "./routes/notification";
 import searchRoutes from "./routes/search";
@@ -123,6 +124,7 @@ app.use("/api/mobile", moderationRoutes);
 app.use("/api/mobile", notificationRoutes);
 app.use("/api/mobile", searchRoutes);
 app.use("/api/mobile", pollRoutes);
+app.use("/api/mobile", communityUploadRoutes);
 app.use("/api/mobile", mobileRoutes);
 
 const prismaErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
