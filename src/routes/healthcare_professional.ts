@@ -1,5 +1,6 @@
 import express from "express";
 import prisma from "../lib/prisma";
+import { normalizeNameKo } from "../lib/hospitalName";
 import zod from "zod";
 
 import { WrongArgumentsMessage } from "../lib/session";
@@ -17,6 +18,8 @@ const existingHospitalType = zod.object({
 
 const newHospitalType = zod.object({
   name: zod.string().nonempty(),
+  // 한글 표시 이름(선택). 비워 두면 name 을 그대로 쓴다.
+  name_ko: zod.string().max(100).nullable().optional(),
   country_id: zod.string().uuid(),
   code: zod.string().regex(/^[a-zA-Z0-9]{1,10}$/),
 });
@@ -78,6 +81,10 @@ router.post("/", loginRequired, async (req, res) => {
         hospital: {
           create: {
             name: newHospital.data.name,
+            name_ko: normalizeNameKo(
+              newHospital.data.name_ko,
+              newHospital.data.name,
+            ),
             country_id: newHospital.data.country_id,
             code: newHospital.data.code,
           },
@@ -174,6 +181,10 @@ router.patch("/hospital", approvedProfessionalRequired, async (req, res) => {
         hospital: {
           create: {
             name: newHospital.data.name,
+            name_ko: normalizeNameKo(
+              newHospital.data.name_ko,
+              newHospital.data.name,
+            ),
             country_id: newHospital.data.country_id,
             code: newHospital.data.code,
           },

@@ -34,6 +34,7 @@ import { hotScore, popularSince } from "../lib/ranking";
 import { toDistrictAddress } from "../lib/kakaoPlaces";
 import { CONSENT_VERSION } from "../lib/consent";
 import { isCommunityImageUrl } from "./communityUpload";
+import { compareHospitalNames, hospitalDisplayName } from "../lib/hospitalName";
 
 /**
  * Mobile API — mounted at /api/mobile in src/index.ts.
@@ -211,26 +212,26 @@ async function linkedPatientIds(childOrId: OwnedChild | string): Promise<
   if (typeof childOrId === "string") {
     const links = await prisma.child_hospital_link.findMany({
       where: { parent_child_link_id: childOrId, status: "active" },
-      include: { hospital: { select: { id: true, name: true } } },
+      include: { hospital: { select: { id: true, name: true, name_ko: true } } },
     });
     return links.map((l) => ({
       patientId: l.patient_id,
       hospitalId: l.hospital_id,
-      hospitalName: l.hospital.name,
+      hospitalName: hospitalDisplayName(l.hospital),
     }));
   }
 
   if (childOrId.source === "web") {
     const patient = await prisma.patient.findUnique({
       where: { id: childOrId.patientId },
-      include: { hospital: { select: { id: true, name: true } } },
+      include: { hospital: { select: { id: true, name: true, name_ko: true } } },
     });
     if (patient == null) return [];
     return [
       {
         patientId: patient.id,
         hospitalId: patient.hospital_id,
-        hospitalName: patient.hospital.name,
+        hospitalName: hospitalDisplayName(patient.hospital),
       },
     ];
   }
@@ -238,12 +239,12 @@ async function linkedPatientIds(childOrId: OwnedChild | string): Promise<
   // app-source
   const links = await prisma.child_hospital_link.findMany({
     where: { parent_child_link_id: childOrId.childId, status: "active" },
-    include: { hospital: { select: { id: true, name: true } } },
+    include: { hospital: { select: { id: true, name: true, name_ko: true } } },
   });
   return links.map((l) => ({
     patientId: l.patient_id,
     hospitalId: l.hospital_id,
-    hospitalName: l.hospital.name,
+    hospitalName: hospitalDisplayName(l.hospital),
   }));
 }
 
@@ -811,7 +812,7 @@ router.get("/children", requireMobileAuth, async (req, res) => {
     include: {
       child_hospital_link: {
         include: {
-          hospital: { select: { id: true, name: true, code: true } },
+          hospital: { select: { id: true, name: true, name_ko: true, code: true } },
           patient: {
             select: {
               id: true,
@@ -832,7 +833,7 @@ router.get("/children", requireMobileAuth, async (req, res) => {
     include: {
       patient: {
         include: {
-          hospital: { select: { id: true, name: true, code: true } },
+          hospital: { select: { id: true, name: true, name_ko: true, code: true } },
         },
       },
     },
@@ -857,7 +858,7 @@ router.get("/children", requireMobileAuth, async (req, res) => {
       linkedHospitals: await Promise.all(
         c.child_hospital_link.map(async (l) => ({
           hospitalId: l.hospital.id,
-          hospitalName: l.hospital.name,
+          hospitalName: hospitalDisplayName(l.hospital),
           hospitalCode: l.hospital.code,
           patientId: l.patient_id,
           registrationNumber: await decryptSymmetric(
@@ -888,7 +889,7 @@ router.get("/children", requireMobileAuth, async (req, res) => {
           linkedHospitals: [
             {
               hospitalId: p.hospital.id,
-              hospitalName: p.hospital.name,
+              hospitalName: hospitalDisplayName(p.hospital),
               hospitalCode: p.hospital.code,
               patientId: p.id,
               registrationNumber: regNumber,
@@ -1621,12 +1622,12 @@ router.delete(
 router.get("/hospitals", async (_req, res) => {
   const hospitals = await prisma.hospital.findMany({
     include: { country: { select: { code: true } } },
-    orderBy: { name: "asc" },
   });
+  hospitals.sort(compareHospitalNames);
   res.json(
     hospitals.map((h) => ({
       hospitalId: h.id,
-      name: h.name,
+      name: hospitalDisplayName(h),
       code: h.code,
       country: h.country.code,
     })),
@@ -1715,10 +1716,15 @@ router.get("/hospitals/search", async (req, res) => {
 
   const hospitals = await prisma.hospital.findMany({
     where: q
-      ? { name: { contains: q, mode: "insensitive" } }
+      ? {
+          OR: [
+            { name: { contains: q, mode: "insensitive" } },
+            { name_ko: { contains: q, mode: "insensitive" } },
+          ],
+        }
       : undefined,
-    orderBy: { name: "asc" },
   });
+  hospitals.sort(compareHospitalNames);
 
   // Map real location/contact columns (nullable). `distanceKm` is computed
   // only when both the caller and the hospital have coordinates; hospitals
@@ -1732,7 +1738,7 @@ router.get("/hospitals/search", async (req, res) => {
         : null;
     return {
       id: h.id,
-      name: h.name,
+      name: hospitalDisplayName(h),
       type: "clinic" as const,
       address: h.address ?? null,
       lat: hLat,
@@ -1878,7 +1884,7 @@ router.post(
       });
       res.status(201).json({
         hospitalId: hospital.id,
-        hospitalName: hospital.name,
+        hospitalName: hospitalDisplayName(hospital),
         hospitalCode: hospital.code,
         registrationNumber: body.registrationNumber,
         linkedAt: link.linked_at.toISOString(),
@@ -1916,7 +1922,7 @@ router.get("/link-invites/:token", requireMobileAuth, async (req, res) => {
   // 주운 사람에게는 이것만으로 누구인지 알 수 없어야 한다.
   const dob = await decryptSymmetric(r.invite.patient.encrypted_date_of_birth);
   res.json({
-    hospitalName: r.invite.hospital.name,
+    hospitalName: hospitalDisplayName(r.invite.hospital),
     // 날짜만. 앱이 이 값으로 아이를 만들기도 하므로 시각이 섞이면 안 된다.
     dateOfBirth: dateOnly(dob),
     sex: r.invite.patient.sex,
@@ -2022,7 +2028,7 @@ router.post(
 
     res.status(201).json({
       hospitalId: invite.hospital.id,
-      hospitalName: invite.hospital.name,
+      hospitalName: hospitalDisplayName(invite.hospital),
       hospitalCode: invite.hospital.code,
       patientId: invite.patient_id,
     });

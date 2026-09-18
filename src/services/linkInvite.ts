@@ -69,7 +69,7 @@ export async function resolveInvite(token: string) {
   const invite = await prisma.child_link_invite.findUnique({
     where: { token_hash: hashInviteToken(token) },
     include: {
-      hospital: { select: { id: true, name: true, code: true } },
+      hospital: { select: { id: true, name: true, name_ko: true, code: true } },
       patient: { select: { id: true, sex: true, encrypted_date_of_birth: true } },
     },
   });

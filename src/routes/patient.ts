@@ -1,5 +1,6 @@
 import express from "express";
 import prisma from "../lib/prisma";
+import { hospitalDisplayName } from "../lib/hospitalName";
 import zod from "zod";
 import {
   approvedProfessionalRequired,
@@ -768,7 +769,7 @@ router.delete(
       },
       include: {
         parent_child_link: { select: { id: true, user_id: true, nickname: true } },
-        hospital: { select: { name: true } },
+        hospital: { select: { name: true, name_ko: true } },
       },
     });
     if (link == null) {
@@ -811,7 +812,7 @@ router.delete(
       type: "hospital_unlinked",
       targetType: "child",
       targetId: link.parent_child_link.id,
-      title: link.hospital.name,
+      title: hospitalDisplayName(link.hospital),
       preview: link.parent_child_link.nickname,
     });
 
@@ -869,7 +870,7 @@ router.post(
     const body = req.body as zod.infer<typeof linkInviteSchema>;
     const hospital = await prisma.hospital.findUnique({
       where: { id: hospitalId },
-      select: { name: true },
+      select: { name: true, name_ko: true },
     });
 
     const invite = await createLinkInvite({
@@ -886,7 +887,7 @@ router.post(
       try {
         await sendInviteEmail({
           to: body.email,
-          hospitalName: hospital?.name ?? "",
+          hospitalName: hospital ? hospitalDisplayName(hospital) : "",
           url: invite.url,
           expiresAt: invite.expiresAt,
         });
