@@ -10,7 +10,7 @@ updated: 2026-07-05
 
 드림렌즈(각막굴절교정렌즈)는 잠자는 동안 착용하는 특수한 딱딱한 렌즈로, 자는 사이 각막(눈 앞쪽의 투명한 막) 가운데를 살짝 눌러 모양을 바꿔 줍니다. 그 덕분에 아침에 렌즈를 빼도 낮 동안에는 안경이나 렌즈 없이 어느 정도 잘 보이게 됩니다. 또한 근시가 진행하는 속도(안축장이 길어지는 속도)를 늦추는 효과도 함께 보고됩니다. 다만 이 효과는 일시적이어서 매일 밤 꾸준히 착용해야 유지되고, 착용을 멈추면 각막이 원래대로 돌아와 다시 원래 시력으로 돌아갑니다.
 
-*참고: 질병관리청 국가건강정보포털 https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6621 ; AAO https://www.aao.org/eye-health/diseases/myopia-control-in-children*
+*참고: [질병관리청 국가건강정보포털](https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6621) ; [AAO](https://www.aao.org/eye-health/diseases/myopia-control-in-children)*
 
 ### [orthok-02] 드림렌즈는 몇 살부터, 어떤 아이가 할 수 있나요?
 
@@ -22,19 +22,19 @@ updated: 2026-07-05
 
 드림렌즈는 자는 동안 충분히 착용해야 낮 시력이 유지됩니다. 보통 최소 6시간 이상, 권장으로는 7~9시간 정도의 수면 중 착용이 필요합니다. 착용 시간이 너무 짧으면 각막 모양이 충분히 바뀌지 않아 낮에 시야가 흐릴 수 있습니다. 늦게 자거나 잠이 부족한 날이 반복되면 효과가 들쭉날쭉할 수 있으니, 규칙적으로 충분히 자면서 착용하는 것이 중요합니다.
 
-*참고: 질병관리청 국가건강정보포털(위 링크) ; Hong Kong EYE.hk Ortho-K FAQ https://www.eye.hk/orthokfaqs*
+*참고: 질병관리청 국가건강정보포털(위 링크) ; [Hong Kong EYE.hk Ortho-K FAQ](https://www.eye.hk/orthokfaqs)*
 
 ### [orthok-04] 드림렌즈를 수돗물로 헹궈서 보관해도 되나요?
 
 아니요, 드림렌즈와 보관 케이스는 수돗물로 헹구거나 보관하면 안 됩니다. 수돗물에는 눈에 심각한 감염을 일으킬 수 있는 아메바(가시아메바)나 세균이 있을 수 있어, 렌즈 세척·헹굼·보관은 반드시 렌즈 전용 관리액이나 지정된 식염수만 사용해야 합니다. 렌즈를 만지기 전에는 손을 깨끗이 씻고, 케이스도 정기적으로 세척·교체해 주세요. 이 위생 수칙을 지키는 것이 드림렌즈 사용에서 가장 중요한 안전 관리이며, 소아는 보호자가 함께 챙겨 주는 것이 좋습니다.
 
-*참고: 질병관리청 국가건강정보포털(위 링크) ; 가시아메바 각막염과 수돗물 https://www.swisscoat.eu/en/the-relationship-between-orthokeratology-ortho-k-lens-wear-and-microbial-keratitis/*
+*참고: 질병관리청 국가건강정보포털(위 링크) ; [가시아메바 각막염과 수돗물](https://www.swisscoat.eu/en/the-relationship-between-orthokeratology-ortho-k-lens-wear-and-microbial-keratitis/)*
 
 ### [orthok-05] 드림렌즈를 끼는 우리 아이가 눈이 아프고 빨개지면 어떻게 하나요?
 
 드림렌즈를 포함한 콘택트렌즈에서 가장 조심해야 할 것은 각막에 생기는 감염(감염각막염)입니다. 눈 통증, 충혈, 눈물, 눈부심, 눈곱(분비물), 시야가 뿌옇게 보이는 증상은 감염의 경고 신호일 수 있습니다. 이 중 어떤 증상이라도 나타나면 렌즈를 즉시 빼고, 그날 밤 착용을 멈춘 뒤 되도록 빨리 안과 진료를 받아 주세요. 감염각막염은 몇 시간 안에 빠르게 나빠질 수 있고 방치하면 시력에 영구적인 손상을 남길 수 있어, 조기에 진료받는 것이 매우 중요합니다.
 
-*참고: 질병관리청 국가건강정보포털(위 링크) ; 렌즈 각막염 경고 증상 https://www.chp.gov.hk/en/healthtopics/content/24/11201.html*
+*참고: 질병관리청 국가건강정보포털(위 링크) ; [렌즈 각막염 경고 증상](https://www.chp.gov.hk/en/healthtopics/content/24/11201.html)*
 
 ### [orthok-06] 드림렌즈를 잃어버리거나 깨뜨렸어요. 며칠 안 껴도 되나요?
 
