@@ -44,6 +44,9 @@ model healthcare_professional {
 model hospital {
   id                      String                    @id(map: "hospital_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   name                    String                    @unique(map: "hospital_unique")
+  /// 한글 표시 이름. 비어 있으면(NULL) name 을 그대로 쓴다.
+  /// name 은 가입 때 입력한 원래 이름으로 남겨 둔다(영문 또는 한글).
+  name_ko                 String?
   country_id              String                    @db.Uuid
   code                    String                    @unique(map: "hospital_unique_1") @db.VarChar
   // Optional public-facing location/contact info for the 기관 찾기 (finder)
