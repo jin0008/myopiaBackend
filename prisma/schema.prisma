@@ -732,6 +732,9 @@ model community_post {
   // 모아 보여주려면 "review" 만으로는 부족하다. 후기가 아닌 글과 태그를
   // 고르지 않은 기존 글이 있으므로 nullable.
   treatment_category String?
+  // 붙인 사진 주소, 붙인 순서대로. 최대 3장 - routes/communityUpload.ts 가
+  // 내준 주소만 들어온다.
+  image_urls         String[]              @default([])
   created_at         DateTime              @default(now()) @db.Timestamptz(6)
   updated_at         DateTime              @default(now()) @updatedAt @db.Timestamptz(6)
   deleted_at         DateTime?             @db.Timestamptz(6)
@@ -747,6 +750,7 @@ model community_post {
   @@index([user_id], map: "idx_community_post_user")
   @@index([category, created_at(sort: Desc)], map: "idx_community_post_category")
   @@index([treatment_category, created_at(sort: Desc)], map: "idx_community_post_treatment")
+  @@index([image_urls], type: Gin, map: "idx_community_post_image_urls")
 }
 
 /// One row per comment OR reply. A reply is just a comment with
