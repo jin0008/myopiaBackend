@@ -32,13 +32,26 @@ export class KakaoLookupError extends Error {
   }
 }
 
+/** 카카오 분류 갈래 코드. HP8 = 병원. */
+const HOSPITAL_GROUP = "HP8";
+
 export function hasKakaoKey(): boolean {
   return KAKAO_REST_KEY !== "";
 }
 
-/** Free-text place search, newest-relevance order as Kakao returns it. */
-export async function searchPlaces(query: string, size = 10): Promise<KakaoPlace[]> {
+/**
+ * Free-text place search, newest-relevance order as Kakao returns it.
+ *
+ * categoryGroupCode 를 주면 그 갈래만 받는다. "HP8" 은 병원이다 - 병원을
+ * 찾는 자리에서 학교·장례식장이 앞자리를 차지하지 않게 한다.
+ */
+export async function searchPlaces(
+  query: string,
+  size = 10,
+  categoryGroupCode?: string,
+): Promise<KakaoPlace[]> {
   const params = new URLSearchParams({ query, size: String(size) });
+  if (categoryGroupCode) params.set("category_group_code", categoryGroupCode);
   const resp = await fetch(
     `https://dapi.kakao.com/v2/local/search/keyword.json?${params.toString()}`,
     { headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` } },
@@ -111,6 +124,10 @@ export function isEyeClinic(categoryName: string): boolean {
  *
  * 그대로 찾은 것을 앞에 둔다. 사용자가 친 말에 가장 가까운 것이 그쪽이다.
  *
+ * 둘 다 병원(HP8)만 받는다. 그러지 않으면 "중앙대" 로 찾을 때 상위 자리를
+ * 중앙대학교 서울캠퍼스·다빈치캠퍼스·후문·장례식장이 채워, 정작 찾는
+ * 중앙대학교광명병원이 열다섯 개 안에 못 든다.
+ *
  * 분류로 의료기관만 남긴다. "안과사거리"는 길이고 "밝은세상"은 병원이라,
  * 이름이 아니라 분류를 본다. 다 걸러지면 거르지 않은 것을 낸다 - 이 검색은
  * 병원이 자기를 등록하는 자리라, 카카오가 모르는 분류로 넣어 둔 병원이
@@ -119,10 +136,10 @@ export function isEyeClinic(categoryName: string): boolean {
  */
 export async function searchEyeClinics(query: string, limit = 10): Promise<KakaoPlace[]> {
   const [asIs, narrowed] = await Promise.all([
-    searchPlaces(query, 15),
+    searchPlaces(query, 15, HOSPITAL_GROUP),
     query.includes("안과")
       ? Promise.resolve([] as KakaoPlace[])
-      : searchPlaces(`${query} 안과`, 15),
+      : searchPlaces(`${query} 안과`, 15, HOSPITAL_GROUP),
   ]);
 
   const seen = new Set<string>();
