@@ -98,22 +98,41 @@ export function isEyeClinic(categoryName: string): boolean {
 /**
  * Place search for the profile forms, narrowed to eye clinics.
  *
- * "안과" is appended to the query so Kakao ranks clinics first, and the
- * category filter removes whatever still isn't one. Over-fetches because the
- * filter drops rows.
+ * 두 번 찾아서 합친다. 물어본 말 그대로 한 번, "안과"를 붙여 한 번.
  *
- * If the filter empties the list, the unfiltered results are returned instead:
- * this search exists so a clinic can register itself, and a clinic that Kakao
- * files under a category we don't recognise must not become unregisterable.
- * A noisy list is recoverable; an empty one is a dead end.
+ * 붙이는 이유는 "밝은세상"처럼 이름만으로는 안과인지 알 수 없는 검색어
+ * 때문이다. 카카오 키워드 검색은 아무거나 잡아서, "서울"로 찾으면 청계천과
+ * 경복궁이 나온다.
+ *
+ * 그대로도 찾는 이유는 "중앙대"처럼 병원 이름의 일부를 치는 경우다. 붙인
+ * 쪽은 중앙대 둘레의 안과의원들을 잔뜩 물어 오고 정작 중앙대학교병원은
+ * 이름에 안과가 없어 끝내 안 나온다. 결과가 0건일 때만 다시 찾게 해 봤더니
+ * 0건이 아니라서 걸리지 않았다 - 없는 게 아니라 다른 것이 채워져 있었다.
+ *
+ * 그대로 찾은 것을 앞에 둔다. 사용자가 친 말에 가장 가까운 것이 그쪽이다.
+ *
+ * 분류로 의료기관만 남긴다. "안과사거리"는 길이고 "밝은세상"은 병원이라,
+ * 이름이 아니라 분류를 본다. 다 걸러지면 거르지 않은 것을 낸다 - 이 검색은
+ * 병원이 자기를 등록하는 자리라, 카카오가 모르는 분류로 넣어 둔 병원이
+ * 등록 자체를 못 하게 되면 안 된다. 시끄러운 목록은 되돌릴 수 있지만 빈
+ * 목록은 막다른 길이다.
  */
 export async function searchEyeClinics(query: string, limit = 10): Promise<KakaoPlace[]> {
-  const narrowed = !query.includes("안과");
-  let docs = await searchPlaces(narrowed ? `${query} 안과` : query, 15);
-  // 카카오는 붙인 낱말까지 다 맞아야 찾아준다. "중앙대광명병원"처럼 이름에
-  // 안과가 없는 병원은 "… 안과"로 하나도 안 나와, 검색 자체가 막힌다.
-  // 그러면 물어본 말 그대로 한 번 더 찾는다.
-  if (narrowed && docs.length === 0) docs = await searchPlaces(query, 15);
-  const clinics = docs.filter((d) => isEyeClinic(d.category_name));
-  return (clinics.length > 0 ? clinics : docs).slice(0, limit);
+  const [asIs, narrowed] = await Promise.all([
+    searchPlaces(query, 15),
+    query.includes("안과")
+      ? Promise.resolve([] as KakaoPlace[])
+      : searchPlaces(`${query} 안과`, 15),
+  ]);
+
+  const seen = new Set<string>();
+  const merged: KakaoPlace[] = [];
+  for (const d of [...asIs, ...narrowed]) {
+    if (seen.has(d.id)) continue;
+    seen.add(d.id);
+    merged.push(d);
+  }
+
+  const clinics = merged.filter((d) => isEyeClinic(d.category_name));
+  return (clinics.length > 0 ? clinics : merged).slice(0, limit);
 }
