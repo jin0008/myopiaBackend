@@ -4604,8 +4604,7 @@ router.get("/columns/:id", (req, res) => {
  *                                                                    *
  * Public. Proxies the Kakao Local "keyword" API so we can surface     *
  * ONLY the eye-care facilities the product cares about:               *
- *   - 대학병원   → category "university"                               *
- *   - 종합병원   → category "general"                                  *
+ *   - 안과병원   → category "hospital"                                 *
  *   - 안과의원   → category "clinic"                                   *
  *   - 안경점     → category "optical"                                  *
  *                                                                    *
@@ -4617,7 +4616,7 @@ router.get("/columns/:id", (req, res) => {
 
 const KAKAO_REST_KEY = process.env.KAKAO_REST_API_KEY ?? "";
 
-type FacilityCategory = "university" | "general" | "clinic" | "optical";
+type FacilityCategory = "hospital" | "clinic" | "optical";
 
 type FacilityDTO = {
   id: string;
@@ -4672,25 +4671,42 @@ type KakaoDoc = {
 };
 
 /**
- * Classify a Kakao medical `category_name` (e.g.
- * "의료,건강 > 병원 > 종합병원 > 대학병원") into the finder categories.
- * Returns null for anything that is not an eye-care facility so generic
- * hospitals are filtered out. Order matters: 대학병원 is also a 종합병원.
+ * Classify a Kakao medical place into the finder categories.
+ *
+ * 의원과 병원, 둘로만 가른다. 대학병원·종합병원을 따로 두었더니 표시가
+ * 실제와 자주 어긋났다 - 중앙대학교광명병원이 종합병원으로, 안과전문병원인
+ * 김안과병원도 종합병원으로 나왔다. 카카오 분류든 심평원 종별이든 그 층위는
+ * 우리가 맞게 보여 줄 수 있는 자료가 아니다.
+ *
+ * 가르는 자는 이름이다. 의료법이 병원급에만 "병원"을 쓰게 하므로 이름 끝의
+ * 병원/의원은 분류보다 믿을 만하다. 분류로는 안과인지만 본다.
+ *
+ * Returns null for anything that is not an eye-care facility.
  */
 function classifyMedical(
   placeName: string,
   categoryName: string,
 ): FacilityCategory | null {
-  // 카카오는 대학병원 안과를 그냥 "의료,건강 > 병원 > 안과" 로 준다. 분류만
-  // 보면 동네 안과와 구별되지 않아 대학병원 목록이 늘 비어 있었다. 이름으로
-  // 가른다 - 고려대학교안암병원 안과, 가톨릭대학교 서울성모병원 안과처럼
-  // 대학 이름이 앞에 붙는다.
-  if (categoryName.includes("대학병원") || /대학교|대학병원/.test(placeName)) {
-    return "university";
-  }
-  if (categoryName.includes("종합병원")) return "general";
-  if (categoryName.includes("안과")) return "clinic";
-  return null;
+  // 카카오는 모든 의료기관 분류 앞에 "병원"을 붙인다("의료,건강 > 병원 >
+  // 안과"). 그래서 병원/의원 판단에는 분류를 쓸 수 없고 이름만 본다.
+  const medical =
+    categoryName.includes("안과") ||
+    categoryName.includes("종합병원") ||
+    categoryName.includes("대학병원");
+  if (!medical) return null;
+  // 이름에 아무 표시가 없으면 의원이다 - 명부 2041곳 중 1790곳이 의원이다.
+  return isHospitalName(placeName) ? "hospital" : "clinic";
+}
+
+/**
+ * 이름만 보고 병원급인지 가른다.
+ *
+ * 의료법이 병원급에만 "병원"을 쓰게 한다. 공공은 "의료원"을 쓰고(국립중앙
+ * 의료원, 성남시의료원) 명부의 병원급 251곳 중 25곳이 그쪽이다. 의원
+ * 1790곳 중 이름에 의료원이 들어간 곳은 없다.
+ */
+function isHospitalName(name: string): boolean {
+  return name.includes("병원") || name.includes("의료원");
 }
 
 /**
@@ -4861,7 +4877,9 @@ function clinicToDTO(c: EyeClinicRow, distanceKm: number): FacilityDTO {
   return {
     id: `hira:${c.ykiho}`,
     name: c.name,
-    category: c.kind as FacilityCategory,
+    // 명부의 kind 는 심평원 종별("university" | "general" | "clinic")이다.
+    // 화면은 의원과 병원 둘로만 나눈다 - 위 classifyMedical 참고.
+    category: c.kind === "clinic" ? "clinic" : "hospital",
     address: c.address,
     roadAddress: c.address,
     lat: c.lat,
@@ -5306,8 +5324,8 @@ router.get("/facilities", async (req, res) => {
     const dLng = Number.parseFloat(doc.x);
     if (!Number.isFinite(dLat) || !Number.isFinite(dLng)) return;
     const existing = byId.get(doc.id);
-    // Prefer the more specific medical class (university > general > clinic)
-    // if the same place shows up in multiple queries. optical never collides.
+    // 같은 곳이 여러 검색에 걸리면 먼저 들어온 것을 남긴다. 분류가 이름
+    // 하나로 정해져 어느 쪽이 먼저든 같다.
     if (existing) return;
     const distM = Number.parseFloat(doc.distance);
     byId.set(doc.id, {
@@ -5336,17 +5354,9 @@ router.get("/facilities", async (req, res) => {
       kakaoKeywordSearch("안경점", lat, lng, radius),
     ]);
 
-    // Insert most-specific first so classify precedence holds on dedup.
-    for (const d of univ) {
-      const cls = classifyMedical(d.place_name, d.category_name);
-      if (cls === "university") add(d, "university");
-    }
-    for (const d of general) {
-      const cls = classifyMedical(d.place_name, d.category_name);
-      if (cls === "university") add(d, "university");
-      else if (cls === "general") add(d, "general");
-    }
-    for (const d of eye) {
+    // 같은 곳이 여러 검색에 걸려도 분류는 이름 하나로 정해지므로, 어느
+    // 검색에서 먼저 들어오든 결과가 같다(add 는 먼저 들어온 것을 남긴다).
+    for (const d of [...univ, ...general, ...eye]) {
       const cls = classifyMedical(d.place_name, d.category_name);
       if (cls) add(d, cls);
     }
@@ -5403,9 +5413,7 @@ function sidoMatches(address: string, sido: string): boolean {
 /** 프로필에는 병원 종류 컬럼이 없다(카카오가 주던 분류였다). 이름으로
  *  가늠하고 아니면 의원 — 온보딩 대상은 대부분 안과의원이다. */
 function categoryFromName(name: string): FacilityCategory {
-  if (name.includes("대학교병원") || name.includes("대학병원")) return "university";
-  if (name.includes("의료원") || name.includes("종합병원")) return "general";
-  return "clinic";
+  return isHospitalName(name) ? "hospital" : "clinic";
 }
 
 /** 이 병원이 해당 치료를 하는가.
