@@ -2215,11 +2215,7 @@ router.get(
   async (req, res) => {
     const loaded = await guardChild(req, res);
     if (!loaded) return;
-    const { patients } = loaded;
-    if (patients.length === 0) {
-      res.json([]);
-      return;
-    }
+    const { child, patients } = loaded;
     const range = parseDateRange(req.query);
     if (range == null) {
       res
@@ -2227,19 +2223,38 @@ router.get(
         .json({ error: "invalid date range", code: "validation_error" });
       return;
     }
-    const rows = await prisma.refractive_error.findMany({
-      where: {
-        patient_id: { in: patients.map((p) => p.patientId) },
-        date: { gte: range.from, lte: range.to },
-      },
-      include: { refractive_error_method: { select: { name: true } } },
-      orderBy: { date: "asc" },
-    });
+
+    // 안축장과 같다. 연동이 없어도 빈 배열로 끝내지 않는다 - 보호자가
+    // 처방전을 보고 옮겨 적은 도수는 연동과 무관하게 쌓인다.
+    const [rows, own] = await Promise.all([
+      patients.length > 0
+        ? prisma.refractive_error.findMany({
+            where: {
+              patient_id: { in: patients.map((p) => p.patientId) },
+              date: { gte: range.from, lte: range.to },
+            },
+            include: { refractive_error_method: { select: { name: true } } },
+            orderBy: { date: "asc" },
+          })
+        : Promise.resolve([]),
+      prisma.child_record.findMany({
+        where: {
+          parent_child_link_id: child.childId,
+          recorded_on: { gte: range.from, lte: range.to },
+          OR: [{ sph_od: { not: null } }, { sph_os: { not: null } }],
+        },
+        orderBy: { recorded_on: "asc" },
+      }),
+    ]);
+
     const byPatient = new Map(patients.map((p) => [p.patientId, p]));
-    res.json(
-      rows.map((r) => {
+    // 구면(S)과 원주(C)를 그대로 내려준다. 구면대응(SE = S + C/2)으로
+    // 접어 보내면 화면이 S 만 보는 쪽으로 돌아갈 길이 없어진다.
+    const out = [
+      ...rows.map((r) => {
         const meta = byPatient.get(r.patient_id)!;
         return {
+          source: "hospital" as const,
           date: serializeDateOnly(r.date),
           od_sph: r.od_sph,
           od_cyl: r.od_cyl,
@@ -2250,7 +2265,21 @@ router.get(
           hospitalName: meta.hospitalName,
         };
       }),
-    );
+      ...own.map((r) => ({
+        source: "parent" as const,
+        date: serializeDateOnly(r.recorded_on),
+        od_sph: r.sph_od,
+        od_cyl: r.cyl_od,
+        os_sph: r.sph_os,
+        os_cyl: r.cyl_os,
+        method: null,
+        hospitalId: null,
+        hospitalName: null,
+        memo: r.memo,
+      })),
+    ].sort((a, b) => a.date.localeCompare(b.date));
+
+    res.json(out);
   },
 );
 
@@ -4694,6 +4723,12 @@ function classifyMedical(
     categoryName.includes("종합병원") ||
     categoryName.includes("대학병원");
   if (!medical) return null;
+  // 분류가 병원급이라고 말해 주면 그것을 믿는다. 이름만 보면 국립암센터
+  // 처럼 "병원"이 안 들어간 병원급이 의원으로 나가고, 같은 기관을 명부
+  // 경로로 받을 때와 값이 달라진다.
+  if (categoryName.includes("종합병원") || categoryName.includes("대학병원")) {
+    return "hospital";
+  }
   // 이름에 아무 표시가 없으면 의원이다 - 명부 2041곳 중 1790곳이 의원이다.
   return isHospitalName(placeName) ? "hospital" : "clinic";
 }
@@ -5347,11 +5382,17 @@ router.get("/facilities", async (req, res) => {
   try {
     // Run the medical searches (HP8 = 병원) and the optical search together.
     // Medical results are classified by category_name; 안경점 is optical.
+    //
+    // kind 를 여기서도 지킨다. 명부가 있을 때는 directoryFacilities 가
+    // 걸러 주는데 이 폴백은 늘 네 검색을 다 돌려, 안과만 달라고 한
+    // 호출에도 안경점이 섞여 들어왔다 - 안경점이 훨씬 촘촘해 목록을
+    // 통째로 먹는다(위 5327행 주석이 막으려던 바로 그 상황이다).
+    const none = Promise.resolve([] as KakaoDoc[]);
     const [univ, general, eye, optical] = await Promise.all([
-      kakaoKeywordSearch("대학병원 안과", lat, lng, radius, "HP8"),
-      kakaoKeywordSearch("종합병원 안과", lat, lng, radius, "HP8"),
-      kakaoKeywordSearch("안과", lat, lng, radius, "HP8"),
-      kakaoKeywordSearch("안경점", lat, lng, radius),
+      kind === "optical" ? none : kakaoKeywordSearch("대학병원 안과", lat, lng, radius, "HP8"),
+      kind === "optical" ? none : kakaoKeywordSearch("종합병원 안과", lat, lng, radius, "HP8"),
+      kind === "optical" ? none : kakaoKeywordSearch("안과", lat, lng, radius, "HP8"),
+      kind === "eye" ? none : kakaoKeywordSearch("안경점", lat, lng, radius),
     ]);
 
     // 같은 곳이 여러 검색에 걸려도 분류는 이름 하나로 정해지므로, 어느
