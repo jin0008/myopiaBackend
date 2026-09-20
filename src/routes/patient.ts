@@ -494,7 +494,12 @@ router.get("/:patientId", loginRequired, async (req, res) => {
           parent_child_link: {
             child_hospital_link: { some: { patient_id: data.id, status: "active" } },
           },
-          OR: [{ axial_od: { not: null } }, { axial_os: { not: null } }],
+          OR: [
+            { axial_od: { not: null } },
+            { axial_os: { not: null } },
+            { sph_od: { not: null } },
+            { sph_os: { not: null } },
+          ],
         },
         orderBy: { recorded_on: "asc" },
         select: {
@@ -502,6 +507,10 @@ router.get("/:patientId", loginRequired, async (req, res) => {
           recorded_on: true,
           axial_od: true,
           axial_os: true,
+          sph_od: true,
+          sph_os: true,
+          cyl_od: true,
+          cyl_os: true,
           memo: true,
         },
       });
@@ -522,13 +531,30 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         // measurement 와 같은 모양으로 낸다. 화면이 한 그래프에 두 종류를
         // 얹을 때 형태가 다르면 그 자리에서 변환하게 되고, 변환하는 곳이
         // 늘어나면 어긋난다.
-        parent_record: parentRecords.map((r) => ({
-          id: r.id,
-          date: r.recorded_on,
-          od: r.axial_od,
-          os: r.axial_os,
-          memo: r.memo,
-        })),
+        parent_record: parentRecords
+          .filter((r) => r.axial_od != null || r.axial_os != null)
+          .map((r) => ({
+            id: r.id,
+            date: r.recorded_on,
+            od: r.axial_od,
+            os: r.axial_os,
+            memo: r.memo,
+          })),
+        // 도수도 같은 이유로 보여 준다. 다른 병원에서 받은 처방은 보호자가
+        // 옮겨 적는 것이 유일한 통로다. refractive_error 와 같은 모양으로
+        // 내되(method_id 는 없다 - 부모는 어떤 검사였는지 모른다) 배열을
+        // 나눠 둔다. 섞으면 화면에서 다시 갈라야 한다.
+        parent_refractive_error: parentRecords
+          .filter((r) => r.sph_od != null || r.sph_os != null)
+          .map((r) => ({
+            id: r.id,
+            date: r.recorded_on,
+            od_sph: r.sph_od,
+            os_sph: r.sph_os,
+            od_cyl: r.cyl_od,
+            os_cyl: r.cyl_os,
+            memo: r.memo,
+          })),
         date_of_birth: await decryptSymmetric(data.encrypted_date_of_birth),
         registration_number: await decryptSymmetric(
           data.encrypted_registration_number,
