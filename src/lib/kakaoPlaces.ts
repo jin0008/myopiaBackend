@@ -108,7 +108,12 @@ export function isEyeClinic(categoryName: string): boolean {
  * A noisy list is recoverable; an empty one is a dead end.
  */
 export async function searchEyeClinics(query: string, limit = 10): Promise<KakaoPlace[]> {
-  const docs = await searchPlaces(query.includes("안과") ? query : `${query} 안과`, 15);
+  const narrowed = !query.includes("안과");
+  let docs = await searchPlaces(narrowed ? `${query} 안과` : query, 15);
+  // 카카오는 붙인 낱말까지 다 맞아야 찾아준다. "중앙대광명병원"처럼 이름에
+  // 안과가 없는 병원은 "… 안과"로 하나도 안 나와, 검색 자체가 막힌다.
+  // 그러면 물어본 말 그대로 한 번 더 찾는다.
+  if (narrowed && docs.length === 0) docs = await searchPlaces(query, 15);
   const clinics = docs.filter((d) => isEyeClinic(d.category_name));
   return (clinics.length > 0 ? clinics : docs).slice(0, limit);
 }
