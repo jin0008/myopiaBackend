@@ -19,7 +19,11 @@ import {
   signAccessToken,
   MobileJWTPayload,
 } from "../lib/mobileAuth";
-import { verifySocialToken, SocialProvider } from "../lib/socialAuth";
+import {
+  exchangeKakaoCode,
+  verifySocialToken,
+  SocialProvider,
+} from "../lib/socialAuth";
 import {
   assertTicket,
   issueCode,
@@ -539,6 +543,8 @@ router.post(
 const socialSchema = zod.object({
   provider: zod.enum(["apple", "google", "kakao", "naver"]),
   token: zod.string().nonempty(),
+  // 웹 카카오만: 있으면 token 은 인가 코드이고, 서버가 토큰으로 바꾼다.
+  redirect_uri: zod.string().url().optional(),
   email: zod.string().email().optional(),
   receive_email_updates: zod.boolean().optional(),
 });
@@ -550,10 +556,11 @@ router.post(
     const body = req.body as zod.infer<typeof socialSchema>;
     let identity;
     try {
-      identity = await verifySocialToken(
-        body.provider as SocialProvider,
-        body.token,
-      );
+      const token =
+        body.provider === "kakao" && body.redirect_uri != null
+          ? await exchangeKakaoCode(body.token, body.redirect_uri)
+          : body.token;
+      identity = await verifySocialToken(body.provider as SocialProvider, token);
     } catch (e) {
       res
         .status(401)

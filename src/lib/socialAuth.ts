@@ -73,6 +73,40 @@ export async function verifyKakaoAccessToken(
   };
 }
 
+/**
+ * 웹 카카오 로그인은 브라우저가 인가 코드만 받아 온다. 코드를 토큰으로
+ * 바꾸려면 client secret 이 필요해 서버에서 한다. redirect_uri 는 코드를
+ * 받을 때 쓴 값과 같아야 하고, 카카오가 콘솔 등록값과 대조한다.
+ */
+export async function exchangeKakaoCode(
+  code: string,
+  redirectUri: string,
+): Promise<string> {
+  const clientId = process.env.KAKAO_REST_API_KEY;
+  if (!clientId) throw new Error("KAKAO_REST_API_KEY not set");
+
+  const form = new URLSearchParams({
+    grant_type: "authorization_code",
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    code,
+  });
+  const secret = process.env.KAKAO_CLIENT_SECRET;
+  if (secret) form.set("client_secret", secret);
+
+  const resp = await fetch("https://kauth.kakao.com/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded;charset=utf-8" },
+    body: form,
+  });
+  if (!resp.ok) throw new Error(`kakao code exchange failed: ${resp.status}`);
+  const data: any = await resp.json();
+  if (typeof data?.access_token !== "string") {
+    throw new Error("kakao code exchange missing access_token");
+  }
+  return data.access_token;
+}
+
 /* ---------------- Naver ---------------- */
 
 export async function verifyNaverAccessToken(
