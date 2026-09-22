@@ -4425,13 +4425,9 @@ router.post(
 /* ================================================================== *
  * Expert columns (전문가 칼럼)                                        *
  *                                                                    *
- * SEED DATA: there is no article/column table in the schema (the      *
- * existing /news route proxies PubMed live and has no persistence),   *
- * so these endpoints serve a small, self-contained set of columns     *
- * derived from the reviewed Q&A source docs shipped under             *
- * src/assets/chat/columns/*.md — one column per topic. When a real    *
- * columns table (or CMS) lands later, swap loadSeedColumns() for a    *
- * prisma query; the response shapes below are the client contract.    *
+ * Served from the expert_column table (admin CRUD in routes/column.ts). *
+ * The reviewed Q&A docs under src/assets/chat/columns/*.md seed it    *
+ * once; scripts/import-naver-cafe.ts brings in the cafe articles.     *
  * ================================================================== */
 
 type ColumnListItem = {
@@ -4567,9 +4563,56 @@ router.get("/banners", async (req, res) => {
   });
 });
 
-/** GET /api/mobile/columns?category=&cursor=&pageSize= — public.
- *  Index-based keyset cursor over the (stable-ordered) seed columns. */
-router.get("/columns", (req, res) => {
+/**
+ * 시드 원고를 DB 에 한 번 넣는다. 시드 slug 가 하나도 없을 때만 - 관리자가
+ * 시드 칼럼 하나를 지웠다고 재시작마다 되살아나면 안 되고, 카페에서 옮긴 글이
+ * 먼저 들어가 있다고 시드를 건너뛰어도 안 된다.
+ * ponytail: 시드 7편을 모두 지우면 재시작 뒤 다시 들어간다. 그럴 일이 생기면
+ * 지우지 말고 published=false 로 내리거나, 넣었다는 기록을 따로 남긴다.
+ */
+let seedColumnsImported = false;
+async function ensureSeedColumns(): Promise<void> {
+  if (seedColumnsImported) return;
+  const seeds = loadSeedColumns();
+  const present = await prisma.expert_column.count({
+    where: { slug: { in: seeds.map((s) => s.id) } },
+  });
+  if (present === 0) {
+    await prisma.expert_column.createMany({
+      data: seeds.map((s) => ({
+        slug: s.id,
+        title: s.title,
+        body: s.body,
+        category: s.category,
+        author: s.author,
+        author_role: s.authorRole,
+        thumbnail_emoji: s.thumbnailEmoji,
+        published_at: new Date(s.publishedAt),
+      })),
+      skipDuplicates: true,
+    });
+  }
+  seedColumnsImported = true;
+}
+
+/** 첫 본문 문단 ~120자. 제목·*참고·이미지·인용·표 줄은 건너뛴다.
+ *  **굵게** 로 시작하는 문단은 본문이다 - 카페에서 옮긴 글에 흔하다. */
+function excerptOf(body: string): string {
+  const firstPara = (
+    body
+      .split(/\n{2,}/)
+      .map((x) => x.trim())
+      .find((x) => x !== "" && !/^([#!>|]|\*(?!\*))/.test(x)) ?? ""
+  ).replace(/\*\*/g, "");
+  return firstPara.length > 120 ? firstPara.slice(0, 120) + "…" : firstPara;
+}
+
+// 공개 API 의 칼럼 id 는 slug 다. 시드 시절 주소(/columns/orthok)가 웹에
+// 색인돼 있고, 검색도 slug 로 연결한다.
+
+/** GET /api/mobile/columns?category=&cursor=&pageSize= — public. */
+router.get("/columns", async (req, res) => {
+  await ensureSeedColumns();
   const category =
     typeof req.query.category === "string" && req.query.category.trim() !== ""
       ? req.query.category.trim()
@@ -4579,56 +4622,62 @@ router.get("/columns", (req, res) => {
     50,
   );
 
-  let all = loadSeedColumns();
-  if (category) all = all.filter((c) => c.category === category);
+  // ponytail: 전부 읽어 자른다. 칼럼이 수백 편이 되면 keyset 쿼리로.
+  const all = await prisma.expert_column.findMany({
+    where: { published: true, ...(category ? { category } : {}) },
+    orderBy: [{ published_at: "desc" }, { id: "asc" }],
+  });
 
   // cursor is the id of the last item returned on the previous page.
   const cursor = typeof req.query.cursor === "string" ? req.query.cursor : null;
   let startIdx = 0;
   if (cursor) {
-    const idx = all.findIndex((c) => c.id === cursor);
+    const idx = all.findIndex((c) => c.slug === cursor);
     startIdx = idx >= 0 ? idx + 1 : 0;
   }
 
   const slice = all.slice(startIdx, startIdx + pageSize);
   const nextCursor =
     startIdx + pageSize < all.length && slice.length > 0
-      ? slice[slice.length - 1].id
+      ? slice[slice.length - 1].slug
       : null;
 
   const items: ColumnListItem[] = slice.map((c) => ({
-    id: c.id,
+    id: c.slug,
     title: c.title,
-    excerpt: c.excerpt,
+    excerpt: excerptOf(c.body),
     category: c.category,
     author: c.author,
-    authorRole: c.authorRole,
-    thumbnailEmoji: c.thumbnailEmoji,
-    likeCount: c.likeCount,
-    commentCount: c.commentCount,
-    publishedAt: c.publishedAt,
+    authorRole: c.author_role,
+    thumbnailEmoji: c.thumbnail_emoji,
+    likeCount: 0,
+    commentCount: 0,
+    publishedAt: c.published_at.toISOString(),
   }));
 
   res.json({ items, nextCursor });
 });
 
 /** GET /api/mobile/columns/:id — public. */
-router.get("/columns/:id", (req, res) => {
-  const col = loadSeedColumns().find((c) => c.id === String(req.params.id));
+router.get("/columns/:id", async (req, res) => {
+  await ensureSeedColumns();
+  const col = await prisma.expert_column.findFirst({
+    where: { slug: String(req.params.id), published: true },
+  });
   if (col == null) {
     res.status(404).json({ error: "column not found", code: "not_found" });
     return;
   }
   const detail: ColumnDetail = {
-    id: col.id,
+    id: col.slug,
     title: col.title,
     body: col.body,
     category: col.category,
     author: col.author,
-    authorRole: col.authorRole,
-    likeCount: col.likeCount,
-    commentCount: col.commentCount,
-    publishedAt: col.publishedAt,
+    authorRole: col.author_role,
+    likeCount: 0,
+    commentCount: 0,
+    publishedAt: col.published_at.toISOString(),
   };
   res.json(detail);
 });
