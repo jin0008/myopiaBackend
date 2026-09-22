@@ -4567,6 +4567,8 @@ router.get("/banners", async (req, res) => {
  * 시드 원고를 DB 에 한 번 넣는다. 시드 slug 가 하나도 없을 때만 - 관리자가
  * 시드 칼럼 하나를 지웠다고 재시작마다 되살아나면 안 되고, 카페에서 옮긴 글이
  * 먼저 들어가 있다고 시드를 건너뛰어도 안 된다.
+ * ponytail: 시드 7편을 모두 지우면 재시작 뒤 다시 들어간다. 그럴 일이 생기면
+ * 지우지 말고 published=false 로 내리거나, 넣었다는 기록을 따로 남긴다.
  */
 let seedColumnsImported = false;
 async function ensureSeedColumns(): Promise<void> {
@@ -4593,13 +4595,14 @@ async function ensureSeedColumns(): Promise<void> {
   seedColumnsImported = true;
 }
 
-/** 첫 본문 문단 ~120자. 제목·참고·이미지·인용·표 줄은 건너뛴다. */
+/** 첫 본문 문단 ~120자. 제목·*참고·이미지·인용·표 줄은 건너뛴다.
+ *  **굵게** 로 시작하는 문단은 본문이다 - 카페에서 옮긴 글에 흔하다. */
 function excerptOf(body: string): string {
   const firstPara = (
     body
       .split(/\n{2,}/)
       .map((x) => x.trim())
-      .find((x) => x !== "" && !/^[#*!>|]/.test(x)) ?? ""
+      .find((x) => x !== "" && !/^([#!>|]|\*(?!\*))/.test(x)) ?? ""
   ).replace(/\*\*/g, "");
   return firstPara.length > 120 ? firstPara.slice(0, 120) + "…" : firstPara;
 }
