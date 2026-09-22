@@ -1,3 +1,4 @@
+import path from "path";
 import express from "express";
 import zod from "zod";
 import prisma from "../lib/prisma";
@@ -15,6 +16,18 @@ const createSchema = zod.object({
   published: zod.boolean().optional(),
 });
 const patchSchema = createSchema.partial();
+
+// 칼럼 본문 속 이미지. 네이버 카페 글을 옮기며 받아 둔 것이다 - 카페 이미지는
+// 우리 도메인에서 걸면 403 이라 그대로 링크할 수 없다.
+// scripts/import-naver-cafe.ts 가 여기에 쓴다.
+const UPLOAD_DIR = path.join(__dirname, "../../uploads/columns");
+
+// GET /column/uploads/:filename — public.
+router.get("/uploads/:filename", (req, res) => {
+  res.sendFile(path.join(UPLOAD_DIR, path.basename(req.params.filename)), (err) => {
+    if (err) res.sendStatus(404);
+  });
+});
 
 // GET /column — admin list (includes unpublished).
 router.get("/", siteAdminRequired, async (_req, res) => {
