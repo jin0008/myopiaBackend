@@ -102,6 +102,8 @@ router.get("/search", optionalMobileAuth, async (req, res) => {
       id: c.id,
       slug: c.slug,
       title: c.title,
+      // 앱은 분류로 칼럼 아이콘을 그린다. 이모지는 모르는 분류일 때만.
+      category: c.category,
       emoji: c.thumbnail_emoji,
       excerpt: snippet(c.body, q),
     })),
