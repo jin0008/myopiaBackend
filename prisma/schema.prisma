@@ -483,6 +483,8 @@ model parent_child_link {
   name                  String?
   date_of_birth         DateTime                @db.Date
   sex                   sex
+  /// 아바타 안경 색(앱 팔레트 키). 비어 있으면 앱이 등록 순서로 고른다.
+  glasses_color         String?
   created_at            DateTime                @default(now()) @db.Timestamptz(6)
   user                  user                    @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "parent_child_link_user_fk")
   child_hospital_link   child_hospital_link[]
