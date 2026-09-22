@@ -863,6 +863,7 @@ router.get("/children", requireMobileAuth, async (req, res) => {
       dateOfBirth: serializeDateOnly(c.date_of_birth),
       sex: c.sex,
       glassesColor: c.glasses_color,
+      avatarBg: c.avatar_bg,
       linkedHospitals: await Promise.all(
         c.child_hospital_link.map(async (l) => ({
           hospitalId: l.hospital.id,
@@ -912,8 +913,9 @@ router.get("/children", requireMobileAuth, async (req, res) => {
   res.json([...appResults, ...webResults]);
 });
 
-// 아바타 안경 색. 앱 팔레트(src/ui/ChildAvatar.tsx)의 키와 같아야 한다.
+// 아바타 안경·배경 색. 앱 팔레트(src/ui/ChildAvatar.tsx)의 키와 같아야 한다.
 const GLASSES_COLOR = zod.enum(["blue", "pink", "green", "orange", "purple", "red"]);
+const AVATAR_BG = zod.enum(["sky", "pink", "mint", "peach", "lavender", "lemon"]);
 
 const childCreateSchema = zod.object({
   nickname: zod.string().nonempty().max(80),
@@ -922,6 +924,7 @@ const childCreateSchema = zod.object({
   dateOfBirth: zod.string().date(),
   sex: zod.nativeEnum(SexEnum),
   glassesColor: GLASSES_COLOR.optional(),
+  avatarBg: AVATAR_BG.optional(),
 });
 
 router.post(
@@ -939,6 +942,7 @@ router.post(
         date_of_birth: new Date(data.dateOfBirth),
         sex: data.sex,
         glasses_color: data.glassesColor ?? null,
+        avatar_bg: data.avatarBg ?? null,
       },
     });
     res.status(201).json({
@@ -948,6 +952,7 @@ router.post(
       dateOfBirth: serializeDateOnly(created.date_of_birth),
       sex: created.sex,
       glassesColor: created.glasses_color,
+      avatarBg: created.avatar_bg,
       linkedHospitals: [],
     });
   },
@@ -960,6 +965,7 @@ const childPatchSchema = zod
     dateOfBirth: zod.string().date().optional(),
     sex: zod.nativeEnum(SexEnum).optional(),
     glassesColor: GLASSES_COLOR.optional(),
+    avatarBg: AVATAR_BG.optional(),
   })
   .refine((v) => Object.keys(v).length > 0, {
     message: "at least one field is required",
@@ -996,6 +1002,7 @@ router.patch(
         date_of_birth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
         sex: data.sex,
         glasses_color: data.glassesColor,
+        avatar_bg: data.avatarBg,
       },
     });
     res.json({
@@ -1005,6 +1012,7 @@ router.patch(
       dateOfBirth: serializeDateOnly(updated.date_of_birth),
       sex: updated.sex,
       glassesColor: updated.glasses_color,
+      avatarBg: updated.avatar_bg,
     });
   },
 );
