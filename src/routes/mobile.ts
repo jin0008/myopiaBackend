@@ -3214,6 +3214,8 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
         username: p.user.password_auth?.username ?? null,
         isMe: p.user_id === viewerId,
       },
+      // 홈 인기글 썸네일. 커뮤니티 목록과 같은 모양으로 보낸다.
+      imageUrls: p.image_urls,
       createdAt: p.created_at.toISOString(),
       viewCount: p.view_count,
       likeCount: p._count.likes,
