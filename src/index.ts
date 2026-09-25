@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser";
 import cors from "cors";
 import helmet from "helmet";
 
+import adInquiryRoutes from "./routes/adInquiry";
 import authRoutes from "./routes/auth";
 import healthcareProfessionalRoutes from "./routes/healthcare_professional";
 import measurementRoutes from "./routes/measurement";
@@ -34,7 +35,7 @@ import hospitalProfileRoutes from "./routes/hospital_profile";
 import partnerRoutes from "./routes/partner";
 import { runPushReminders } from "./jobs/pushReminders";
 
-import { authLimiter, lookupLimiter } from "./lib/security";
+import { authLimiter, inquiryLimiter, lookupLimiter } from "./lib/security";
 
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Prisma } from "@prisma/client";
@@ -94,6 +95,9 @@ app.use("/api/mobile/auth/username-available", lookupLimiter);
 app.use("/api/mobile/children/:childId/hospital-links", lookupLimiter);
 // 초대 토큰은 대입할 수 있는 크기가 아니지만, 두드리는 것 자체를 막는다.
 app.use("/api/mobile/link-invites", lookupLimiter);
+// nginx 가 /api 접두사를 떼고 넘긴다(/api/mobile 만 예외). 다른 관리
+// 라우트들과 같이 루트에 둬야 브라우저의 /api/ad-inquiry 가 여기 닿는다.
+app.post("/ad-inquiry", inquiryLimiter);
 app.use("/partner/login", authLimiter);
 // 인증번호 발송은 남의 주소로도 호출할 수 있어 제한이 필요하다.
 app.use("/partner/password", authLimiter);
@@ -119,6 +123,7 @@ app.use("/column", columnRoutes);
 app.use("/banner", bannerRoutes);
 app.use("/hospital-profile", hospitalProfileRoutes);
 app.use("/partner", partnerRoutes);
+app.use("/ad-inquiry", adInquiryRoutes);
 app.use("/moderation", moderationAdminRouter);
 app.use("/api/mobile", moderationRoutes);
 app.use("/api/mobile", notificationRoutes);
