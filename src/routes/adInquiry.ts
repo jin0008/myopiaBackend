@@ -16,8 +16,12 @@ const createSchema = zod.object({
   email: zod.string().trim().email().max(120),
   memo: zod.string().trim().max(1000).optional(),
   agreed: zod.literal(true),
-  /** 허니팟. 사람에게는 보이지 않는 칸이라 비어 있어야 한다. */
-  website: zod.string().max(0).optional(),
+  /** 허니팟. 사람에게는 보이지 않는 칸이라 비어 있어야 한다.
+   *
+   *  여기서 길이를 막지 않는다. zod 가 먼저 400 으로 거절해 버리면 아래
+   *  "조용히 삼키는" 처리가 영영 실행되지 않는다 - 봇은 400 을 보고 무엇에
+   *  걸렸는지 알아낸다. 값을 받아 두고 아래에서 판단한다. */
+  website: zod.string().max(200).optional(),
 });
 
 /**
