@@ -601,7 +601,7 @@ model hospital_account {
   ///
   /// facility_kind 와 다르다. 저쪽은 운영자가 확인해 묶어 준 광고 대상이고
   /// 이쪽은 본인이 가입할 때 고른 업종이다. 묶이기 전에도 알아야 한다.
-  business_kind       String   @default("hospital")
+  business_kind       String    @default("hospital")
   status              String    @default("pending")
   /// 비밀번호를 마지막으로 바꾼 시각.
   ///
@@ -1103,9 +1103,9 @@ model email_verification {
 /// 병원 연동이 있어야 쓸 수 있어, 연동 없는 아이는 저장할 곳이 없었다.
 /// 전국 안과 명부(심평원 진료과목 코드 12).
 model eye_clinic {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   /// 심평원 요양기호. 갱신할 때 같은 기관을 알아보는 열쇠다.
-  ykiho       String   @unique
+  ykiho       String    @unique
   name        String
   /// "university" | "general" | "clinic"
   kind        String
@@ -1128,7 +1128,12 @@ model eye_clinic {
   recv        String?
   /// "문선빌딩 4층" 같은 층·건물 안내.
   place       String?
-  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+  /// 폐업(또는 명부에서 사라진) 시각. 행을 지우지 않는 이유는 광고·파트너
+  /// 계정이 요양기호·인허가번호를 문자열로 들고 있어서다 - FK 가 아니라
+  /// 지우면 막아 주는 것 없이 참조만 끊긴다. 목록에서는 감추고, 이미
+  /// 걸린 광고는 운영자가 볼 수 있게 남긴다.
+  closed_at   DateTime? @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @db.Timestamptz(6)
 
   @@index([lat, lng])
   @@index([sido, sigungu])
@@ -1216,18 +1221,20 @@ model facility_promotion {
 }
 
 model optical_shop {
-  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  license_no    String   @unique
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  license_no    String    @unique
   name          String
   address       String
   phone         String?
   lat           Float
   lng           Float
   /// 자동굴절검사기 대수.
-  refractometer Int      @default(0)
-  eye_chart     Int      @default(0)
+  refractometer Int       @default(0)
+  eye_chart     Int       @default(0)
   licensed_on   String?
-  updated_at    DateTime @default(now()) @db.Timestamptz(6)
+  /// eye_clinic.closed_at 과 같은 뜻이다.
+  closed_at     DateTime? @db.Timestamptz(6)
+  updated_at    DateTime  @default(now()) @db.Timestamptz(6)
 
   @@index([lat, lng])
 }

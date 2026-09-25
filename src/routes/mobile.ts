@@ -5360,13 +5360,13 @@ router.get("/facilities/by-name", async (req, res) => {
     kind === "optical"
       ? Promise.resolve([])
       : prisma.eye_clinic.findMany({
-          where: { OR: [{ name: like }, { address: like }] },
+          where: { closed_at: null, OR: [{ name: like }, { address: like }] },
           take: 40,
         }),
     kind === "eye"
       ? Promise.resolve([])
       : prisma.optical_shop.findMany({
-          where: { OR: [{ name: like }, { address: like }] },
+          where: { closed_at: null, OR: [{ name: like }, { address: like }] },
           take: 40,
         }),
   ]);

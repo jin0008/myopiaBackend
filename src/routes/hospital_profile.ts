@@ -273,7 +273,7 @@ async function findPlaces(q: string) {
   }
 
   const clinics = await prisma.eye_clinic.findMany({
-    where: { OR: [{ name: { contains: q, mode: "insensitive" } }, { address: { contains: q, mode: "insensitive" } }] },
+    where: { closed_at: null, OR: [{ name: { contains: q, mode: "insensitive" } }, { address: { contains: q, mode: "insensitive" } }] },
     select: { ykiho: true, name: true, address: true, phone: true, lat: true, lng: true },
     take: 10,
   });
