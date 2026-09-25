@@ -115,11 +115,22 @@ function writeCsv(file: string, header: string[], rows: Row[]) {
   console.log(`${path.basename(file)} — ${rows.length}줄`);
 }
 
-/** 심평원 종별코드를 우리 kind 로. 01 상급종합, 11 종합병원, 21 병원, 31 의원 … */
-function kindOf(code: string): string {
-  if (code === "01") return "university";
-  if (code === "11" || code === "21") return "general";
+/** 심평원 종별코드를 우리 kind 로. 01 상급종합, 11 종합병원, 21 병원, 31 의원 …
+ *
+ *  코드가 "01" 처럼 문자열로도 11 처럼 정수로도 온다 - 앞자리 0 이 있는 것만
+ *  문자열이다. 맞춰 두지 않으면 종합병원 204곳이 전부 의원이 된다. */
+function kindOf(code: unknown): string {
+  const cd = String(code ?? "").padStart(2, "0");
+  if (cd === "01") return "university";
+  if (cd === "11" || cd === "21") return "general";
   return "clinic";
+}
+
+/** 좌표는 "36.5639330" 처럼 뒤에 0 을 달고 오는 곳이 있다. 값은 같은데
+ *  글자가 달라 418줄이 바뀐 것으로 보인다 - 숫자로 한 번 거쳐 모양을 맞춘다. */
+function num(v: unknown): string {
+  const n = Number(v);
+  return Number.isFinite(n) ? String(n) : "";
 }
 
 /** "0830" 과 1730 이 섞여 온다 - 종료시각이 정수로 오는 곳이 있다.
@@ -210,8 +221,8 @@ async function main() {
       address: r.addr,
       phone: r.telno ?? "",
       homepage: r.hospUrl ?? old.homepage ?? "",
-      lat: r.YPos,
-      lng: r.XPos,
+      lat: num(r.YPos),
+      lng: num(r.XPos),
       doctors: r.drTotCnt ?? "",
       openedOn: r.estbDd ?? "",
       // mdeptSdrCnt 는 의과 전문의 총수다(성빈센트 249명). 안과 전문의 수는
@@ -244,6 +255,17 @@ async function main() {
     }
     if (++done % 50 === 0) console.log(`  상세 ${done}/${budgeted.length}`);
   }
+
+  // 요양기호순으로 고정한다.
+  //
+  // API 가 주는 순서는 회차마다 달라, 정렬하지 않으면 값이 하나도 안 변해도
+  // 2,043줄 전부가 바뀐 것으로 나온다 - 그 diff 안에서 개·폐업을 찾을 수
+  // 없으니 PR 로 검토한다는 설계가 통째로 무의미해진다.
+  //
+  // 이름이 아니라 요양기호로 줄 세우는 이유는, 상호가 바뀌어도 줄이 제자리에
+  // 남아 "한 줄 수정"으로 보이기 때문이다. 이름순이면 개명 한 번에 줄이
+  // 이사해 지운 줄과 더한 줄이 함께 뜬다.
+  clinics.sort((x, y) => (x.ykiho < y.ykiho ? -1 : x.ykiho > y.ykiho ? 1 : 0));
 
   writeCsv(
     path.join(DIR, "eye_clinics.csv"),
