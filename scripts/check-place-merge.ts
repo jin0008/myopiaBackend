@@ -8,7 +8,7 @@
  * 찾던 눈편한성모안과의원(카카오 색인에 없다)은 끝내 나오지 않는다.
  */
 import assert from "assert";
-import { mergePlaces } from "../src/routes/hospital_profile";
+import { mergePlaces } from "../src/lib/placeSearch";
 
 // 카카오가 "눈편한" 에 실제로 돌려주는 것들 (어드민 화면에서 확인한 값)
 const kakao = [{ name: "눈이편한안과" }, { name: "눈편한안과" }];

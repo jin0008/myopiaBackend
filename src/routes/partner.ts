@@ -7,10 +7,8 @@ import multer from "multer";
 import zod from "zod";
 import { Prisma } from "@prisma/client";
 import prisma from "../lib/prisma";
+import { findPlaces } from "../lib/placeSearch";
 import {
-  KakaoLookupError,
-  hasKakaoKey,
-  searchEyeClinics,
 } from "../lib/kakaoPlaces";
 import { validationBody, validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
@@ -1370,35 +1368,7 @@ router.get("/place-search", partnerRequired, async (req, res) => {
     res.json({ places: [] });
     return;
   }
-  if (!hasKakaoKey()) {
-    res.status(503).json({ message: "카카오 검색 키가 설정되지 않았습니다." });
-    return;
-  }
-  try {
-    const docs = await searchEyeClinics(q);
-    res.json({
-      places: docs.map((d) => ({
-        id: d.id,
-        name: d.place_name,
-        category: d.category_name,
-        phone: d.phone || null,
-        address: d.address_name || null,
-        roadAddress: d.road_address_name || null,
-        // 카카오는 x=경도, y=위도를 문자열로 준다. 여기서 숫자로 바꿔
-        // 두지 않으면 등록 폼이 문자열을 그대로 보내 zod에 걸린다.
-        latitude: Number.parseFloat(d.y),
-        longitude: Number.parseFloat(d.x),
-      })),
-    });
-  } catch (err) {
-    const status = err instanceof KakaoLookupError ? err.status : 0;
-    res.status(502).json({
-      message:
-        status === 403
-          ? "카카오 검색이 거부되었습니다 (앱 설정 확인 필요)."
-          : "카카오 검색에 실패했습니다.",
-    });
-  }
+  res.json({ places: await findPlaces(q) });
 });
 
 router.get("/notices", partnerRequired, async (req, res) => {
