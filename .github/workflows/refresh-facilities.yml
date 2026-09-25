@@ -1,8 +1,12 @@
-# 주 1회 명부를 다시 받아 CSV 가 바뀌면 PR 을 연다.
+# 주 1회 명부를 다시 받아 CSV 가 바뀌면 브랜치를 올리고 이슈로 알린다.
 #
-# 자동으로 머지하지 않는다. 공공자료는 가끔 통째로 이상해지고, 그걸 잡아낼
-# 수 있는 곳은 이 PR 의 diff 뿐이다. 폐업 판정은 여기서 하지 않는다 -
-# 배포할 때 import-facilities.ts 가 하고, 거기에 별도 한계선이 있다.
+# PR 을 직접 열지 않는다. 이 저장소는 Actions 의 PR 생성을 막아 두었고
+# (Settings → Actions → Workflow permissions), 그 설정을 바꿀 권한이 없다.
+# 같은 제약이 이슈에는 걸리지 않으므로, 브랜치를 올린 뒤 이슈로 부른다.
+#
+# 자동으로 머지하지 않는 것은 그대로다. 공공자료는 가끔 통째로 이상해지고,
+# 그걸 잡아낼 수 있는 곳은 사람이 보는 diff 뿐이다. 폐업 판정은 여기서
+# 하지 않는다 - 배포할 때 import-facilities.ts 가 하고 별도 한계선이 있다.
 name: 명부 갱신
 
 on:
@@ -13,7 +17,7 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+  issues: write
 
 jobs:
   refresh:
@@ -56,23 +60,45 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
-      - name: PR 열기
+      - name: 브랜치 올리기
         if: steps.diff.outputs.changed == 'yes'
-        uses: peter-evans/create-pull-request@v7
-        with:
-          branch: chore/refresh-facilities
-          # 같은 브랜치에 계속 쌓지 않는다. 매주 그 주의 자료만 본다.
-          delete-branch: true
-          title: "chore(명부): 주간 갱신"
-          commit-message: "chore(명부): 주간 갱신"
-          body: |
-            공공 API 에서 받은 주간 갱신이다. 자동으로 열렸다.
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add src/assets/facilities
+          git commit -m "chore(명부): 주간 갱신"
+          # 매주 그 주의 자료만 본다. 지난 회차 위에 쌓지 않는다.
+          git push --force origin "$BRANCH"
+        env:
+          BRANCH: chore/refresh-facilities
 
-            CSV 줄 변화: +${{ steps.diff.outputs.added }} / -${{ steps.diff.outputs.removed }}
+      - name: 이슈로 알리기
+        if: steps.diff.outputs.changed == 'yes'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ADDED: ${{ steps.diff.outputs.added }}
+          REMOVED: ${{ steps.diff.outputs.removed }}
+        run: |
+          gh issue create \
+            --title "명부 주간 갱신 — 검토 필요 ($(date -u +%Y-%m-%d))" \
+            --body "$(cat <<EOF
+          \`chore/refresh-facilities\` 브랜치에 이번 주 자료를 올렸다.
 
-            **머지 전에 볼 것**
-            - 줄 변화가 수십 줄을 넘으면 자료 사고를 의심해라. 개·폐업은 주 단위로 그렇게 많지 않다.
-            - 사라진 줄이 많다면 머지하지 마라. 배포 때 `import-facilities.ts` 가 2% 한계에 걸려 폐업 판정을 건너뛰지만, 애초에 들이지 않는 편이 낫다.
-            - 새로 생긴 안과는 진료시간(hours/lunch/recv/place)이 비어 있다. 상세정보 API 로 따로 채워야 한다.
+          CSV 줄 변화: +$ADDED / -$REMOVED
 
-            머지한 뒤 배포할 때 `npx tsx scripts/import-facilities.ts` 가 DB 에 반영한다.
+          **PR 열기:** https://github.com/$REPO/compare/main...chore/refresh-facilities?expand=1
+
+          (Actions 가 PR 을 직접 열 수 없어 이슈로 부른다. 저장소 설정에서
+          "Allow GitHub Actions to create and approve pull requests" 를 켜면
+          다음부터는 PR 이 자동으로 열린다.)
+
+          **머지 전에 볼 것**
+          - 줄 변화가 수십 줄을 넘으면 자료 사고를 의심해라. 개·폐업은 주 단위로 그렇게 많지 않다.
+          - 사라진 줄이 많다면 머지하지 마라. 배포 때 \`import-facilities.ts\` 가 2% 한계에 걸려 폐업 판정을 건너뛰지만, 애초에 들이지 않는 편이 낫다.
+          - 새로 생긴 안과는 진료시간이 비어 있다. 다음 회차에 채워진다.
+
+          머지한 뒤 배포할 때 \`npx tsx scripts/import-facilities.ts\` 가 DB 에 반영한다.
+          EOF
+          )"
