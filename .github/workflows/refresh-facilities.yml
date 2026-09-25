@@ -33,6 +33,11 @@ jobs:
           DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
         run: npx tsx scripts/fetch-facilities.ts
 
+      - name: 선별 규칙이 기존 명부를 빠뜨리지 않는지 확인
+        env:
+          DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}
+        run: npx tsx scripts/check-facility-list.ts
+
       - name: 상세정보 변환이 기존 CSV 를 재현하는지 확인
         env:
           DATA_GO_KR_KEY: ${{ secrets.DATA_GO_KR_KEY }}

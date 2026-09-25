@@ -37,6 +37,21 @@ const DETAIL = "https://apis.data.go.kr/B551182/MadmDtlInfoService2.8";
  *  한 번에 이보다 많으면 나눠서 여러 주에 걸쳐 채운다. */
 const DETAIL_BUDGET = 300;
 
+/** 진료과목 안과(12)로 받으면 4,395 곳이 온다. 그중 우리 명부는 2,041 곳이다.
+ *
+ *  차이는 안과를 진료과목으로만 걸어 둔 일반 의원들이다 - 상호가 "○○의원"
+ *  인 곳까지 넣으면 안과 찾기 화면이 동네 의원으로 덮인다. 병원급(01·11·21)
+ *  은 상호에 안과가 없어도 안과가 실제로 있으므로 넣는다(대학병원 안과).
+ *
+ *  이 규칙으로 기존 2,041 곳이 하나도 빠짐없이 재현되는 것을 확인했다
+ *  (scripts/check-facility-list.ts). 바꾸면 그 검사가 먼저 깨진다. */
+const HOSPITAL_TIERS = new Set(["01", "11", "21"]);
+
+export function isEyeDirectoryMember(clCd: unknown, name: unknown): boolean {
+  if (HOSPITAL_TIERS.has(String(clCd ?? "").padStart(2, "0"))) return true;
+  return String(name ?? "").includes("안과");
+}
+
 if (KEY === "" && require.main === module) {
   console.error("DATA_GO_KR_KEY 가 없다. 공공데이터포털 인증키를 넣어라.");
   process.exit(1);
@@ -126,6 +141,21 @@ function stringifyHours(hours: Record<string, [string, string]>): string {
   return `{${parts.join(", ")}}`;
 }
 
+/** 안과 전문의 수. 전문과목별 전문의 수에서 진료과목 12(안과)만 고른다.
+ *  dgsbjtCd 가 "01" 처럼 문자열로도, 12 처럼 정수로도 온다. */
+export async function fetchEyeDoctors(ykiho: string): Promise<string> {
+  const qs = new URLSearchParams({ ykiho, _type: "json", numOfRows: "50", pageNo: "1" });
+  const resp = await fetch(`${DETAIL}/getSpcSbjtSdrInfo2.8?serviceKey=${KEY}&${qs}`);
+  if (!resp.ok) throw new Error(`전문의수 ${ykiho}: HTTP ${resp.status}`);
+  const body = await resp.json();
+  const items = body?.response?.body?.items;
+  const item = items && typeof items === "object" ? (items as any).item : null;
+  if (item == null) return "";
+  const list = (Array.isArray(item) ? item : [item]) as Record<string, unknown>[];
+  const eye = list.find((x) => String(x.dgsbjtCd ?? "").padStart(2, "0") === DGSBJT_EYE);
+  return eye == null ? "" : String(eye.dtlSdrCnt ?? "");
+}
+
 /** 한 기관의 상세정보를 CSV 칸으로 바꾼다. 없으면 빈 칸을 돌려준다. */
 export async function fetchDetail(ykiho: string): Promise<Partial<Row>> {
   const qs = new URLSearchParams({ ykiho, _type: "json", numOfRows: "10", pageNo: "1" });
@@ -166,8 +196,9 @@ async function main() {
     pickItems,
   );
   assertColumns(raw, ["ykiho", "yadmNm", "clCd", "sidoCdNm", "sgguCdNm", "addr", "XPos", "YPos"], "안과 목록");
+  console.log(`진료과목 안과 ${raw.length}곳을 받았다`);
 
-  const clinics: Row[] = raw.map((r) => {
+  const clinics: Row[] = raw.filter((r) => isEyeDirectoryMember(r.clCd, r.yadmNm)).map((r) => {
     // 신고 항목(진료시간 등)은 상세 API 에만 있다. 기존 값을 잃지 않는다.
     const old = existing.get(r.ykiho) ?? {};
     return {
@@ -183,7 +214,9 @@ async function main() {
       lng: r.XPos,
       doctors: r.drTotCnt ?? "",
       openedOn: r.estbDd ?? "",
-      eyeDoctors: r.mdeptSdrCnt ?? old.eyeDoctors ?? "",
+      // mdeptSdrCnt 는 의과 전문의 총수다(성빈센트 249명). 안과 전문의 수는
+      // 전문과목별 API 에만 있어 신규만 따로 받고, 기존 값은 지킨다.
+      eyeDoctors: old.eyeDoctors ?? "",
       hours: old.hours ?? "",
       lunch: old.lunch ?? "",
       recv: old.recv ?? "",
@@ -205,6 +238,7 @@ async function main() {
     // 회차에 다시 시도된다(기존 CSV 에 값이 없으므로 또 신규로 잡힌다).
     try {
       Object.assign(c, await fetchDetail(c.ykiho));
+      c.eyeDoctors = await fetchEyeDoctors(c.ykiho);
     } catch (e) {
       console.error(`  상세 실패 ${c.name}: ${e instanceof Error ? e.message : e}`);
     }
