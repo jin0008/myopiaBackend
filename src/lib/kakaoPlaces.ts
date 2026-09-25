@@ -150,6 +150,22 @@ export async function searchEyeClinics(query: string, limit = 10): Promise<Kakao
     merged.push(d);
   }
 
-  const clinics = merged.filter((d) => isEyeClinic(d.category_name));
-  return (clinics.length > 0 ? clinics : merged).slice(0, limit);
+  return rankEyeClinics(merged, limit);
+}
+
+/**
+ * 안과로 분류된 곳을 앞에 두되, 나머지를 버리지는 않는다.
+ *
+ * 전에는 안과가 하나라도 걸리면 나머지를 통째로 버렸다. 그런데 카카오가
+ * 안과를 늘 "안과"로 분류하지는 않는다 - 눈편한성모안과의원은 "일반의원"
+ * 이다. "눈편한"으로 찾으면 눈편한안과 같은 진짜 안과가 함께 걸리므로,
+ * 버리는 쪽 규칙에서는 이런 병원이 영원히 보이지 않았다.
+ */
+export function rankEyeClinics<T extends { category_name: string }>(
+  docs: T[],
+  limit: number,
+): T[] {
+  const clinics = docs.filter((d) => isEyeClinic(d.category_name));
+  const others = docs.filter((d) => !isEyeClinic(d.category_name));
+  return [...clinics, ...others].slice(0, limit);
 }
