@@ -740,16 +740,19 @@ const promotionSchema = zod.object({
 /** 이름·주소로 명부를 뒤진다. 운영자와 파트너가 같은 것을 고르므로 한
  *  군데서 만든다 - 따로 두면 한쪽에만 보이는 업체가 생긴다. */
 async function facilitiesByName(q: string) {
+  // 폐업한 곳은 새로 고르지 못한다. 반대로 이미 광고가 걸린 곳의 상호를
+  // 되찾는 조회(in: keys)에서는 감추지 않는다 - 거기서 빠지면 운영자
+  // 화면에 번호만 남아 무엇이 폐업했는지 알 수 없다.
   if (q.length < 2) return [];
   const like = { contains: q, mode: "insensitive" as const };
   const [clinics, shops] = await Promise.all([
     prisma.eye_clinic.findMany({
-      where: { OR: [{ name: like }, { address: like }] },
+      where: { closed_at: null, OR: [{ name: like }, { address: like }] },
       select: { ykiho: true, name: true, address: true },
       take: 15,
     }),
     prisma.optical_shop.findMany({
-      where: { OR: [{ name: like }, { address: like }] },
+      where: { closed_at: null, OR: [{ name: like }, { address: like }] },
       select: { license_no: true, name: true, address: true },
       take: 15,
     }),
