@@ -39,3 +39,18 @@ export const lookupLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: "요청이 너무 잦습니다. 잠시 후 다시 시도해 주세요." },
 });
+
+/**
+ * 로그인 없이 받는 쓰기 경로용 - 지금은 광고 문의 하나다.
+ *
+ * lookupLimiter 보다 훨씬 빡빡하다. 사람이 문의를 넣는 일은 몇 분에 한 번도
+ * 잦은 편인데, 봇은 초당 수십 건을 넣는다. 한 회사에서 여러 명이 같은 망으로
+ * 넣는 경우를 생각해 시간당 5건은 남겨 둔다.
+ */
+export const inquiryLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "문의가 너무 잦습니다. 잠시 후 다시 시도해 주세요." },
+});
