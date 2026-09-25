@@ -295,17 +295,7 @@ router.get("/place-search", siteAdminRequired, async (req, res) => {
     res.json({ places: [] });
     return;
   }
-  try {
-    res.json({ places: await findPlaces(q) });
-  } catch (err) {
-    const status = err instanceof KakaoLookupError ? err.status : 0;
-    res.status(502).json({
-      message:
-        status === 403
-          ? "카카오 검색이 거부되었습니다 (앱 설정 확인 필요)."
-          : "카카오 검색에 실패했습니다.",
-    });
-  }
+  res.json({ places: await findPlaces(q) });
 });
 
 /**
@@ -514,17 +504,7 @@ router.get("/mine/place-search", hospitalAdminRequired, async (req, res) => {
     res.json({ places: [] });
     return;
   }
-  try {
-    res.json({ places: await findPlaces(q) });
-  } catch (err) {
-    const status = err instanceof KakaoLookupError ? err.status : 0;
-    res.status(502).json({
-      message:
-        status === 403
-          ? "카카오 검색이 거부되었습니다 (앱 설정 확인 필요)."
-          : "카카오 검색에 실패했습니다.",
-    });
-  }
+  res.json({ places: await findPlaces(q) });
 });
 
 /** 이미지 업로드 — 배너·의사 사진용. */
