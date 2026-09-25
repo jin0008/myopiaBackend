@@ -28,7 +28,16 @@ const DIR = path.join(__dirname, "../src/assets/facilities");
 /** 안과 진료과목 코드. 목록을 이걸로 좁혀야 전국 병원 10만 곳을 안 받는다. */
 const DGSBJT_EYE = "12";
 
-if (KEY === "") {
+/** 상세정보 서비스. 진료시간·점심시간·접수마감·층 안내가 여기에만 있다.
+ *  요양기호를 이미 알 때 그 기관 하나만 준다 - 목록도 폐업도 모른다. */
+const DETAIL = "https://apis.data.go.kr/B551182/MadmDtlInfoService2.8";
+
+/** 상세정보는 하루 10,000 콜이다. 한 번에 다 부르지 않는다 - 신고한 곳이
+ *  37% 뿐이라 매주 2,041 콜을 태울 값이 아니다. 새로 나타난 기관만 부른다.
+ *  한 번에 이보다 많으면 나눠서 여러 주에 걸쳐 채운다. */
+const DETAIL_BUDGET = 300;
+
+if (KEY === "" && require.main === module) {
   console.error("DATA_GO_KR_KEY 가 없다. 공공데이터포털 인증키를 넣어라.");
   process.exit(1);
 }
@@ -98,6 +107,54 @@ function kindOf(code: string): string {
   return "clinic";
 }
 
+/** "0830" 과 1730 이 섞여 온다 - 종료시각이 정수로 오는 곳이 있다.
+ *  네 자리로 맞춰 두지 않으면 앞자리 0 이 사라져 시각이 어긋난다. */
+function hhmm(v: unknown): string | null {
+  if (v == null || v === "") return null;
+  const s = String(v).replace(/\D/g, "");
+  if (s === "") return null;
+  return s.padStart(4, "0");
+}
+
+const DAY_FIELDS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/** 기존 CSV 와 같은 모양으로 쓴다 - `{"0": ["0830", "1730"], "1": ...}`. */
+function stringifyHours(hours: Record<string, [string, string]>): string {
+  const parts = Object.entries(hours).map(
+    ([day, [from, to]]) => `"${day}": ["${from}", "${to}"]`,
+  );
+  return `{${parts.join(", ")}}`;
+}
+
+/** 한 기관의 상세정보를 CSV 칸으로 바꾼다. 없으면 빈 칸을 돌려준다. */
+export async function fetchDetail(ykiho: string): Promise<Partial<Row>> {
+  const qs = new URLSearchParams({ ykiho, _type: "json", numOfRows: "10", pageNo: "1" });
+  const resp = await fetch(`${DETAIL}/getDtlInfo2.8?serviceKey=${KEY}&${qs}`);
+  if (!resp.ok) throw new Error(`상세정보 ${ykiho}: HTTP ${resp.status}`);
+  const body = await resp.json();
+  const items = body?.response?.body?.items;
+  const item = items && typeof items === "object" ? (items as any).item : null;
+  if (item == null) return {};
+  const d = (Array.isArray(item) ? item[0] : item) as Record<string, unknown>;
+
+  // 월=0. 시작과 끝이 모두 있어야 한 칸으로 친다 - 한쪽만 신고한 곳이 있다.
+  const hours: Record<string, [string, string]> = {};
+  DAY_FIELDS.forEach((day, i) => {
+    const from = hhmm(d[`trmt${day}Start`]);
+    const to = hhmm(d[`trmt${day}End`]);
+    if (from != null && to != null) hours[String(i)] = [from, to];
+  });
+
+  return {
+    // 기존 CSV 는 파이썬이 써서 `", "` 로 띄어져 있다. 모양을 맞추지 않으면
+    // 첫 갱신에서 757줄이 공백 때문에 바뀐 것으로 보여 진짜 변경을 가린다.
+    hours: Object.keys(hours).length > 0 ? stringifyHours(hours) : "",
+    lunch: String(d.lunchWeek ?? ""),
+    recv: String(d.rcvWeek ?? ""),
+    place: String(d.plcNm ?? ""),
+  };
+}
+
 async function main() {
   const existing = new Map(
     parseCsv(fs.readFileSync(path.join(DIR, "eye_clinics.csv"), "utf8")).map((r) => [r.ykiho, r]),
@@ -134,8 +191,25 @@ async function main() {
     };
   });
 
-  const fresh = clinics.filter((c) => !existing.has(c.ykiho)).length;
-  console.log(`안과 ${clinics.length}곳 (신규 ${fresh}곳, 상세정보는 신규만 따로 받아라)`);
+  // 신규 기관과, 아직 한 번도 상세를 못 받아 본 기관을 채운다.
+  const needDetail = clinics.filter((c) => !existing.has(c.ykiho));
+  const budgeted = needDetail.slice(0, DETAIL_BUDGET);
+  console.log(`안과 ${clinics.length}곳 (신규 ${needDetail.length}곳, 이번에 상세 ${budgeted.length}곳)`);
+  if (needDetail.length > DETAIL_BUDGET) {
+    console.log(`  남은 ${needDetail.length - DETAIL_BUDGET}곳은 다음 회차에 채운다.`);
+  }
+
+  let done = 0;
+  for (const c of budgeted) {
+    // 한 곳이 실패해도 갱신 전체를 버리지 않는다. 그 칸만 비워 두고 다음
+    // 회차에 다시 시도된다(기존 CSV 에 값이 없으므로 또 신규로 잡힌다).
+    try {
+      Object.assign(c, await fetchDetail(c.ykiho));
+    } catch (e) {
+      console.error(`  상세 실패 ${c.name}: ${e instanceof Error ? e.message : e}`);
+    }
+    if (++done % 50 === 0) console.log(`  상세 ${done}/${budgeted.length}`);
+  }
 
   writeCsv(
     path.join(DIR, "eye_clinics.csv"),
@@ -144,7 +218,10 @@ async function main() {
   );
 }
 
-main().catch((e) => {
-  console.error(String(e instanceof Error ? e.message : e));
-  process.exit(1);
-});
+// 다른 스크립트가 fetchDetail 만 가져다 쓸 수 있게, 직접 실행일 때만 돈다.
+if (require.main === module) {
+  main().catch((e) => {
+    console.error(String(e instanceof Error ? e.message : e));
+    process.exit(1);
+  });
+}
