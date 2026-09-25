@@ -30,4 +30,23 @@ assert.strictEqual(dedup.length, 1, "띄어쓰기만 다른 같은 병원이 두
 // 카카오가 0건이어도 명부가 살아 있다.
 assert.strictEqual(mergePlaces([], directory).length, 2);
 
+// 실제로 나온 중복: 카카오는 "눈편한안과", 명부는 "눈편한안과의원" - 같은 곳이다.
+// 꼬리표를 떼면 알아본다.
+const tail = mergePlaces([{ name: "눈편한안과" }], [{ name: "눈편한안과의원" }]);
+assert.strictEqual(tail.length, 1, "의원 꼬리표만 다른 같은 병원이 두 번 나온다");
+
+// 이름이 전혀 달라도 전화가 같으면 같은 곳이다.
+const byPhone = mergePlaces(
+  [{ name: "눈편한안과", phone: "042-486-0029" }],
+  [{ name: "전혀다른이름", phone: "0424860029" }],
+);
+assert.strictEqual(byPhone.length, 1, "전화가 같은 같은 병원이 두 번 나온다");
+
+// 전화가 비어 있으면 그것으로 묶지 않는다 - 빈 값끼리 같다고 보면 다 사라진다.
+const noPhone = mergePlaces(
+  [{ name: "가안과", phone: null }],
+  [{ name: "나안과", phone: null }],
+);
+assert.strictEqual(noPhone.length, 2, "전화가 없다고 다른 병원을 지우면 안 된다");
+
 console.log("ok — 카카오가 결과를 내도 명부의 병원이 함께 나온다");

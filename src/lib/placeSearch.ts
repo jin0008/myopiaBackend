@@ -85,9 +85,28 @@ export async function findPlaces(q: string) {
  *  같은 곳이 두 줄로 나오면 운영자가 어느 쪽을 골라야 할지 알 수 없다.
  *  상호는 "눈편한 성모안과" 와 "눈편한성모안과" 처럼 띄어쓰기가 갈리므로
  *  공백을 지우고 견준다. */
-export function mergePlaces<T extends { name: string }>(fromKakao: T[], fromDirectory: T[]): T[] {
+export function mergePlaces<T extends { name: string; phone?: string | null }>(
+  fromKakao: T[],
+  fromDirectory: T[],
+): T[] {
+  // 상호는 "눈편한 성모안과"/"눈편한성모안과" 처럼 띄어쓰기가 갈리고,
+  // 카카오는 "눈편한안과" 인데 명부는 "눈편한안과의원" 처럼 법인 꼬리표가
+  // 붙고 빠진다. 이름만으로는 같은 곳을 알아보지 못한다.
   const squash = (v: string) => v.replace(/\s+/g, "");
-  const seen = new Set(fromKakao.map((p) => squash(p.name)));
-  return [...fromKakao, ...fromDirectory.filter((c) => !seen.has(squash(c.name)))];
+  // 꼬리표를 떼고 견준다. 의원/병원은 상호의 일부가 아니라 종별 표기다.
+  const bare = (v: string) => squash(v).replace(/(의원|병원)$/, "");
+  const digits = (v: string | null | undefined) => (v ?? "").replace(/\D/g, "");
+
+  const names = new Set(fromKakao.map((p) => bare(p.name)));
+  // 전화가 같으면 같은 곳으로 본다 - 이름이 아무리 달라도 그렇다.
+  // 빈 전화는 열쇠가 되지 못하므로 넣지 않는다.
+  const phones = new Set(fromKakao.map((p) => digits(p.phone)).filter((d) => d !== ""));
+
+  return [
+    ...fromKakao,
+    ...fromDirectory.filter(
+      (c) => !names.has(bare(c.name)) && !phones.has(digits(c.phone)),
+    ),
+  ];
 }
 
