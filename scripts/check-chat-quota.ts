@@ -67,6 +67,12 @@ console.log("ok — 손님 3회·로그인 10회에서 막히고, 날짜가 바�
   assert.ok(isBillingError("Quota exceeded for quota metric"), "quota 를 못 알아본다");
   assert.ok(isBillingError("RESOURCE_EXHAUSTED"), "RESOURCE_EXHAUSTED 를 못 알아본다");
   assert.ok(!isBillingError("fetch: ECONNRESET"), "네트워크 오류를 요금 문제로 본다");
+  // 'exceeded' 만으로 잡으면 응답 길이 초과까지 요금 문제가 된다. 그러면
+  // 사용자에게 '일시 중단' 이 나가고 운영자는 멀쩡한 결제를 들여다본다.
+  assert.ok(
+    !isBillingError("maxOutputTokens exceeded"),
+    "길이 초과를 요금 문제로 본다",
+  );
   assert.ok(!isBillingError(null), "오류가 없는데 요금 문제로 본다");
   console.log("ok — 요금 오류를 네트워크 오류와 구분한다");
 }

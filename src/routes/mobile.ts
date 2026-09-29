@@ -4020,8 +4020,7 @@ export function isBillingError(err: string | null): boolean {
     m.includes("credit") ||
     m.includes("quota") ||
     m.includes("billing") ||
-    m.includes("resource_exhausted") ||
-    m.includes("exceeded")
+    m.includes("resource_exhausted")
   );
 }
 
