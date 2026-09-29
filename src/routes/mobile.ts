@@ -3752,6 +3752,10 @@ function envInt(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/** 저장소 루트. dist/routes/mobile.js 에서 두 단계 위다.
+ *  ts-node 로 src 에서 돌 때도 src/routes 기준이라 같은 곳을 가리킨다. */
+const APP_ROOT = path.join(__dirname, "..", "..");
+
 const CHAT_CONFIG = {
   model: process.env.CHAT_MODEL || "gemini-3.1-flash-lite",
   embeddingModel: process.env.CHAT_EMBEDDING_MODEL || "gemini-embedding-001",
@@ -3776,8 +3780,14 @@ const CHAT_CONFIG = {
   maxInputChars: 500,
   maxOutputTokens: 1400,
   maxHistoryTurns: 6,
-  dataDir:
-    process.env.CHAT_DATA_DIR || path.join(process.cwd(), "data", "chat"),
+  /** 사용량·대화 로그를 두는 곳.
+   *
+   *  실행 위치(process.cwd())를 기준으로 삼으면 안 된다. systemd 에
+   *  WorkingDirectory 가 비어 있으면 서비스가 어느 폴더에서 도는지 정해지지
+   *  않아, 엉뚱한 경로에 쓰려다 실패한다. 그 실패는 조용히 삼켜져서(아래
+   *  catch) 사용량이 세어지지 않고 하루 한도가 걸리지 않는다 - 돈이 그대로
+   *  나간다. 컴파일된 파일 위치를 기준으로 앱 루트를 잡는다. */
+  dataDir: process.env.CHAT_DATA_DIR || path.join(APP_ROOT, "data", "chat"),
 } as const;
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
@@ -4001,6 +4011,19 @@ type GeminiTurn = { role: "user" | "model"; parts: { text: string }[] };
  * search grounding tool is enabled (paid tier only). Mirrors
  * chat.php's callGemini.
  */
+/** 요금·한도 때문에 막힌 것인지. 기다려서 풀리는 문제가 아니라 사람이
+ *  손을 대야 하는 것이라, 사용자 안내도 서버 로그 수준도 달라야 한다. */
+export function isBillingError(err: string | null): boolean {
+  if (err == null) return false;
+  const m = err.toLowerCase();
+  return (
+    m.includes("credit") ||
+    m.includes("quota") ||
+    m.includes("billing") ||
+    m.includes("resource_exhausted")
+  );
+}
+
 async function callGemini(
   systemPrompt: string,
   contents: GeminiTurn[],
@@ -4110,6 +4133,14 @@ async function callGemini(
  *
  *  손님 칸은 계정 칸과 따로 둔다. 한 곳에 섞으면 IP 하나가 계정 하나처럼
  *  세어져, 통신사 NAT 뒤의 여러 사람이 서로의 몫을 까먹는다. */
+/** 오늘 날짜(한국 시각). 사용량과 로그를 하루 단위로 가르는 열쇠다.
+ *
+ *  UTC 로 재면 한국 시각 오전 9시에 초기화된다 - 밤 11시에 한도를 다 쓴
+ *  사람이 자정을 넘겨도 풀리지 않아, "내일 다시" 라는 안내가 거짓이 된다. */
+function kstToday(): string {
+  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 function checkAndCountUsage(
   today: string,
   key: string,
@@ -4158,7 +4189,11 @@ function checkAndCountUsage(
     bucket[key] = count + 1;
     fs.writeFileSync(file, JSON.stringify(data));
     return "ok";
-  } catch {
+  } catch (e) {
+    // 세지 못하면 한도가 걸리지 않는다. 서비스를 멈추지는 않되(사용자가
+    // 디스크 문제로 상담을 못 하는 것도 곤란하다) 조용히 넘기지는 않는다 -
+    // 이 줄이 없어서 한도가 풀린 것을 오래 몰랐다.
+    console.error("[chat] 사용량 집계 실패 - 하루 한도가 걸리지 않는다:", e);
     return "ok";
   }
 }
@@ -4169,7 +4204,7 @@ function chatLogLine(entry: Record<string, unknown>): void {
     if (!fs.existsSync(CHAT_CONFIG.dataDir)) {
       fs.mkdirSync(CHAT_CONFIG.dataDir, { recursive: true });
     }
-    const today = new Date().toISOString().slice(0, 10);
+    const today = kstToday();
     const file = path.join(CHAT_CONFIG.dataDir, `chat-${today}.jsonl`);
     fs.appendFileSync(file, JSON.stringify(entry) + "\n");
   } catch {
@@ -4250,7 +4285,7 @@ router.post(
     const quotaKey = userId ?? `ip:${req.ip ?? "unknown"}`;
     const quotaKind: "user" | "guest" = userId ? "user" : "guest";
     const body = req.body as zod.infer<typeof chatSchema>;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = kstToday();
 
     const reply = (r: Partial<ChatResponse> & { mode: ChatMode; answer: string }) =>
       res.json({
@@ -4359,10 +4394,18 @@ router.post(
         err: r.err.slice(0, 300),
         ms: r.ms,
       });
+      if (isBillingError(r.err)) {
+        console.error("[chat] 요금·한도로 막혔다. 결제를 확인해라:", r.err.slice(0, 200));
+      }
+      // 요금·한도로 막힌 것은 '잠시 후 다시'가 거짓말이다. 기다려도 풀리지
+      // 않고 운영자가 손을 대야 한다. 2026-09-29 에 크레딧이 소진됐을 때,
+      // 모든 실패가 같은 문구로 나가는 바람에 원인을 찾는 데 오래 걸렸다.
+      const billing = isBillingError(r.err);
       return reply({
-        mode: "error",
-        answer:
-          r.errType === "network"
+        mode: billing ? "limited" : "error",
+        answer: billing
+          ? "AI 상담이 일시 중단되었습니다. 운영자가 확인 중이니 잠시 뒤 다시 찾아 주세요."
+          : r.errType === "network"
             ? "AI 서버와 연결하지 못했어요. 잠시 후 다시 시도해 주세요."
             : r.errType === "parse"
               ? "답변 생성 중 문제가 있었어요. 질문을 조금 바꿔 다시 시도해 주세요."
@@ -6187,3 +6230,7 @@ router.get("/treatments", (_req, res) => {
 });
 
 export default router;
+
+/** 검사용. 하루 한도는 눈으로 확인할 수 없어(청구서에서만 드러난다)
+ *  scripts/check-chat-quota.ts 가 이 두 함수를 직접 부른다. */
+export const __chatTestHooks = { checkAndCountUsage, kstToday };
