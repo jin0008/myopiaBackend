@@ -524,6 +524,36 @@ router.patch("/accounts/:id", siteAdminRequired, async (req, res) => {
     return;
   }
   const id = String(req.params.id);
+
+  // 안경원은 업체를 묶기 전에 승인할 수 없다.
+  //
+  // 병원에게 승인은 "프로필이 앱에 뜬다"는 뜻이라 연결과 별개로 의미가
+  // 있다. 안경원은 프로필이 없어서, 승인만 해 두면 아무 일도 일어나지
+  // 않는다. 그런데 운영자에게는 승인이 마지막 단계로 보이니 거기서 손을
+  // 뗀다 - 파트너는 승인 메일을 받고 들어와 프리미엄 화면에서 막힌다.
+  // 안경원에게 승인은 곧 업체 확인이므로, 둘을 한 번에 하게 한다.
+  const before = await prisma.hospital_account.findUnique({
+    where: { id },
+    select: { business_kind: true, facility_key: true },
+  });
+  if (before == null) {
+    res.sendStatus(404);
+    return;
+  }
+  if (
+    parsed.data.status === "approved" &&
+    before.business_kind === "optical" &&
+    before.facility_key == null
+  ) {
+    res.status(400).json({
+      error: "facility required",
+      code: "facility_required",
+      message:
+        "안경원은 실제 업체를 연결한 뒤에 승인할 수 있습니다. 연결하지 않으면 프리미엄을 신청할 수 없습니다.",
+    });
+    return;
+  }
+
   const account = await prisma.hospital_account
     .update({ where: { id }, data: { status: parsed.data.status, updated_at: new Date() } })
     .catch(() => null);
