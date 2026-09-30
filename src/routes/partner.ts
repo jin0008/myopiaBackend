@@ -915,13 +915,25 @@ router.post(
   verifyUpload.array("docs", MAX_DOCS),
   async (req, res) => {
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+
+    // multer 는 이 핸들러에 닿기 전에 디스크에 쓴다. 아래 어느 검사에서든
+    // 튕기면 파일만 남는데, 어느 신청에도 안 걸려 있어 나중에 무엇을
+    // 지워도 되는지 아무도 모른다. 사업자등록증이 그렇게 쌓이면 안 된다.
+    const discard = () => {
+      for (const f of files) fs.unlink(path.join(VERIFY_DIR, f.filename), () => {});
+    };
+    const fail = (code: number, body: Record<string, unknown>) => {
+      discard();
+      res.status(code).json(body);
+    };
+
     const parsed = verifySchema.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ message: validationMessage(parsed.error) });
+      fail(400, { message: validationMessage(parsed.error) });
       return;
     }
     if (files.length === 0) {
-      res.status(400).json({
+      fail(400, {
         error: "documents required",
         code: "documents_required",
         message: "사업자등록증 등 확인할 수 있는 서류를 한 장 이상 올려 주세요.",
@@ -934,11 +946,12 @@ router.post(
       select: { business_kind: true, facility_key: true },
     });
     if (account == null) {
+      discard();
       res.sendStatus(404);
       return;
     }
     if (account.facility_key != null) {
-      res.status(409).json({
+      fail(409, {
         error: "already verified",
         code: "already_verified",
         message: "이미 업체 확인이 끝난 계정입니다.",
@@ -958,7 +971,7 @@ router.post(
             select: { name: true },
           });
     if (exists == null) {
-      res.status(404).json({
+      fail(404, {
         error: "facility not found",
         code: "facility_not_found",
         message: "명부에서 찾을 수 없는 업체입니다. 다시 골라 주세요.",
@@ -981,6 +994,7 @@ router.post(
       res.status(201).json(verificationDTO(row));
     } catch (e) {
       // 대기 중 신청은 계정당 하나(부분 유니크 인덱스).
+      discard();
       if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
         res.status(409).json({
           error: "already pending",
