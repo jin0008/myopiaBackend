@@ -648,85 +648,36 @@ router.post("/accounts/:id/claim-profile", siteAdminRequired, async (req, res) =
  *
  * 프로필은 카카오 장소로, 광고는 심평원 번호로 식별된다. 그 둘을 잇는
  * 일이라 사람이 한 번 해야 한다 - 계정이 정말 그 가게인지는 서류나 통화로
- * 확인할 수밖에 없다. 신청할 때마다가 아니라 계정당 한 번이면 된다.
+ * 확인할 수밖에 없다.
  *
- * key 를 비우면 연결을 푼다.
+ * 이제 묶는 것은 인증 심사만 한다. 여기서는 푸는 것만 한다 - key 를 비우면
+ * 연결이 풀린다. 서류 없이 묶는 길이 남아 있으면 인증 절차를 만든 뜻이
+ * 절반 사라진다. 화면에서 버튼만 치우고 이 라우트를 열어 두면 그 길은
+ * 여전히 있는 것이다.
  */
 router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
   const id = String(req.params.id);
-  const kind = String(req.body?.kind ?? "");
   const key = String(req.body?.key ?? "").trim();
 
-  if (key === "") {
-    // 없는 계정이면 update 가 P2025 로 터져 500 이 된다. 운영자에게는
-    // "그런 계정이 없다"가 맞는 말이다.
-    const gone = await prisma.hospital_account.updateMany({
-      where: { id },
-      data: { facility_kind: null, facility_key: null, updated_at: new Date() },
+  if (key !== "") {
+    res.status(400).json({
+      error: "linking moved to verification",
+      code: "use_verification",
+      message:
+        "업체 연결은 인증 심사에서 서류를 확인한 뒤에만 할 수 있습니다. 여기서는 해제만 됩니다.",
     });
-    if (gone.count !== 1) {
-      res.sendStatus(404);
-      return;
-    }
-    res.sendStatus(204);
-    return;
-  }
-  if (kind !== "eye" && kind !== "optical") {
-    res.status(400).json({ error: "bad kind", code: "bad_request" });
     return;
   }
 
-  // 업종과 가게 종류가 맞아야 한다. 병원 계정에 안경점을, 안경점 계정에
-  // 안과를 묶는 것은 손이 미끄러진 것이지 뜻이 있는 조합이 아니다. 막지
-  // 않으면 광고는 걸리는데 엉뚱한 곳에 걸리고, 그 사실은 아무 데서도
-  // 드러나지 않는다.
-  const target = await prisma.hospital_account.findUnique({
+  // 없는 계정이면 update 가 P2025 로 터져 500 이 된다. 운영자에게는
+  // "그런 계정이 없다"가 맞는 말이다.
+  const gone = await prisma.hospital_account.updateMany({
     where: { id },
-    select: { business_kind: true },
+    data: { facility_kind: null, facility_key: null, updated_at: new Date() },
   });
-  if (target == null) {
+  if (gone.count !== 1) {
     res.sendStatus(404);
     return;
-  }
-  const expected = target.business_kind === "optical" ? "optical" : "eye";
-  if (kind !== expected) {
-    res.status(400).json({
-      error: "kind mismatch",
-      code: "kind_mismatch",
-      message:
-        target.business_kind === "optical"
-          ? "안경원 계정에는 안경원만 연결할 수 있습니다."
-          : "병원 계정에는 안과만 연결할 수 있습니다.",
-    });
-    return;
-  }
-
-  // 명부에 없는 번호를 묶으면 신청도 광고도 아무 데도 안 붙는다.
-  const exists =
-    kind === "eye"
-      ? await prisma.eye_clinic.findUnique({ where: { ykiho: key }, select: { name: true } })
-      : await prisma.optical_shop.findUnique({ where: { license_no: key }, select: { name: true } });
-  if (exists == null) {
-    res.status(404).json({ error: "facility not found", code: "facility_not_found" });
-    return;
-  }
-  try {
-    const done = await prisma.hospital_account.updateMany({
-      where: { id },
-      data: { facility_kind: kind, facility_key: key, updated_at: new Date() },
-    });
-    if (done.count !== 1) {
-      res.sendStatus(404);
-      return;
-    }
-  } catch (e) {
-    // 한 가게에 계정 하나다. 둘이 같은 가게를 들고 있으면 누구의 광고인지,
-    // 누구에게 성적을 보여 줄지가 갈린다.
-    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
-      res.status(409).json({ error: "taken", code: "facility_taken" });
-      return;
-    }
-    throw e;
   }
   res.sendStatus(204);
 });
