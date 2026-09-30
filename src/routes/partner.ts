@@ -807,6 +807,346 @@ router.get("/facilities", siteAdminRequired, async (req, res) => {
 });
 
 
+/* ---- 업체 인증 --------------------------------------------------------
+ *
+ * 가입 폼의 상호는 자유 입력이다. 누구나 "서울삼성안과"라고 적고 그
+ * 병원의 카카오 장소를 고를 수 있었고, 승인 버튼은 상태만 바꿀 뿐
+ * 무엇을 근거로 승인했는지 아무 데도 남기지 않았다.
+ *
+ * 여기서 서류를 받는다. 가게는 신청자가 명부에서 고르고, 운영자는
+ * 서류의 상호·주소가 고른 가게와 같은지만 대조한다. 승인이 곧 계정과
+ * 업체의 1:1 연결이다.
+ */
+
+// 사업자등록증·개설신고증명서가 들어온다. 배너 사진과 같은 곳에 두면
+// 안 된다 - 그쪽은 파일명만 알면 누구나 받아가는 공개 경로다.
+const VERIFY_DIR = path.join(__dirname, "../../uploads/verification");
+fs.mkdirSync(VERIFY_DIR, { recursive: true });
+
+const VERIFY_EXT = new Set([".jpg", ".jpeg", ".png", ".webp", ".pdf"]);
+const MAX_DOCS = 3;
+
+const verifyUpload = multer({
+  storage: multer.diskStorage({
+    destination: VERIFY_DIR,
+    filename: (_req, file, cb) => {
+      cb(null, `${crypto.randomUUID()}${path.extname(file.originalname).toLowerCase()}`);
+    },
+  }),
+  limits: { fileSize: MAX_UPLOAD_MB * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    cb(null, VERIFY_EXT.has(ext) && (/^image\//.test(file.mimetype) || file.mimetype === "application/pdf"));
+  },
+});
+
+/** 업종에 맞는 명부만 돌려준다. 안경원 사장에게 안과가 섞여 나오면
+ *  고를 수 없는 것을 고르게 된다 - 승인 단계에서 어차피 막힌다. */
+router.get("/my-facilities", partnerRequired, async (req, res) => {
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: req.partner!.sub },
+    select: { business_kind: true },
+  });
+  const want = account?.business_kind === "optical" ? "optical" : "eye";
+  const rows = await facilitiesByName(String(req.query.q ?? "").trim());
+  res.json(rows.filter((r) => r.kind === want));
+});
+
+function verificationDTO(v: {
+  id: string;
+  kind: string;
+  key: string;
+  facility_name: string;
+  doc_files: string[];
+  status: string;
+  note: string | null;
+  review_note: string | null;
+  reviewed_at: Date | null;
+  created_at: Date;
+}) {
+  return {
+    id: v.id,
+    kind: v.kind,
+    key: v.key,
+    facilityName: v.facility_name,
+    docCount: v.doc_files.length,
+    status: v.status,
+    note: v.note,
+    reviewNote: v.review_note,
+    reviewedAt: v.reviewed_at?.toISOString() ?? null,
+    createdAt: v.created_at.toISOString(),
+  };
+}
+
+/** 내 인증 상태. 이미 연결됐으면 신청할 것이 없다. */
+router.get("/verification", partnerRequired, async (req, res) => {
+  const [account, latest] = await Promise.all([
+    prisma.hospital_account.findUnique({
+      where: { id: req.partner!.sub },
+      select: { business_kind: true, facility_kind: true, facility_key: true },
+    }),
+    prisma.facility_verification.findFirst({
+      where: { account_id: req.partner!.sub },
+      orderBy: { created_at: "desc" },
+    }),
+  ]);
+  res.json({
+    businessKind: account?.business_kind ?? "hospital",
+    verified: account?.facility_key != null,
+    request: latest == null ? null : verificationDTO(latest),
+  });
+});
+
+const verifySchema = zod.object({
+  key: zod.string().trim().min(1),
+  note: zod.string().trim().max(500).optional(),
+});
+
+/**
+ * 인증을 신청한다.
+ *
+ * 업종은 신청서가 정하지 않는다 - 계정이 가입할 때 고른 것을 쓴다.
+ * 서류 없이 받지 않는다. 서류가 없으면 운영자가 대조할 것이 없고,
+ * 그러면 예전처럼 "확인했다고 치고" 누르는 자리로 돌아간다.
+ */
+router.post(
+  "/verification",
+  partnerRequired,
+  verifyUpload.array("docs", MAX_DOCS),
+  async (req, res) => {
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const parsed = verifySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ message: validationMessage(parsed.error) });
+      return;
+    }
+    if (files.length === 0) {
+      res.status(400).json({
+        error: "documents required",
+        code: "documents_required",
+        message: "사업자등록증 등 확인할 수 있는 서류를 한 장 이상 올려 주세요.",
+      });
+      return;
+    }
+
+    const account = await prisma.hospital_account.findUnique({
+      where: { id: req.partner!.sub },
+      select: { business_kind: true, facility_key: true },
+    });
+    if (account == null) {
+      res.sendStatus(404);
+      return;
+    }
+    if (account.facility_key != null) {
+      res.status(409).json({
+        error: "already verified",
+        code: "already_verified",
+        message: "이미 업체 확인이 끝난 계정입니다.",
+      });
+      return;
+    }
+
+    const kind = account.business_kind === "optical" ? "optical" : "eye";
+    const exists =
+      kind === "eye"
+        ? await prisma.eye_clinic.findUnique({
+            where: { ykiho: parsed.data.key },
+            select: { name: true },
+          })
+        : await prisma.optical_shop.findUnique({
+            where: { license_no: parsed.data.key },
+            select: { name: true },
+          });
+    if (exists == null) {
+      res.status(404).json({
+        error: "facility not found",
+        code: "facility_not_found",
+        message: "명부에서 찾을 수 없는 업체입니다. 다시 골라 주세요.",
+      });
+      return;
+    }
+
+    try {
+      const row = await prisma.facility_verification.create({
+        data: {
+          account_id: req.partner!.sub,
+          kind,
+          key: parsed.data.key,
+          // 명부의 이름을 쓴다. 신청자가 적어 낸 이름은 오타가 섞인다.
+          facility_name: exists.name,
+          doc_files: files.map((f) => f.filename),
+          note: parsed.data.note ?? null,
+        },
+      });
+      res.status(201).json(verificationDTO(row));
+    } catch (e) {
+      // 대기 중 신청은 계정당 하나(부분 유니크 인덱스).
+      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+        res.status(409).json({
+          error: "already pending",
+          code: "already_pending",
+          message: "이미 심사를 기다리는 신청이 있습니다.",
+        });
+        return;
+      }
+      throw e;
+    }
+  },
+);
+
+// multer 오류(용량 초과 등)를 한국어 JSON으로. 에러 핸들러는 자기보다
+// 앞에 등록된 라우트만 잡으므로, 위의 업로드 라우트 뒤에 한 번 더 건다.
+router.use(uploadErrorHandler);
+
+/* ---- 인증 심사 (운영자) ---------------------------------------------- */
+
+/** 심사할 신청 목록. 기다리는 것이 위로 온다. */
+router.get("/verifications", siteAdminRequired, async (_req, res) => {
+  const rows = await prisma.facility_verification.findMany({
+    orderBy: [{ created_at: "desc" }],
+    take: 200,
+    include: {
+      account: {
+        select: { id: true, hospital_name: true, contact_name: true, email: true, business_kind: true },
+      },
+    },
+  });
+  res.json(
+    rows.map((r) => ({
+      ...verificationDTO(r),
+      docFiles: r.doc_files,
+      account: {
+        id: r.account.id,
+        hospitalName: r.account.hospital_name,
+        contactName: r.account.contact_name,
+        email: r.account.email,
+        businessKind: r.account.business_kind,
+      },
+    })),
+  );
+});
+
+/**
+ * 제출 서류를 연다. 운영자만.
+ *
+ * 내려받게 한다(attachment). 브라우저가 열어 주면 편하지만, 올린 것이
+ * 실제로 무엇인지는 확장자가 보장하지 않는다.
+ */
+router.get("/verifications/:id/docs/:name", siteAdminRequired, async (req, res) => {
+  const name = path.basename(String(req.params.name));
+  // 신청에 실제로 딸린 파일만 내준다. 디렉터리에 있는 아무 파일이나
+  // 이름으로 꺼낼 수 있으면, 남의 사업자등록증이 이름 하나로 새어 나간다.
+  const row = await prisma.facility_verification.findUnique({
+    where: { id: String(req.params.id) },
+    select: { doc_files: true },
+  });
+  if (row == null || !row.doc_files.includes(name)) {
+    res.sendStatus(404);
+    return;
+  }
+  res.download(path.join(VERIFY_DIR, name), name, (err) => {
+    if (err && !res.headersSent) res.sendStatus(404);
+  });
+});
+
+const reviewSchema = zod.object({
+  action: zod.enum(["approve", "reject"]),
+  reviewNote: zod.string().trim().max(500).optional(),
+});
+
+/**
+ * 심사한다. 승인하면 그 자리에서 계정에 업체를 묶는다 - 승인과 연결이
+ * 따로면 운영자가 승인만 하고 손을 떼고, 파트너는 승인된 줄 알고
+ * 들어와 막힌다.
+ */
+router.post("/verifications/:id/review", siteAdminRequired, async (req, res) => {
+  const parsed = reviewSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: validationMessage(parsed.error) });
+    return;
+  }
+  // 반려는 이유가 있어야 한다. 파트너 화면에 그대로 보이는데 비어 있으면
+  // 무엇을 고쳐 다시 내야 하는지 알 수 없다.
+  if (parsed.data.action === "reject" && !parsed.data.reviewNote) {
+    res.status(400).json({
+      error: "review note required",
+      code: "review_note_required",
+      message: "반려 사유를 적어 주세요. 파트너에게 그대로 보입니다.",
+    });
+    return;
+  }
+
+  const id = String(req.params.id);
+  const row = await prisma.facility_verification.findUnique({ where: { id } });
+  if (row == null) {
+    res.sendStatus(404);
+    return;
+  }
+  if (row.status !== "pending") {
+    res.status(409).json({
+      error: "already reviewed",
+      code: "already_reviewed",
+      message: "이미 처리된 신청입니다.",
+    });
+    return;
+  }
+
+  if (parsed.data.action === "reject") {
+    await prisma.facility_verification.update({
+      where: { id },
+      data: {
+        status: "rejected",
+        review_note: parsed.data.reviewNote ?? null,
+        reviewed_at: new Date(),
+        reviewed_by: req.authSession!.user_id,
+        updated_at: new Date(),
+      },
+    });
+    res.json({ id, status: "rejected" });
+    return;
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.facility_verification.update({
+        where: { id },
+        data: {
+          status: "approved",
+          review_note: parsed.data.reviewNote ?? null,
+          reviewed_at: new Date(),
+          reviewed_by: req.authSession!.user_id,
+          updated_at: new Date(),
+        },
+      });
+      await tx.hospital_account.update({
+        where: { id: row.account_id },
+        data: {
+          facility_kind: row.kind,
+          facility_key: row.key,
+          // 안경원에게 승인은 곧 업체 확인이다. 프로필이 없어 따로
+          // 노출시킬 것이 없으니 여기서 끝낸다. 병원은 치료탭 노출이
+          // 별개라 상태를 건드리지 않는다.
+          ...(row.kind === "optical" ? { status: "approved" } : {}),
+          updated_at: new Date(),
+        },
+      });
+    });
+  } catch (e) {
+    // 한 가게에 계정 하나.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      res.status(409).json({
+        error: "taken",
+        code: "facility_taken",
+        message: "다른 계정이 이미 이 업체에 연결되어 있습니다.",
+      });
+      return;
+    }
+    throw e;
+  }
+  res.json({ id, status: "approved" });
+});
+
+
 /* ---- 프리미엄 신청 ------------------------------------------------------
  *
  * 파트너가 신청하고 운영자가 허락하면 광고가 걸린다. 결제는 아직 없다 -
