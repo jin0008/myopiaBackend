@@ -5224,6 +5224,40 @@ async function promotedFacilities(
   return out.slice(0, AD_SLOTS);
 }
 
+/**
+ * 광고 중인 곳에 표를 단다.
+ *
+ * 상위 광고 자리(promotedFacilities)와 다른 일이다. 저쪽은 "누구를 맨 위로
+ * 올릴까"를 정하고 자리가 세 개뿐이라, 돈을 낸 네 번째 업체는 목록 어딘가에
+ * 아무 표 없이 섞인다. 검색으로 들어온 사람에게는 아예 광고 자리가 없어
+ * 표시가 하나도 남지 않았다.
+ *
+ * 순서는 건드리지 않는다. 다는 것은 표뿐이다.
+ */
+async function markPromoted(list: FacilityDTO[]): Promise<FacilityDTO[]> {
+  if (list.length === 0) return list;
+  const now = new Date();
+  let rows: { kind: string; key: string; tier: string }[] = [];
+  try {
+    rows = await prisma.facility_promotion.findMany({
+      where: { starts_at: { lte: now }, ends_at: { gte: now } },
+      select: { kind: true, key: true, tier: true },
+    });
+  } catch {
+    // 광고를 못 읽는다고 목록이 비면 안 된다. 표만 빠진다.
+    return list;
+  }
+  if (rows.length === 0) return list;
+  // DTO 의 id 는 "hira:<ykiho>" | "opt:<license_no>" 다.
+  const tierOf = new Map(
+    rows.map((r) => [`${r.kind === "eye" ? "hira" : "opt"}:${r.key}`, r.tier]),
+  );
+  return list.map((f) => {
+    const tier = tierOf.get(f.id);
+    return tier == null ? f : { ...f, promotion: { tier } };
+  });
+}
+
 /** 광고로 올라간 것을 목록에서 뺀다. */
 function withoutAds(list: FacilityDTO[], ads: FacilityDTO[]): FacilityDTO[] {
   if (ads.length === 0) return list;
@@ -5355,8 +5389,10 @@ router.get("/facilities/by-id", async (req, res) => {
       return;
     }
     const f = clinicToDTO(c, here ? haversineKm(lat, lng, c.lat, c.lng) : 0);
+    // 검색으로 바로 들어와도 광고 중인지 드러나야 한다.
+    const [marked] = await markPromoted([f]);
     if (!here) f.distanceKm = null;
-    res.json(f);
+    res.json(marked);
     return;
   }
   if (prefix === "opt") {
@@ -5366,8 +5402,9 @@ router.get("/facilities/by-id", async (req, res) => {
       return;
     }
     const f = shopToDTO(sh, here ? haversineKm(lat, lng, sh.lat, sh.lng) : 0);
+    const [marked] = await markPromoted([f]);
     if (!here) f.distanceKm = null;
-    res.json(f);
+    res.json(marked);
     return;
   }
   res.status(404).json({ error: "not found", code: "not_found" });
@@ -5431,7 +5468,7 @@ router.get("/facilities/by-name", async (req, res) => {
       ? (a.distanceKm ?? 0) - (b.distanceKm ?? 0)
       : a.name.localeCompare(b.name),
   );
-  res.json({ places: out.slice(0, 40) });
+  res.json({ places: await markPromoted(out.slice(0, 40)) });
 });
 
 router.get("/facilities", async (req, res) => {
@@ -5461,7 +5498,11 @@ router.get("/facilities", async (req, res) => {
     // 키 이름은 카카오 경로와 같아야 한다. 앱은 places 를 읽는데 명부만
     // facilities 로 보내고 있어, 200 을 받고도 목록이 늘 비었다.
     const ads = await promotedFacilities(lat, lng, radius, kind);
-    res.json({ places: withoutAds(fromDirectory, ads), ads, source: "directory" });
+    res.json({
+      places: await markPromoted(withoutAds(fromDirectory, ads)),
+      ads,
+      source: "directory",
+    });
     return;
   }
 
