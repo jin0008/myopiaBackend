@@ -690,6 +690,58 @@ router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
   res.sendStatus(204);
 });
 
+/**
+ * DELETE /partner/accounts/:id — 계정을 지운다.
+ *
+ * 지우는 길이 없어서, 테스트하다 만 계정이나 잘못 가입한 계정이 업체를
+ * 영영 쥐고 있었다. 한 업체에 계정 하나라, 같은 병원이 다시 가입하면
+ * "다른 계정이 이미 이 업체에 연결되어 있습니다"에서 막힌다.
+ *
+ * 딸린 것들의 처리가 각각 다르다.
+ *
+ *  - 인증 신청 · 프리미엄 신청: 함께 지운다(Cascade). 서류 파일도 지운다 -
+ *    사업자등록증을 주인 없이 남겨 둘 이유가 없다.
+ *  - 진행 중인 광고: 남긴다(SetNull). 돈을 받은 기간까지는 나가야 한다.
+ *  - 프로필: 지우지 않는다. 주인만 비운다 - 앱에 떠 있는 병원 정보가
+ *    계정 하나 지웠다고 사라지면 안 된다. 그 병원이 다시 가입하면
+ *    운영자가 프로필을 넘겨준다(unclaimed-profiles).
+ */
+router.delete("/accounts/:id", siteAdminRequired, async (req, res) => {
+  const id = String(req.params.id);
+  const account = await prisma.hospital_account.findUnique({
+    where: { id },
+    select: { id: true },
+  });
+  if (account == null) {
+    res.sendStatus(404);
+    return;
+  }
+
+  // 파일은 트랜잭션 밖에서 지운다. 행이 지워졌는지부터 확실히 하고,
+  // 파일은 그다음이다 - 반대로 하면 롤백됐을 때 서류만 사라진다.
+  const docs = await prisma.facility_verification.findMany({
+    where: { account_id: id },
+    select: { doc_files: true },
+  });
+
+  await prisma.$transaction(async (tx) => {
+    // hospital_profile 에는 외래키가 없어 계정을 지워도 따라오지 않는다.
+    // 비워 두지 않으면 어느 계정 것이었는지 모르는 id 만 남는다.
+    await tx.hospital_profile.updateMany({
+      where: { owner_account_id: id },
+      data: { owner_account_id: null, updated_at: new Date() },
+    });
+    await tx.hospital_account.delete({ where: { id } });
+  });
+
+  for (const d of docs) {
+    for (const f of d.doc_files) {
+      fs.unlink(path.join(VERIFY_DIR, path.basename(f)), () => {});
+    }
+  }
+  res.sendStatus(204);
+});
+
 router.get("/unclaimed-profiles", siteAdminRequired, async (_req, res) => {
   const rows = await prisma.hospital_profile.findMany({
     where: { owner_account_id: null },
