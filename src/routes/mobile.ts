@@ -4496,6 +4496,8 @@ router.post(
 type ColumnListItem = {
   id: string;
   title: string;
+  /** 목록 카드용 짧은 제목. 없으면 화면이 title 로 떨어진다. */
+  shortTitle: string | null;
   excerpt: string;
   category: string;
   author: string;
@@ -4708,6 +4710,8 @@ router.get("/columns", async (req, res) => {
   const items: ColumnListItem[] = slice.map((c) => ({
     id: c.slug,
     title: c.title,
+    // 카드에 쓸 짧은 제목. 없으면 화면이 title 로 떨어진다.
+    shortTitle: c.short_title,
     excerpt: excerptOf(c.body),
     category: c.category,
     author: c.author,
