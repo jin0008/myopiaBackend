@@ -691,6 +691,46 @@ router.put("/accounts/:id/facility", siteAdminRequired, async (req, res) => {
   res.sendStatus(204);
 });
 
+/**
+ * PATCH /partner/accounts/:id/brands — 취급 브랜드를 고친다.
+ *
+ * 인증 심사에서 한 번 정하면 그만이었다. 그런데 안경원이 나중에 다른
+ * 렌즈를 들여올 수도, 그만 취급할 수도 있다. 다시 신청하는 길은 막혀
+ * 있어(이미 인증된 계정) 바꿀 방법이 없었다.
+ *
+ * 파트너가 아니라 운영자가 고친다. 상표라 취급하지 않는 곳에 붙으면
+ * 허위 표시가 된다 - 스스로 켤 수 있으면 안 된다는 규칙은 그대로다.
+ */
+router.patch("/accounts/:id/brands", siteAdminRequired, async (req, res) => {
+  const parsed = zod.object({ brands: brandsField }).safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: validationMessage(parsed.error) });
+    return;
+  }
+  const id = String(req.params.id);
+  const account = await prisma.hospital_account.findUnique({
+    where: { id },
+    select: { business_kind: true },
+  });
+  if (account == null) {
+    res.sendStatus(404);
+    return;
+  }
+  if (account.business_kind !== "optical") {
+    res.status(400).json({
+      error: "optical only",
+      code: "optical_only",
+      message: "근시조절 렌즈 브랜드는 안경원에만 붙습니다.",
+    });
+    return;
+  }
+  await prisma.hospital_account.update({
+    where: { id },
+    data: { brands: parsed.data.brands ?? [], updated_at: new Date() },
+  });
+  res.sendStatus(204);
+});
+
 router.get("/unclaimed-profiles", siteAdminRequired, async (_req, res) => {
   const rows = await prisma.hospital_profile.findMany({
     where: { owner_account_id: null },
@@ -870,6 +910,18 @@ router.get("/verification", partnerRequired, async (req, res) => {
  */
 const BRANDS = ["miyosmart", "stellest"] as const;
 
+/**
+ * 브랜드 목록을 받는 칸.
+ *
+ * multipart 는 같은 이름이 한 번만 오면 문자열, 여러 번 오면 배열로 준다.
+ * 배열만 받으면 하나만 고른 신청이 400 으로 거절된다 - 둘 다 고르면 되고
+ * 하나만 고르면 안 되는 꼴이다.
+ */
+const brandsField = zod.preprocess(
+  (v) => (typeof v === "string" ? [v] : v),
+  zod.array(zod.enum(BRANDS)).max(BRANDS.length).optional(),
+);
+
 const verifySchema = zod.object({
   key: zod.string().trim().min(1),
   note: zod.string().trim().max(500).optional(),
@@ -877,7 +929,7 @@ const verifySchema = zod.object({
   /// 맞춰 보는 값이지, 이것으로 자동 연결하지는 않는다.
   eyelogCode: zod.string().trim().max(50).optional(),
   /// 안경원이 고른 취급 브랜드.
-  brands: zod.array(zod.enum(BRANDS)).max(BRANDS.length).optional(),
+  brands: brandsField,
 });
 
 /**
@@ -1049,7 +1101,7 @@ const reviewSchema = zod.object({
   reviewNote: zod.string().trim().max(500).optional(),
   /// 운영자가 확인한 취급 브랜드. 신청자가 고른 것을 그대로 두지 않는다 -
   /// 상표라 취급하지 않는 곳에 붙으면 허위 표시가 된다.
-  brands: zod.array(zod.enum(BRANDS)).max(BRANDS.length).optional(),
+  brands: brandsField,
   /// 승인할 때 함께 정한다. 비우면 "아이로그 안 씀"이다.
   ///
   /// 예전에는 "병원 프로필 관리 → 관리자 설정"에 따로 있었다. 서류를 보는

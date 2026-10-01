@@ -43,6 +43,24 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(onApprove(["miyosmart"], []), ["miyosmart"], "운영자가 더할 수도 있다");
 
+/**
+ * multipart 가 주는 모양을 그대로 받는다.
+ *
+ * 같은 이름이 한 번만 오면 문자열, 여러 번 오면 배열이다. 배열만 받으면
+ * 브랜드를 하나만 고른 신청이 400 으로 거절된다 - 둘 다 고르면 되고
+ * 하나만 고르면 안 되는 꼴이 된다.
+ */
+function fromMultipart(v: unknown): unknown {
+  return typeof v === "string" ? [v] : v;
+}
+assert.deepStrictEqual(fromMultipart("stellest"), ["stellest"], "하나만 골랐을 때");
+assert.deepStrictEqual(
+  fromMultipart(["stellest", "miyosmart"]),
+  ["stellest", "miyosmart"],
+  "둘 다 골랐을 때",
+);
+assert.strictEqual(fromMultipart(undefined), undefined, "안 골랐으면 그대로");
+
 /** 명부(optical_shop)에는 넣지 않는다. 공공데이터라 다음 갱신에 지워진다. */
 const storedOn = "hospital_account";
 assert.notStrictEqual(storedOn, "optical_shop", "명부에 쓰면 갱신 때 지워진다");
