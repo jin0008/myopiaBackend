@@ -4801,6 +4801,8 @@ type FacilityDTO = {
    *  '광고'라고 밝혀야 한다 - 돈 받은 자리를 검색 결과처럼 보이게 하면
    *  안 된다. */
   promotion?: { tier: string };
+  /** 안경원이 취급하는 근시조절 렌즈 브랜드. 없으면 칸이 아예 안 온다. */
+  brands?: string[];
 };
 
 /** One raw Kakao keyword-search document (only the fields we use). */
@@ -5258,6 +5260,40 @@ async function markPromoted(list: FacilityDTO[]): Promise<FacilityDTO[]> {
   });
 }
 
+/**
+ * 안경원이 취급하는 브랜드를 붙인다.
+ *
+ * 명부(optical_shop)에는 없는 값이다 - 공공데이터라 우리가 쓰면 다음
+ * 갱신에 지워진다. 파트너 계정이 들고 있고, 인허가번호로 잇는다.
+ *
+ * 광고(markPromoted)와 다른 축이다. 돈을 냈는지와 무엇을 파는지는 별개라,
+ * 순서에는 관여하지 않고 표시만 붙인다.
+ */
+async function markBrands(list: FacilityDTO[]): Promise<FacilityDTO[]> {
+  const keys = list
+    .filter((f) => f.category === "optical")
+    .map((f) => f.id.replace(/^opt:/, ""));
+  if (keys.length === 0) return list;
+  let rows: { facility_key: string | null; brands: string[] }[] = [];
+  try {
+    rows = await prisma.hospital_account.findMany({
+      where: { facility_kind: "optical", facility_key: { in: keys } },
+      select: { facility_key: true, brands: true },
+    });
+  } catch {
+    // 브랜드를 못 읽는다고 목록이 비면 안 된다. 표시만 빠진다.
+    return list;
+  }
+  const byKey = new Map(
+    rows.filter((r) => r.brands.length > 0).map((r) => [r.facility_key!, r.brands]),
+  );
+  if (byKey.size === 0) return list;
+  return list.map((f) => {
+    const b = byKey.get(f.id.replace(/^opt:/, ""));
+    return b == null ? f : { ...f, brands: b };
+  });
+}
+
 /** 광고로 올라간 것을 목록에서 뺀다. */
 function withoutAds(list: FacilityDTO[], ads: FacilityDTO[]): FacilityDTO[] {
   if (ads.length === 0) return list;
@@ -5390,7 +5426,7 @@ router.get("/facilities/by-id", async (req, res) => {
     }
     const f = clinicToDTO(c, here ? haversineKm(lat, lng, c.lat, c.lng) : 0);
     // 검색으로 바로 들어와도 광고 중인지 드러나야 한다.
-    const [marked] = await markPromoted([f]);
+    const [marked] = await markBrands(await markPromoted([f]));
     if (!here) f.distanceKm = null;
     res.json(marked);
     return;
@@ -5402,7 +5438,7 @@ router.get("/facilities/by-id", async (req, res) => {
       return;
     }
     const f = shopToDTO(sh, here ? haversineKm(lat, lng, sh.lat, sh.lng) : 0);
-    const [marked] = await markPromoted([f]);
+    const [marked] = await markBrands(await markPromoted([f]));
     if (!here) f.distanceKm = null;
     res.json(marked);
     return;
@@ -5468,7 +5504,7 @@ router.get("/facilities/by-name", async (req, res) => {
       ? (a.distanceKm ?? 0) - (b.distanceKm ?? 0)
       : a.name.localeCompare(b.name),
   );
-  res.json({ places: await markPromoted(out.slice(0, 40)) });
+  res.json({ places: await markBrands(await markPromoted(out.slice(0, 40))) });
 });
 
 router.get("/facilities", async (req, res) => {
@@ -5499,8 +5535,8 @@ router.get("/facilities", async (req, res) => {
     // facilities 로 보내고 있어, 200 을 받고도 목록이 늘 비었다.
     const ads = await promotedFacilities(lat, lng, radius, kind);
     res.json({
-      places: await markPromoted(withoutAds(fromDirectory, ads)),
-      ads,
+      places: await markBrands(await markPromoted(withoutAds(fromDirectory, ads))),
+      ads: await markBrands(ads),
       source: "directory",
     });
     return;

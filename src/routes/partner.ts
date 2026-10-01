@@ -508,6 +508,7 @@ router.get("/accounts", siteAdminRequired, async (_req, res) => {
         businessKind: a.business_kind,
         facilityKind: a.facility_kind,
         facilityKey: a.facility_key,
+        brands: a.brands,
         facilityName: f?.name ?? null,
         facilityAddress: f?.address ?? null,
         id: a.id,
@@ -818,6 +819,7 @@ function verificationDTO(v: {
   facility_name: string;
   doc_files: string[];
   eyelog_code: string | null;
+  brands: string[];
   status: string;
   note: string | null;
   review_note: string | null;
@@ -831,6 +833,7 @@ function verificationDTO(v: {
     facilityName: v.facility_name,
     docCount: v.doc_files.length,
     eyelogCode: v.eyelog_code,
+    brands: v.brands,
     status: v.status,
     note: v.note,
     reviewNote: v.review_note,
@@ -858,12 +861,23 @@ router.get("/verification", partnerRequired, async (req, res) => {
   });
 });
 
+/**
+ * 받아 주는 브랜드.
+ *
+ * 자유 입력으로 두지 않는다 - 상표라 표기가 흔들리면("스텔레스트",
+ * "Stellest 렌즈") 같은 브랜드가 여러 개로 갈리고, 로고를 붙일 수도 없다.
+ * 늘어나면 여기에 더한다.
+ */
+const BRANDS = ["miyosmart", "stellest"] as const;
+
 const verifySchema = zod.object({
   key: zod.string().trim().min(1),
   note: zod.string().trim().max(500).optional(),
   /// 마이오피아(아이로그)를 쓰는 병원만 적는다. 운영자가 명부에서 고를 때
   /// 맞춰 보는 값이지, 이것으로 자동 연결하지는 않는다.
   eyelogCode: zod.string().trim().max(50).optional(),
+  /// 안경원이 고른 취급 브랜드.
+  brands: zod.array(zod.enum(BRANDS)).max(BRANDS.length).optional(),
 });
 
 /**
@@ -954,6 +968,8 @@ router.post(
           doc_files: files.map((f) => f.filename),
           note: parsed.data.note ?? null,
           eyelog_code: parsed.data.eyelogCode ?? null,
+          // 업종이 정한다. 병원이 보내도 받지 않는다 - 안경 렌즈 브랜드다.
+          brands: kind === "optical" ? (parsed.data.brands ?? []) : [],
         },
       });
       res.status(201).json(verificationDTO(row));
@@ -1031,6 +1047,9 @@ router.get("/verifications/:id/docs/:name", siteAdminRequired, async (req, res) 
 const reviewSchema = zod.object({
   action: zod.enum(["approve", "reject"]),
   reviewNote: zod.string().trim().max(500).optional(),
+  /// 운영자가 확인한 취급 브랜드. 신청자가 고른 것을 그대로 두지 않는다 -
+  /// 상표라 취급하지 않는 곳에 붙으면 허위 표시가 된다.
+  brands: zod.array(zod.enum(BRANDS)).max(BRANDS.length).optional(),
   /// 승인할 때 함께 정한다. 비우면 "아이로그 안 씀"이다.
   ///
   /// 예전에는 "병원 프로필 관리 → 관리자 설정"에 따로 있었다. 서류를 보는
@@ -1130,6 +1149,8 @@ router.post("/verifications/:id/review", siteAdminRequired, async (req, res) => 
           facility_kind: row.kind,
           facility_key: row.key,
           eyelog_hospital_id: eyelogId,
+          // 안경 렌즈 브랜드라 안경원에만 붙는다.
+          brands: row.kind === "optical" ? (parsed.data.brands ?? []) : [],
           // 안경원에게 승인은 곧 업체 확인이다. 프로필이 없어 따로
           // 노출시킬 것이 없으니 여기서 끝낸다. 병원은 치료탭 노출이
           // 별개라 상태를 건드리지 않는다.
