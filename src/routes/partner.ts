@@ -435,7 +435,11 @@ router.put("/profile", partnerRequired, async (req, res) => {
       // 인증 승인 때 운영자가 고른 임상 병원. 파트너는 이 값을 못 보낸다 -
       // 후기 자격이 여기서 나오므로 스스로 켤 수 있으면 안 된다. 승인이
       // 프로필보다 먼저일 수 있어, 계정에 잡아 둔 것을 여기서 옮긴다.
-      hospital_id: account.eyelog_hospital_id,
+      //
+      // 계정에 없으면 칸을 건드리지 않는다(undefined). null 을 쓰면,
+      // 운영자가 프로필 화면에서 손으로 고쳐 둔 연결을 병원이 프로필을
+      // 저장하는 순간 지워 버린다 - 고치는 자리를 둔 뜻이 사라진다.
+      hospital_id: account.eyelog_hospital_id ?? undefined,
       updated_at: new Date(),
     };
     const row = existing
@@ -1063,6 +1067,24 @@ router.post("/verifications/:id/review", siteAdminRequired, async (req, res) => 
     res.sendStatus(404);
     return;
   }
+
+  // 없는 병원을 묶으면 체크는 붙는데 후기 자격은 아무에게도 안 생긴다.
+  // 업체 번호를 명부에서 확인하는 것과 같은 이유다.
+  const wantEyelog = parsed.data.eyelogHospitalId;
+  if (wantEyelog != null) {
+    const exists = await prisma.hospital.findUnique({
+      where: { id: wantEyelog },
+      select: { id: true },
+    });
+    if (exists == null) {
+      res.status(404).json({
+        error: "hospital not found",
+        code: "eyelog_hospital_not_found",
+        message: "그런 병원이 없습니다. 목록에서 다시 골라 주세요.",
+      });
+      return;
+    }
+  }
   if (row.status !== "pending") {
     res.status(409).json({
       error: "already reviewed",
@@ -1117,7 +1139,10 @@ router.post("/verifications/:id/review", siteAdminRequired, async (req, res) => 
       });
       // 이미 프로필을 만들어 둔 계정이면 그 자리에도 옮긴다. 아직 없으면
       // 계정에만 남고, 프로필을 저장하는 순간 따라간다(PUT /profile).
-      if (eyelogId !== undefined) {
+      //
+      // "연동 안 함"으로 고친 경우도 여기서 지워야 한다 - 계정만 비우고
+      // 프로필을 그대로 두면 앱에는 체크가 계속 붙어 있다.
+      if (row.kind === "eye") {
         await tx.hospital_profile.updateMany({
           where: { owner_account_id: row.account_id },
           data: { hospital_id: eyelogId, updated_at: new Date() },

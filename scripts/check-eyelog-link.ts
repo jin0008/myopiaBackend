@@ -24,11 +24,27 @@ assert.strictEqual(onApprove("optical", "H-1"), null, "안경원에는 안 붙�
  * 두었다가, 프로필이 생기는 순간 옮긴다. 이 순서가 깨지면 "분명히
  * 연결했는데 후기가 안 된다"가 된다.
  */
-function profileHospitalId(accountEyelogId: string | null): string | null {
-  return accountEyelogId;
+function onProfileSave(accountEyelogId: string | null): string | undefined {
+  // 계정에 없으면 칸을 건드리지 않는다. null 로 쓰면, 운영자가 프로필
+  // 화면에서 손으로 고쳐 둔 연결을 병원이 프로필을 저장하는 순간 지운다.
+  return accountEyelogId ?? undefined;
 }
-assert.strictEqual(profileHospitalId("H-1"), "H-1", "승인 → 나중에 프로필 생성");
-assert.strictEqual(profileHospitalId(null), null, "연동 안 한 병원");
+assert.strictEqual(onProfileSave("H-1"), "H-1", "승인 → 나중에 프로필 생성");
+assert.strictEqual(
+  onProfileSave(null),
+  undefined,
+  "계정에 없으면 프로필의 기존 값을 덮지 않는다",
+);
+
+/** 승인에서 "연동 안 함"으로 고치면 프로필에서도 지워야 한다. 계정만
+ *  비우고 프로필을 두면 앱에는 체크가 계속 붙어 있다. */
+function profileWriteOnApprove(kind: "eye" | "optical", eyelogId: string | null) {
+  return kind === "eye" ? { touch: true, value: eyelogId } : { touch: false };
+}
+assert.deepStrictEqual(profileWriteOnApprove("eye", null), { touch: true, value: null },
+  "연동 해제는 프로필에도 반영된다");
+assert.deepStrictEqual(profileWriteOnApprove("optical", null), { touch: false },
+  "안경원 프로필은 건드리지 않는다");
 
 /** 파트너는 이 값을 보낼 수 없다. 후기 자격이 여기서 나오므로 스스로
  *  켤 수 있으면 안 된다 - 자기 병원에 좋은 후기를 직접 달 수 있게 된다. */
