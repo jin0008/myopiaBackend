@@ -432,6 +432,10 @@ router.put("/profile", partnerRequired, async (req, res) => {
       booking_url: d.booking_url ?? null,
       status,
       owner_account_id: account.id,
+      // 인증 승인 때 운영자가 고른 임상 병원. 파트너는 이 값을 못 보낸다 -
+      // 후기 자격이 여기서 나오므로 스스로 켤 수 있으면 안 된다. 승인이
+      // 프로필보다 먼저일 수 있어, 계정에 잡아 둔 것을 여기서 옮긴다.
+      hospital_id: account.eyelog_hospital_id,
       updated_at: new Date(),
     };
     const row = existing
@@ -809,6 +813,7 @@ function verificationDTO(v: {
   key: string;
   facility_name: string;
   doc_files: string[];
+  eyelog_code: string | null;
   status: string;
   note: string | null;
   review_note: string | null;
@@ -821,6 +826,7 @@ function verificationDTO(v: {
     key: v.key,
     facilityName: v.facility_name,
     docCount: v.doc_files.length,
+    eyelogCode: v.eyelog_code,
     status: v.status,
     note: v.note,
     reviewNote: v.review_note,
@@ -851,6 +857,9 @@ router.get("/verification", partnerRequired, async (req, res) => {
 const verifySchema = zod.object({
   key: zod.string().trim().min(1),
   note: zod.string().trim().max(500).optional(),
+  /// 마이오피아(아이로그)를 쓰는 병원만 적는다. 운영자가 명부에서 고를 때
+  /// 맞춰 보는 값이지, 이것으로 자동 연결하지는 않는다.
+  eyelogCode: zod.string().trim().max(50).optional(),
 });
 
 /**
@@ -940,6 +949,7 @@ router.post(
           facility_name: exists.name,
           doc_files: files.map((f) => f.filename),
           note: parsed.data.note ?? null,
+          eyelog_code: parsed.data.eyelogCode ?? null,
         },
       });
       res.status(201).json(verificationDTO(row));
@@ -1017,6 +1027,12 @@ router.get("/verifications/:id/docs/:name", siteAdminRequired, async (req, res) 
 const reviewSchema = zod.object({
   action: zod.enum(["approve", "reject"]),
   reviewNote: zod.string().trim().max(500).optional(),
+  /// 승인할 때 함께 정한다. 비우면 "아이로그 안 씀"이다.
+  ///
+  /// 예전에는 "병원 프로필 관리 → 관리자 설정"에 따로 있었다. 서류를 보는
+  /// 자리와 떨어져 있어 운영자가 빼먹었고, 병원은 후기가 왜 안 되는지
+  /// 알 수 없었다.
+  eyelogHospitalId: zod.string().uuid().nullable().optional(),
 });
 
 /**
@@ -1083,11 +1099,15 @@ router.post("/verifications/:id/review", siteAdminRequired, async (req, res) => 
           updated_at: new Date(),
         },
       });
+      // 운영자가 고른 임상 병원. 안경원에는 해당이 없다.
+      const eyelogId =
+        row.kind === "eye" ? (parsed.data.eyelogHospitalId ?? null) : null;
       await tx.hospital_account.update({
         where: { id: row.account_id },
         data: {
           facility_kind: row.kind,
           facility_key: row.key,
+          eyelog_hospital_id: eyelogId,
           // 안경원에게 승인은 곧 업체 확인이다. 프로필이 없어 따로
           // 노출시킬 것이 없으니 여기서 끝낸다. 병원은 치료탭 노출이
           // 별개라 상태를 건드리지 않는다.
@@ -1095,6 +1115,14 @@ router.post("/verifications/:id/review", siteAdminRequired, async (req, res) => 
           updated_at: new Date(),
         },
       });
+      // 이미 프로필을 만들어 둔 계정이면 그 자리에도 옮긴다. 아직 없으면
+      // 계정에만 남고, 프로필을 저장하는 순간 따라간다(PUT /profile).
+      if (eyelogId !== undefined) {
+        await tx.hospital_profile.updateMany({
+          where: { owner_account_id: row.account_id },
+          data: { hospital_id: eyelogId, updated_at: new Date() },
+        });
+      }
     });
   } catch (e) {
     // 한 가게에 계정 하나.
