@@ -8,6 +8,8 @@ const router = express.Router();
 
 const createSchema = zod.object({
   title: zod.string().min(1),
+  /// 목록 카드용. 비우면 title 을 쓴다.
+  short_title: zod.string().max(40).nullable().optional(),
   body: zod.string().min(1),
   category: zod.string().min(1),
   author: zod.string().min(1).optional(),
@@ -63,6 +65,7 @@ router.post("/", siteAdminRequired, async (req, res) => {
     data: {
       slug,
       title: d.title,
+      short_title: d.short_title ?? null,
       body: d.body,
       category: d.category,
       author: d.author ?? "마이오닥 의료진",

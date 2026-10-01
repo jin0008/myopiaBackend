@@ -557,6 +557,12 @@ model expert_column {
   id              String   @id(map: "expert_column_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   slug            String   @unique(map: "expert_column_slug_key")
   title           String
+  /// 목록 카드에 쓰는 짧은 제목. 비어 있으면 title 을 쓴다.
+  ///
+  /// 목록과 본문이 바라는 제목이 다르다. 본문에서는 "에실로 \"스텔리스트
+  /// 2\"는 \"스텔리스트 1\"과 뭐가 달라요?" 가 친절하지만, 카드 두 줄에
+  /// 넣으면 따옴표와 기호만 빽빽하고 무슨 글인지가 안 읽힌다.
+  short_title     String?
   body            String
   category        String
   author          String   @default("마이오닥 의료진")
