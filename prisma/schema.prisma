@@ -713,16 +713,27 @@ model hospital_notice {
 // Eligibility (real patient) is enforced at write time via child_hospital_link
 // against the profile's hospital_id; hospital_id is stamped here for audit.
 model hospital_review {
-  id             String   @id(map: "hospital_review_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  kakao_place_id String
-  user_id        String   @db.Uuid
-  hospital_id    String   @db.Uuid
-  rating         Int
-  content        String
-  images         String[]
-  status         String   @default("visible") // visible | hidden
-  created_at     DateTime @default(now()) @db.Timestamptz(6)
-  updated_at     DateTime @default(now()) @db.Timestamptz(6)
+  id               String   @id(map: "hospital_review_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  kakao_place_id   String
+  user_id          String   @db.Uuid
+  /// 글쓴이가 그 병원 환자였으면 그 병원. 아니면 비어 있다.
+  ///
+  /// 예전에는 환자만 쓸 수 있어 항상 채워졌다. 그런데 연동 환자가 있어야만
+  /// 쓸 수 있으니 리뷰가 한 건도 쌓이지 않았다 - 자격이 너무 좁아 기능이
+  /// 죽었다. 지금은 누구나 쓰되 환자인지를 글에 표시한다.
+  hospital_id      String?  @db.Uuid
+  /// 쓸 때 실제로 그 병원에 다니는 아이의 보호자였는지.
+  ///
+  /// 쓰는 시점에 한 번 재고 굳힌다. 읽을 때마다 다시 재면, 아이를 지우거나
+  /// 병원을 옮긴 뒤에 옛 글의 배지가 조용히 사라진다 - 그때 쓴 사람은
+  /// 분명히 환자였다.
+  verified_patient Boolean  @default(false)
+  rating           Int
+  content          String
+  images           String[]
+  status           String   @default("visible") // visible | hidden
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @default(now()) @db.Timestamptz(6)
 
   @@unique([kakao_place_id, user_id], map: "hospital_review_place_user_unique")
   @@index([kakao_place_id], map: "idx_hospital_review_place")

@@ -5936,18 +5936,10 @@ router.get("/hospital-profile/:kakaoPlaceId", optionalMobileAuth, async (req, re
   // 부모여야 등록이 통과한다(POST가 그렇게 검사한다). 여기서 같은 기준으로
   // 계산하지 않으면 자격 없는 사람에게 "후기 작성" 버튼을 보여주고 눌렀을 때
   // 403으로 돌려보내게 된다.
-  const viewerId = req.mobileUser?.sub;
-  const reviewable =
-    viewerId != null &&
-    profile.hospital_id != null &&
-    (await prisma.child_hospital_link.findFirst({
-      where: {
-        hospital_id: profile.hospital_id,
-        status: "active",
-        parent_child_link: { user_id: viewerId },
-      },
-      select: { id: true },
-    })) != null;
+  // 로그인만 하면 쓸 수 있다. 환자인지는 글에 배지로 남는다(아래 목록의
+  // verifiedPatient). 자격으로 쓰던 때는 조건을 다 넘는 사람이 거의 없어
+  // 리뷰가 한 건도 쌓이지 않았다.
+  const reviewable = req.mobileUser?.sub != null;
   res.json({
     kakaoPlaceId: profile.kakao_place_id,
     name: profile.name,
@@ -6013,6 +6005,8 @@ router.get("/hospital-profile/:kakaoPlaceId/reviews", optionalMobileAuth, async 
       content: r.content,
       images: r.images,
       createdAt: r.created_at.toISOString(),
+      // 쓸 때 그 병원 환자였는지. 신뢰는 자격이 아니라 글마다 표시한다.
+      verifiedPatient: r.verified_patient,
       isMine: me != null && r.user_id === me,
       // 차단은 글이 아니라 사람을 막는 것이라 작성자 id가 필요하다.
       // 커뮤니티 작성자 DTO도 같은 값을 내보낸다.
@@ -6035,10 +6029,17 @@ const reviewBodySchema = zod.object({
   images: zod.array(zod.string().url()).max(10).optional(),
 });
 
-/** Verify the logged-in user was actually a patient at the hospital this
- *  profile is linked to (the only way we can trust "진료 환자만"). Returns the
- *  internal hospital_id on success, or null when not eligible. */
-async function eligibleHospitalId(placeId: string, userId: string): Promise<string | null> {
+/**
+ * 글쓴이가 그 병원에 다니는 아이의 보호자인지.
+ *
+ * 예전에는 이것이 작성 자격이었다. 그런데 프로필에 내부 병원이 연결되고
+ * 그 병원에 연동된 아이까지 있어야 해서, 조건을 다 넘는 사람이 거의 없어
+ * 리뷰가 한 건도 쌓이지 않았다. 이제는 자격이 아니라 표시다 - 맞으면
+ * 글에 "진료 확인"이 붙는다.
+ *
+ * 맞으면 그 병원 id, 아니면 null.
+ */
+async function patientHospitalId(placeId: string, userId: string): Promise<string | null> {
   const profile = await prisma.hospital_profile.findUnique({
     where: { kakao_place_id: placeId },
   });
@@ -6065,11 +6066,22 @@ router.post(
       return;
     }
     const userId = req.mobileUser!.sub;
-    const hospitalId = await eligibleHospitalId(placeId, userId);
-    if (hospitalId == null) {
-      res.status(403).json({ error: "not a verified patient", code: "not_eligible" });
+
+    // 프로필이 없거나 내려가 있으면 쓸 곳이 없다. 자격과는 다른 이야기다 -
+    // 이건 "그런 병원 페이지가 없다"는 뜻이다.
+    const profile = await prisma.hospital_profile.findUnique({
+      where: { kakao_place_id: placeId },
+      select: { status: true },
+    });
+    if (profile == null || profile.status !== "published") {
+      res.status(404).json({ error: "no profile", code: "not_found" });
       return;
     }
+
+    // 환자인지는 막는 기준이 아니라 글에 남기는 표시다. 쓰는 시점에 한 번
+    // 재고 굳힌다 - 읽을 때마다 다시 재면 아이를 지운 뒤에 옛 글의 배지가
+    // 조용히 사라진다.
+    const hospitalId = await patientHospitalId(placeId, userId);
     const d = parsed.data;
     let review;
     try {
@@ -6078,6 +6090,7 @@ router.post(
           kakao_place_id: placeId,
           user_id: userId,
           hospital_id: hospitalId,
+          verified_patient: hospitalId != null,
           rating: d.rating,
           content: d.content,
           images: d.images ?? [],
