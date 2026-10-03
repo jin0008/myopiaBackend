@@ -1188,6 +1188,27 @@ model promotion_stat_daily {
   @@index([kind, key, day(sort: Desc)], map: "idx_promotion_stat_daily_facility")
 }
 
+/// 배너 광고의 하루치 성적.
+///
+/// promotion_stat_daily 와 같은 모양이다. 저쪽은 찾기탭 유료 노출이고
+/// 이쪽은 홈·커뮤니티에 끼우는 배너라, 세는 대상이 다를 뿐 세는 이유는
+/// 같다 - 광고를 팔면 "몇 번 보였나"를 줘야 한다.
+///
+/// 배너가 지워져도 집계는 남긴다(정산·분쟁). FK 를 걸지 않는 이유다.
+model banner_stat_daily {
+  id          String   @id(map: "banner_stat_daily_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  banner_id   String   @db.Uuid
+  /// 집계 날짜(KST). 광고주가 보는 달력이 한국 달력이다.
+  day         DateTime @db.Date
+  impressions Int      @default(0)
+  clicks      Int      @default(0)
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([banner_id, day], map: "banner_stat_daily_unique")
+  @@index([banner_id, day(sort: Desc)], map: "idx_banner_stat_daily_banner")
+}
+
 /// 파트너가 낸 프리미엄 신청. 운영자가 허락하면 facility_promotion 이 생긴다.
 ///
 /// 광고와 한 표로 합치지 않는다. 신청은 "해 달라고 말한 기록"이고 광고는
