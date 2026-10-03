@@ -6,6 +6,7 @@ import { partnerRequired } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
 import {
   approvePayment,
+  cancelPayment,
   clientKey,
   getPayment,
   isConfigured,
@@ -363,6 +364,59 @@ router.get("/", siteAdminRequired, async (_req, res) => {
       },
     })),
   );
+});
+
+const cancelSchema = zod.object({
+  reason: zod.string().trim().min(1).max(100),
+});
+
+/**
+ * 승인을 취소한다.
+ *
+ * 당일 취소면 카드사가 매입을 올리지 않아 실제로 청구되지 않는다. 테스트
+ * 결제를 지우는 자리이자, 잘못 받은 돈을 돌려주는 자리다.
+ *
+ * 구독은 되돌리지 않는다. 한 달을 밀어 둔 것을 자동으로 빼면, 다른 달
+ * 결제까지 섞여 있을 때 어느 몫을 빼야 하는지 알 수 없다 - 운영자가
+ * 보고 정할 일이다.
+ */
+router.post("/:id/cancel", siteAdminRequired, async (req, res) => {
+  const parsed = cancelSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "취소 사유를 적어 주세요." });
+    return;
+  }
+  const row = await prisma.payment.findUnique({ where: { id: String(req.params.id) } });
+  if (row == null) {
+    res.sendStatus(404);
+    return;
+  }
+  if (row.status !== "paid" || row.tid == null) {
+    res.status(409).json({ message: "승인된 결제만 취소할 수 있습니다." });
+    return;
+  }
+  try {
+    // 취소도 주문번호가 필요하다. 같은 번호로 두 번 취소되지 않게 한다.
+    const r = await cancelPayment({
+      tid: row.tid,
+      reason: parsed.data.reason,
+      orderId: `cancel_${row.order_id}`,
+    });
+    await prisma.payment.update({
+      where: { id: row.id },
+      data: {
+        status: "canceled",
+        failed_reason: parsed.data.reason,
+        raw: r as object,
+        updated_at: new Date(),
+      },
+    });
+    res.sendStatus(204);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "취소하지 못했습니다.";
+    console.error("[payment] 취소 실패", row.order_id, err);
+    res.status(502).json({ message: msg });
+  }
 });
 
 const syncSchema = zod.object({ tid: zod.string().min(1) });
