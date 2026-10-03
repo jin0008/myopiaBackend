@@ -73,7 +73,24 @@ router.get("/", siteAdminRequired, async (_req, res) => {
   const rows = await prisma.ad_banner.findMany({
     orderBy: [{ placement: "asc" }, { sort_order: "asc" }],
   });
-  res.json(rows);
+
+  // 지난 30일 성적을 함께 낸다. 광고를 팔면 "몇 번 보였나"를 줘야 하는데,
+  // 숫자를 보려고 다른 화면을 열게 하면 아무도 안 본다.
+  const from = new Date();
+  from.setUTCDate(from.getUTCDate() - 30);
+  const stats = await prisma.banner_stat_daily.groupBy({
+    by: ["banner_id"],
+    where: { banner_id: { in: rows.map((r) => r.id) }, day: { gte: from } },
+    _sum: { impressions: true, clicks: true },
+  });
+  const byId = new Map(stats.map((s) => [s.banner_id, s._sum]));
+  res.json(
+    rows.map((r) => ({
+      ...r,
+      impressions30d: byId.get(r.id)?.impressions ?? 0,
+      clicks30d: byId.get(r.id)?.clicks ?? 0,
+    })),
+  );
 });
 
 // GET /banner/:id — single (for the edit form).

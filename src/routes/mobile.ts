@@ -5344,6 +5344,75 @@ function todayInKST(): Date {
  * 위조할 수 있다. 지금은 살아 있는 광고로만 범위를 좁히고 한 번에 받는
  * 개수를 막아 두는 선까지다. 돈을 받기 시작하면 더 단단히 해야 한다.
  */
+/**
+ * POST /api/mobile/banner-events — 배너가 보였거나 눌렸다.
+ *
+ * facilities/promotion-events 와 같은 모양이다. 저쪽은 찾기탭 유료 노출,
+ * 이쪽은 홈·커뮤니티 배너라 세는 대상만 다르다.
+ *
+ * 로그인 없이 부른다 - 비로그인 사용자도 광고를 본다. 그래서 위조할 수
+ * 있다. 지금은 살아 있는 배너로만 범위를 좁히고 한 번에 받는 개수를
+ * 막아 두는 선까지다. 돈을 받기 시작하면 더 단단히 해야 한다.
+ */
+router.post("/banner-events", async (req, res) => {
+  const raw = Array.isArray(req.body?.events) ? req.body.events : [];
+  const events = raw.slice(0, 60);
+
+  // 같은 배너가 여러 번 들어오면 미리 합친다. UPSERT 를 이벤트 수만큼
+  // 치지 않고 배너 수만큼만 친다.
+  const tally = new Map<string, { impressions: number; clicks: number }>();
+  for (const e of events) {
+    const id = String(e?.id ?? "");
+    if (!/^[0-9a-f-]{36}$/i.test(id)) continue;
+    const type = String(e?.type ?? "");
+    if (type !== "impression" && type !== "click") continue;
+    const row = tally.get(id) ?? { impressions: 0, clicks: 0 };
+    if (type === "impression") row.impressions += 1;
+    else row.clicks += 1;
+    tally.set(id, row);
+  }
+  if (tally.size === 0) {
+    res.status(204).end();
+    return;
+  }
+
+  // 살아 있는 배너만. 꺼졌거나 기간이 지난 것은 세지 않는다.
+  const now = new Date();
+  const live = await prisma.ad_banner.findMany({
+    where: {
+      id: { in: [...tally.keys()] },
+      active: true,
+      OR: [{ start_at: null }, { start_at: { lte: now } }],
+      AND: [{ OR: [{ end_at: null }, { end_at: { gte: now } }] }],
+    },
+    select: { id: true },
+  });
+  const allowed = new Set(live.map((b) => b.id));
+
+  const day = todayInKST();
+  await Promise.all(
+    [...tally.entries()]
+      .filter(([id]) => allowed.has(id))
+      .map(([id, r]) =>
+        prisma.banner_stat_daily.upsert({
+          where: { banner_id_day: { banner_id: id, day } },
+          create: {
+            banner_id: id,
+            day,
+            impressions: r.impressions,
+            clicks: r.clicks,
+          },
+          update: {
+            impressions: { increment: r.impressions },
+            clicks: { increment: r.clicks },
+            updated_at: new Date(),
+          },
+        }),
+      ),
+  );
+  res.status(204).end();
+});
+
 router.post("/facilities/promotion-events", async (req, res) => {
   const raw = Array.isArray(req.body?.events) ? req.body.events : [];
   // 한 번에 받는 개수를 막는다. 화면 하나가 낼 수 있는 양을 훨씬 넘는다.
