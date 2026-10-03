@@ -6,6 +6,7 @@ import multer from "multer";
 import zod from "zod";
 import prisma from "../lib/prisma";
 import { siteAdminRequired } from "../lib/middlewares";
+import { validationMessage } from "../lib/validationError";
 
 const router = express.Router();
 
@@ -34,17 +35,34 @@ const upload = multer({
   },
 });
 
+/**
+ * 화면이 빈 칸을 "" 로 보낸다. 안 적은 것과 빈 글자는 같은 뜻이라 null 로
+ * 바꿔 받는다 - 그대로 min(1) 에 걸리게 두면, 서브타이틀을 비웠다는
+ * 이유로 배너가 저장되지 않는다.
+ */
+const optionalText = zod.preprocess(
+  (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+  zod.string().min(1).nullable().optional(),
+);
+
 const createSchema = zod.object({
-  title: zod.string().min(1),
-  subtitle: zod.string().min(1).optional(),
-  badge_text: zod.string().min(1).optional(),
-  image_url: zod.string().url(),
-  link_url: zod.string().url(),
+  title: zod.string().min(1, "제목을 적어 주세요."),
+  subtitle: optionalText,
+  badge_text: optionalText,
+  image_url: zod.string().url("이미지를 올리거나 이미지 주소를 적어 주세요."),
+  link_url: zod.string().url("연결 링크 주소를 적어 주세요."),
   placement: zod.string().min(1).optional(),
   sort_order: zod.number().int().optional(),
   active: zod.boolean().optional(),
-  start_at: zod.string().datetime().nullable().optional(),
-  end_at: zod.string().datetime().nullable().optional(),
+  // 날짜도 비우면 "" 로 온다.
+  start_at: zod.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    zod.string().datetime().nullable().optional(),
+  ),
+  end_at: zod.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    zod.string().datetime().nullable().optional(),
+  ),
 });
 const patchSchema = createSchema.partial();
 
@@ -109,7 +127,7 @@ router.get("/:id", siteAdminRequired, async (req, res) => {
 router.post("/", siteAdminRequired, async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const d = parsed.data;
@@ -135,7 +153,7 @@ router.post("/", siteAdminRequired, async (req, res) => {
 router.patch("/:id", siteAdminRequired, async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) {
-    res.status(400).json({ message: "invalid body" });
+    res.status(400).json({ message: validationMessage(parsed.error) });
     return;
   }
   const { start_at, end_at, ...rest } = parsed.data;
