@@ -27,29 +27,53 @@ assert.ok(!countable({ active: true, start_at: future, end_at: null }, now), "�
 assert.ok(!countable({ active: true, start_at: null, end_at: past }, now), "이미 끝남");
 assert.ok(countable({ active: true, start_at: past, end_at: future }, now), "기간 안");
 
-/** 목록에 광고를 섞는 규칙. 앱의 interleaveAds 와 같아야 한다. */
-const AD_EVERY = 5;
+/**
+ * 목록에 광고를 섞는 규칙. 앱의 interleaveAds 와 같아야 한다.
+ *
+ * 간격이 갈수록 넓어진다: 글 2개 → 광고 → 3개 → 광고 → 4개 → 광고 …
+ */
 function interleave(items: string[], banners: string[]) {
   if (banners.length === 0) return items.map((item) => ({ item }) as const);
   const out: ({ item: string } | { ad: string })[] = [];
+  let gap = 2;
+  let since = 0;
   let shown = 0;
   items.forEach((item, i) => {
     out.push({ item });
-    if ((i + 1) % AD_EVERY === 0 && i + 1 < items.length) {
+    since += 1;
+    if (since === gap && i + 1 < items.length) {
       out.push({ ad: banners[shown % banners.length] });
       shown += 1;
+      since = 0;
+      gap += 1;
     }
   });
   return out;
 }
-const posts = Array.from({ length: 12 }, (_, i) => `p${i}`);
+
+const posts = Array.from({ length: 23 }, (_, i) => `p${i}`);
 const mixed = interleave(posts, ["A", "B"]);
-assert.strictEqual(mixed.filter((x) => "ad" in x).length, 2, "열두 글이면 두 장");
+const shape = mixed.map((x) => ("ad" in x ? "[광고]" : "·")).join("");
+console.log("  " + shape);
+// 2 → 3 → 4 → 5 → 6 번째마다. 23개면 2,5,9,14,20 뒤에 들어간다.
+assert.strictEqual(mixed.filter((x) => "ad" in x).length, 5, "스물세 글이면 다섯 장");
 assert.ok(!("ad" in mixed[mixed.length - 1]), "목록 끝이 광고면 안 된다");
+
+// 앞쪽 간격이 좁고 뒤로 갈수록 넓어진다.
+const gaps: number[] = [];
+let run = 0;
+for (const x of mixed) {
+  if ("ad" in x) {
+    gaps.push(run);
+    run = 0;
+  } else run += 1;
+}
+assert.deepStrictEqual(gaps, [2, 3, 4, 5, 6], "간격이 하나씩 늘어난다");
+
 assert.strictEqual(
-  interleave(["p0", "p1", "p2"], ["A"]).filter((x) => "ad" in x).length,
+  interleave(["p0", "p1"], ["A"]).filter((x) => "ad" in x).length,
   0,
-  "글이 다섯 개가 안 되면 광고를 넣지 않는다",
+  "글이 둘뿐이면 광고를 넣지 않는다 - 끝에 붙는 셈이 된다",
 );
 assert.strictEqual(
   interleave(posts, []).filter((x) => "ad" in x).length,
@@ -57,4 +81,4 @@ assert.strictEqual(
   "배너가 없으면 목록은 그대로다",
 );
 
-console.log("ok — 살아 있는 배너만 세고, 다섯 글마다 한 장, 끝은 글로 끝난다");
+console.log("ok — 살아 있는 배너만 세고, 간격이 2·3·4… 로 늘고, 끝은 글로 끝난다");
