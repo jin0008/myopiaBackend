@@ -643,6 +643,8 @@ model hospital_account {
   facility_promotion    facility_promotion[]
   promotion_request     promotion_request[]
   facility_verification facility_verification[]
+  subscription          subscription?
+  payment               payment[]
 }
 
 model hospital_profile {
@@ -1284,6 +1286,77 @@ model promotion_request {
 
   @@index([status, created_at(sort: Desc)], map: "idx_promotion_request_status")
   @@index([account_id, created_at(sort: Desc)], map: "idx_promotion_request_account")
+}
+
+/// 파트너의 구독.
+///
+/// 지금은 운영자가 프리미엄 신청을 손으로 승인해 facility_promotion 을
+/// 만든다. 결제가 붙으면 그 자리를 이 표가 대신한다 - 돈이 들어오면
+/// 구독이 살고, 구독이 살아 있는 동안 광고가 나간다.
+///
+/// facility_promotion 을 지우지 않는다. 저쪽은 "지금 어느 가게 광고가
+/// 걸려 있나"이고 이쪽은 "누가 돈을 내고 있나"다. 운영자가 손으로 걸어
+/// 주는 길(무료 제휴, 보상)도 남아야 한다.
+model subscription {
+  id                 String    @id(map: "subscription_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  account_id         String    @unique(map: "subscription_account_unique") @db.Uuid
+  /// "premium" 하나뿐이다. 등급이 늘면 여기에 붙인다.
+  plan               String    @default("premium")
+  /// "active" | "past_due" | "canceled"
+  ///
+  /// past_due 는 청구가 실패했지만 아직 끊지 않은 상태다. 카드가 한 번
+  /// 막혔다고 바로 광고를 내리면, 고치고 돌아와도 그달이 날아간다.
+  status             String    @default("active")
+  /// 나이스 빌링키(bid). 카드번호는 우리가 들지 않는다 - 들면 PCI 범위에
+  /// 들어오고, 그럴 이유가 없다.
+  billing_key        String?
+  /// 이 주기가 끝나는 때. 여기까지는 돈을 받았으므로 광고가 나간다.
+  current_period_end DateTime  @db.Timestamptz(6)
+  /// 매달 얼마. 값을 바꿔도 지난 결제 이력은 그대로 남는다.
+  amount             Int
+  canceled_at        DateTime? @db.Timestamptz(6)
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime  @default(now()) @db.Timestamptz(6)
+
+  account  hospital_account @relation(fields: [account_id], references: [id], onDelete: Cascade, map: "subscription_account_fk")
+  payments payment[]
+
+  @@index([status, current_period_end], map: "idx_subscription_due")
+}
+
+/// 결제 한 건.
+///
+/// 성공만 남기지 않는다. 실패도 남아야 "왜 광고가 안 나가느냐"에 답할 수
+/// 있고, 같은 주문번호로 두 번 청구하는 일을 막을 수 있다.
+model payment {
+  id              String    @id(map: "payment_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  account_id      String    @db.Uuid
+  subscription_id String?   @db.Uuid
+  /// 우리가 만드는 주문번호. 같은 번호로 두 번 청구되지 않게 하는 열쇠다.
+  order_id        String    @unique(map: "payment_order_id_key")
+  /// 몇 달치를 샀는지. 금액에서 거꾸로 계산하지 않는다 - 가격이 바뀌면
+  /// 지난 결제의 개월 수가 함께 틀어진다.
+  months          Int       @default(1)
+  /// 나이스가 주는 거래번호. 승인 전에는 없다.
+  tid             String?
+  amount          Int
+  /// "pending" | "paid" | "failed" | "canceled"
+  status          String    @default("pending")
+  /// card | vbank | …
+  pay_method      String?
+  paid_at         DateTime? @db.Timestamptz(6)
+  /// 실패 사유. 파트너에게 보여 줄 말이라 코드가 아니라 문장으로 담는다.
+  failed_reason   String?
+  /// 결제사가 준 응답 원본. 분쟁이 나면 이것이 유일한 근거다.
+  raw             Json?
+  created_at      DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime  @default(now()) @db.Timestamptz(6)
+
+  account      hospital_account @relation(fields: [account_id], references: [id], onDelete: Cascade, map: "payment_account_fk")
+  subscription subscription?    @relation(fields: [subscription_id], references: [id], onDelete: SetNull, map: "payment_subscription_fk")
+
+  @@index([account_id, created_at(sort: Desc)], map: "idx_payment_account")
+  @@index([status, created_at(sort: Desc)], map: "idx_payment_status")
 }
 
 model facility_promotion {
