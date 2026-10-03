@@ -44,6 +44,36 @@ assert.strictEqual(
   "이미 지났으면 오늘에서 한 달",
 );
 
+/**
+ * 산 개월 수만큼 민다.
+ *
+ * 한 달로 고정하면 석 달치를 낸 사람이 한 달만 받는다.
+ */
+function nextEnd(currentEnd: Date, now: Date, months: number): Date {
+  const from = currentEnd > now ? currentEnd : now;
+  const next = new Date(from);
+  next.setMonth(next.getMonth() + months);
+  return next;
+}
+assert.strictEqual(
+  nextEnd(new Date("2026-10-20T00:00:00Z"), now, 3).toISOString().slice(0, 10),
+  "2027-01-20",
+  "석 달치를 사면 석 달이 는다",
+);
+
+/**
+ * 같은 결제로 두 번 밀지 않는다.
+ *
+ * 결제창에서 돌아올 때 한 번 밀고, 웹훅이 같은 건으로 또 오면 두 번
+ * 밀린다 - 한 번 낸 돈으로 두 달을 받는 셈이다.
+ */
+function shouldExtend(statusBefore: string): boolean {
+  return statusBefore !== "paid" && statusBefore !== "canceled";
+}
+assert.ok(shouldExtend("pending"), "아직 안 끝난 결제는 민다");
+assert.ok(!shouldExtend("paid"), "이미 끝난 결제는 또 밀지 않는다");
+assert.ok(!shouldExtend("canceled"), "취소된 결제도 밀지 않는다");
+
 /** 모르는 주문번호는 건드리지 않는다. 남의 상점 알림이거나 위조다. */
 function shouldApply(ourOrder: { id: string } | null): boolean {
   return ourOrder != null;

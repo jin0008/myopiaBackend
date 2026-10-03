@@ -1334,6 +1334,9 @@ model payment {
   subscription_id String?   @db.Uuid
   /// 우리가 만드는 주문번호. 같은 번호로 두 번 청구되지 않게 하는 열쇠다.
   order_id        String    @unique(map: "payment_order_id_key")
+  /// 몇 달치를 샀는지. 금액에서 거꾸로 계산하지 않는다 - 가격이 바뀌면
+  /// 지난 결제의 개월 수가 함께 틀어진다.
+  months          Int       @default(1)
   /// 나이스가 주는 거래번호. 승인 전에는 없다.
   tid             String?
   amount          Int

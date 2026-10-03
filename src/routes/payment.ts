@@ -77,7 +77,7 @@ router.post("/checkout", partnerRequired, async (req, res) => {
   const orderId = `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 
   await prisma.payment.create({
-    data: { account_id: accountId, order_id: orderId, amount, status: "pending" },
+    data: { account_id: accountId, order_id: orderId, amount, months, status: "pending" },
   });
 
   res.json({
@@ -152,7 +152,7 @@ router.post(
           updated_at: new Date(),
         },
       });
-      await extendSubscription(row.account_id, row.id, row.amount);
+      await extendSubscription(row.account_id, row.id, row.amount, row.months);
       return back(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "승인에 실패했습니다.";
@@ -175,12 +175,14 @@ async function extendSubscription(
   accountId: string,
   paymentId: string,
   amount: number,
+  months: number,
 ): Promise<void> {
   const now = new Date();
   const sub = await prisma.subscription.findUnique({ where: { account_id: accountId } });
   const from = sub != null && sub.current_period_end > now ? sub.current_period_end : now;
   const next = new Date(from);
-  next.setMonth(next.getMonth() + 1);
+  // 산 개월 수만큼. 한 달로 고정하면 석 달치를 낸 사람이 한 달만 받는다.
+  next.setMonth(next.getMonth() + months);
 
   const saved =
     sub == null
@@ -256,6 +258,16 @@ export async function syncFromNice(tid: string): Promise<void> {
     console.error("[payment] 모르는 주문번호", orderId, tid);
     return;
   }
+  // 이미 끝낸 결제다. 결제창에서 돌아올 때 승인하고 구독을 밀었는데,
+  // 웹훅이 같은 건으로 또 오면 두 번 밀린다 - 한 번 낸 돈으로 두 달을
+  // 받는 셈이다. 기록만 맞추고 손대지 않는다.
+  if (row.status === "paid" || row.status === "canceled") {
+    await prisma.payment.update({
+      where: { id: row.id },
+      data: { tid, raw: r as object, updated_at: new Date() },
+    });
+    return;
+  }
 
   const paid = r.resultCode === "0000" && r.status === "paid";
   // 금액이 다르면 성공으로 보지 않는다. 결제창에서 금액을 바꿔 넣는
@@ -279,21 +291,11 @@ export async function syncFromNice(tid: string): Promise<void> {
     },
   });
 
-  if (!(paid && amountOk) || row.subscription_id == null) return;
+  if (!(paid && amountOk)) return;
 
-  // 돈이 들어왔으니 주기를 한 달 민다. 끝나는 날부터 더한다 - 오늘부터
-  // 더하면 일찍 낸 사람이 손해를 본다.
-  const sub = await prisma.subscription.findUnique({
-    where: { id: row.subscription_id },
-  });
-  if (sub == null) return;
-  const from = sub.current_period_end > new Date() ? sub.current_period_end : new Date();
-  const next = new Date(from);
-  next.setMonth(next.getMonth() + 1);
-  await prisma.subscription.update({
-    where: { id: sub.id },
-    data: { status: "active", current_period_end: next, updated_at: new Date() },
-  });
+  // 결제창을 거치지 않고 웹훅만 먼저 오는 경우(가상계좌 입금 등)가 있다.
+  // 그때도 같은 함수를 쓴다 - 두 벌로 두면 한쪽만 고쳐져 기간이 갈린다.
+  await extendSubscription(row.account_id, row.id, row.amount, row.months);
 }
 
 /* ---- 파트너 ----------------------------------------------------------- */

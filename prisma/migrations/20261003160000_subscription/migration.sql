@@ -31,6 +31,9 @@ CREATE TABLE "payment" (
     "account_id" UUID NOT NULL,
     "subscription_id" UUID,
     "order_id" TEXT NOT NULL,
+    -- 몇 달치인지. 금액에서 거꾸로 계산하지 않는다 - 가격이 바뀌면 지난
+    -- 결제의 개월 수가 함께 틀어진다.
+    "months" INTEGER NOT NULL DEFAULT 1,
     "tid" TEXT,
     "amount" INTEGER NOT NULL,
     "status" TEXT NOT NULL DEFAULT 'pending',
