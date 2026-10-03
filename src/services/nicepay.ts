@@ -13,7 +13,23 @@
  * 그것을 쓴다 - 카드번호를 들면 PCI 범위에 들어오고, 그럴 이유가 없다.
  */
 
+import crypto from "crypto";
+
 const BASE = process.env.NICEPAY_BASE_URL ?? "https://api.nicepay.co.kr";
+
+/** 결제창에서 돌아온 거래를 승인할 때 보내는 서명.
+ *  hex(sha256(tid + amount + ediDate + SecretKey)) — 나이스 문서 그대로다. */
+function signApprove(tid: string, amount: number, ediDate: string): string {
+  return crypto
+    .createHash("sha256")
+    .update(`${tid}${amount}${ediDate}${process.env.NICEPAY_SECRET_KEY ?? ""}`)
+    .digest("hex");
+}
+
+/** 브라우저에 내려도 되는 값. 결제창을 여는 데 쓴다. */
+export function clientKey(): string {
+  return process.env.NICEPAY_CLIENT_KEY ?? "";
+}
 
 export function isConfigured(): boolean {
   return (
@@ -91,6 +107,27 @@ function must(r: NiceResult): NiceResult {
  */
 export function getPayment(tid: string): Promise<NiceResult> {
   return call(`/v1/payments/${encodeURIComponent(tid)}`);
+}
+
+/**
+ * 결제창에서 인증을 마친 거래를 승인한다.
+ *
+ * 인증과 승인은 다른 단계다. 인증까지는 카드사가 "이 사람 맞다"고 한
+ * 것이고, 돈은 승인에서 빠진다. 그래서 인증 결과만 보고 구독을 켜면
+ * 돈을 안 받고 켜 주는 셈이 된다.
+ *
+ * 금액을 다시 보낸다. 우리가 적어 둔 금액으로 승인하므로, 결제창에서
+ * 금액을 바꿔 넣어도 그 금액으로는 승인되지 않는다.
+ */
+export async function approvePayment(tid: string, amount: number): Promise<NiceResult> {
+  const ediDate = new Date().toISOString();
+  return must(
+    await call(`/v1/payments/${encodeURIComponent(tid)}`, {
+      amount,
+      ediDate,
+      signData: signApprove(tid, amount, ediDate),
+    }),
+  );
 }
 
 /**

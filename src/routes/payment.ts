@@ -4,9 +4,207 @@ import zod from "zod";
 import prisma from "../lib/prisma";
 import { partnerRequired } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
-import { getPayment, isConfigured } from "../services/nicepay";
+import {
+  approvePayment,
+  clientKey,
+  getPayment,
+  isConfigured,
+} from "../services/nicepay";
+
+/** 결제가 끝나면 돌아갈 자리. */
+const PARTNER_ORIGIN = "https://myopiamanage.org";
+/** 나이스가 인증 결과를 보내는 주소. 결제창에 그대로 넘긴다. */
+const RETURN_URL = `${PARTNER_ORIGIN}/api/payment/nice/return`;
 
 const router = express.Router();
+
+/* ---- 결제창 ----------------------------------------------------------
+ *
+ * 흐름이 셋으로 나뉜다.
+ *
+ *   1. checkout  — 우리가 주문을 만든다(금액을 서버가 정한다)
+ *   2. 결제창     — 브라우저가 나이스 창을 열고 카드 인증을 받는다
+ *   3. return    — 나이스가 인증 결과를 우리 서버로 보낸다. 여기서 승인한다
+ *
+ * 인증과 승인은 다르다. 인증까지는 카드사가 "이 사람 맞다"고 한 것이고
+ * 돈은 승인에서 빠진다. 인증 결과만 보고 구독을 켜면 돈을 안 받고 켜 주는
+ * 셈이 된다.
+ */
+
+const checkoutSchema = zod.object({
+  months: zod.number().int().min(1).max(12),
+});
+
+/** 한 달 구독료(원). 값이 정해지면 설정으로 뺀다. */
+const MONTHLY_AMOUNT = Number(process.env.SUBSCRIPTION_MONTHLY_AMOUNT ?? 100);
+
+/**
+ * 주문을 만든다. 금액은 서버가 정한다.
+ *
+ * 화면이 보낸 금액을 그대로 쓰면, 개발자 도구로 100원이라고 적어 보내는
+ * 것을 막을 수 없다. 화면은 몇 달치인지만 말한다.
+ */
+router.post("/checkout", partnerRequired, async (req, res) => {
+  if (!isConfigured()) {
+    res.status(503).json({ message: "결제 준비가 아직 되지 않았습니다." });
+    return;
+  }
+  const parsed = checkoutSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "개월 수를 확인해 주세요." });
+    return;
+  }
+  const accountId = req.partner!.sub;
+
+  // 업체가 묶이지 않은 계정은 광고를 걸 곳이 없다. 돈부터 받고 나서
+  // "그런데 어느 가게죠"를 물으면 안 된다.
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: accountId },
+    select: { facility_key: true, hospital_name: true },
+  });
+  if (account?.facility_key == null) {
+    res.status(403).json({
+      code: "facility_not_linked",
+      message: "업체 인증을 먼저 마쳐 주세요.",
+    });
+    return;
+  }
+
+  const months = parsed.data.months;
+  const amount = MONTHLY_AMOUNT * months;
+  // 주문번호는 우리가 만든다. 같은 번호로 두 번 승인되지 않는다(unique).
+  const orderId = `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+
+  await prisma.payment.create({
+    data: { account_id: accountId, order_id: orderId, amount, status: "pending" },
+  });
+
+  res.json({
+    clientId: clientKey(),
+    orderId,
+    amount,
+    goodsName: `마이오닥 프리미엄 ${months}개월`,
+    returnUrl: RETURN_URL,
+  });
+});
+
+/**
+ * 나이스가 인증 결과를 보내는 자리.
+ *
+ * 폼으로 온다(JSON 아님). 그리고 사람의 브라우저가 따라오므로, 끝나면
+ * 파트너 화면으로 돌려보내야 한다 - JSON 을 뱉으면 사용자는 흰 화면에
+ * 글자만 보게 된다.
+ */
+router.post(
+  "/nice/return",
+  express.urlencoded({ extended: false }),
+  async (req, res) => {
+    const b = req.body as Record<string, string>;
+    const orderId = String(b.orderId ?? "");
+    const tid = String(b.tid ?? "");
+    const back = (ok: boolean, reason?: string) =>
+      res.redirect(
+        302,
+        `${PARTNER_ORIGIN}/partner/promotions?pay=${ok ? "ok" : "fail"}` +
+          (reason ? `&reason=${encodeURIComponent(reason)}` : ""),
+      );
+
+    const row =
+      orderId === "" ? null : await prisma.payment.findUnique({ where: { order_id: orderId } });
+    if (row == null) {
+      // 우리가 만들지 않은 주문이다. 남의 상점 알림이거나 위조다.
+      console.error("[payment] 모르는 주문번호", orderId, tid);
+      return back(false, "주문을 찾을 수 없습니다.");
+    }
+    if (row.status === "paid") {
+      // 두 번 들어왔다. 이미 끝난 일이라 그대로 성공으로 돌려보낸다.
+      return back(true);
+    }
+
+    if (String(b.authResultCode ?? "") !== "0000") {
+      await prisma.payment.update({
+        where: { id: row.id },
+        data: {
+          status: "failed",
+          tid: tid || null,
+          failed_reason: String(b.authResultMsg ?? "카드 인증에 실패했습니다."),
+          raw: b as object,
+          updated_at: new Date(),
+        },
+      });
+      return back(false, String(b.authResultMsg ?? "카드 인증에 실패했습니다."));
+    }
+
+    // 금액은 우리가 적어 둔 것으로 승인한다. 결제창에서 바꿔 넣어도
+    // 그 금액으로는 승인되지 않는다.
+    try {
+      const r = await approvePayment(tid, row.amount);
+      await prisma.payment.update({
+        where: { id: row.id },
+        data: {
+          tid,
+          status: "paid",
+          pay_method: typeof r.payMethod === "string" ? r.payMethod : null,
+          paid_at: new Date(),
+          failed_reason: null,
+          raw: r as object,
+          updated_at: new Date(),
+        },
+      });
+      await extendSubscription(row.account_id, row.id, row.amount);
+      return back(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "승인에 실패했습니다.";
+      console.error("[payment] 승인 실패", orderId, tid, err);
+      await prisma.payment.update({
+        where: { id: row.id },
+        data: { tid, status: "failed", failed_reason: msg, updated_at: new Date() },
+      });
+      return back(false, msg);
+    }
+  },
+);
+
+/**
+ * 돈이 들어왔으니 구독을 민다.
+ *
+ * 끝나는 날부터 더한다. 오늘부터 더하면 일찍 낸 사람이 남은 날을 잃는다.
+ */
+async function extendSubscription(
+  accountId: string,
+  paymentId: string,
+  amount: number,
+): Promise<void> {
+  const now = new Date();
+  const sub = await prisma.subscription.findUnique({ where: { account_id: accountId } });
+  const from = sub != null && sub.current_period_end > now ? sub.current_period_end : now;
+  const next = new Date(from);
+  next.setMonth(next.getMonth() + 1);
+
+  const saved =
+    sub == null
+      ? await prisma.subscription.create({
+          data: {
+            account_id: accountId,
+            status: "active",
+            current_period_end: next,
+            amount,
+          },
+        })
+      : await prisma.subscription.update({
+          where: { id: sub.id },
+          data: {
+            status: "active",
+            current_period_end: next,
+            canceled_at: null,
+            updated_at: new Date(),
+          },
+        });
+  await prisma.payment.update({
+    where: { id: paymentId },
+    data: { subscription_id: saved.id },
+  });
+}
 
 /* ---- 웹훅 -------------------------------------------------------------
  *
