@@ -7,6 +7,8 @@
  */
 import assert from "assert";
 
+import { endOfTerm, extendTerm, kstDayEnd, kstDayStart } from "../src/lib/promotionTerm";
+
 /** 성공으로 볼 조건. 웹훅 몸통이 아니라 결제사 조회 응답을 본다. */
 function isPaid(r: { resultCode: string; status?: string }, niceAmount: number, ourAmount: number) {
   const ok = r.resultCode === "0000" && r.status === "paid";
@@ -85,5 +87,70 @@ assert.ok(shouldApply({ id: "x" }));
  *  이중 청구로 번지는 것을 DB 가 막는다. */
 const orderIds = ["sub-1-202610", "sub-1-202610"];
 assert.strictEqual(new Set(orderIds).size, 1, "같은 달 재시도는 같은 주문번호여야 한다");
+
+/**
+ * 결제가 끝나면 광고를 바로 건다 - 운영자 승인을 기다리지 않는다.
+ *
+ * 이미 광고가 돌고 있으면 기간을 이어 붙인다. 덮어쓰면 남은 기간이
+ * 사라져 돈을 낸 만큼 나가지 않는다.
+ *
+ * 끝난 광고가 남아 있으면 시작일도 새로 잡는다. 끝나는 날만 미루면
+ * 옛 시작일이 남아, 돈을 안 받은 공백 기간에도 광고가 산 것으로
+ * 계산된다.
+ */
+function promotionTerm(
+  existing: { starts_at: Date; ends_at: Date } | null,
+  today: string,
+  months: number,
+): { starts_at: Date; ends_at: Date } {
+  const startsAt = kstDayStart(today);
+  const running = existing != null && existing.ends_at > startsAt;
+  return {
+    starts_at: running ? existing!.starts_at : startsAt,
+    ends_at: running ? extendTerm(existing!.ends_at, months) : endOfTerm(today, months),
+  };
+}
+
+{
+  const fresh = promotionTerm(null, "2026-10-03", 1);
+  assert.strictEqual(
+    fresh.ends_at.toISOString(),
+    endOfTerm("2026-10-03", 1).toISOString(),
+    "처음 결제하면 오늘부터 한 달",
+  );
+
+  // 10/31 까지 돌고 있는데 한 달을 더 산 경우.
+  const running = promotionTerm(
+    { starts_at: kstDayStart("2026-10-01"), ends_at: kstDayEnd("2026-10-31") },
+    "2026-10-03",
+    1,
+  );
+  assert.strictEqual(
+    running.starts_at.toISOString(),
+    kstDayStart("2026-10-01").toISOString(),
+    "돌고 있는 광고의 시작일은 건드리지 않는다",
+  );
+  assert.strictEqual(
+    running.ends_at.toISOString(),
+    kstDayEnd("2026-11-30").toISOString(),
+    "남은 기간 다음 날부터 한 달이 붙는다",
+  );
+
+  // 8월에 끝난 광고가 남아 있는 곳.
+  const lapsed = promotionTerm(
+    { starts_at: kstDayStart("2026-07-01"), ends_at: kstDayEnd("2026-08-31") },
+    "2026-10-03",
+    1,
+  );
+  assert.strictEqual(
+    lapsed.starts_at.toISOString(),
+    kstDayStart("2026-10-03").toISOString(),
+    "끊겼던 광고는 시작일을 오늘로 새로 잡는다",
+  );
+  assert.ok(
+    lapsed.ends_at > kstDayStart("2026-10-03"),
+    "끝난 날이 아니라 오늘부터 센다",
+  );
+}
 
 console.log("ok — 금액이 맞고 결제사가 paid 라고 할 때만 인정하고, 주기는 끝나는 날부터 더한다");
