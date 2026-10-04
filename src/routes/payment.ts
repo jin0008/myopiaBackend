@@ -465,6 +465,10 @@ router.post("/billing/register", partnerRequired, async (req, res) => {
     orderId,
     goodsName: "마이오닥 프리미엄 정기결제",
     returnUrl: `${PARTNER_ORIGIN}/api/payment/nice/billing-return`,
+    // 빌링 모드는 "이 카드가 누구 것인지"를 요구한다. 한 번 내고 마는
+    // 결제와 달리 카드를 들고 있게 되는 쪽이라, 가맹점 회원 번호가
+    // 있어야 한다. 빠지면 결제창이 P012(파라미터 오류)를 낸다.
+    mallUserId: accountId,
   });
 });
 
