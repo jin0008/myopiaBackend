@@ -7,7 +7,13 @@
  */
 import assert from "assert";
 
-import { endOfTerm, extendTerm, kstDayEnd, kstDayStart } from "../src/lib/promotionTerm";
+import {
+  endOfTerm,
+  extendTerm,
+  kstDateString,
+  kstDayEnd,
+  kstDayStart,
+} from "../src/lib/promotionTerm";
 
 /** 성공으로 볼 조건. 웹훅 몸통이 아니라 결제사 조회 응답을 본다. */
 function isPaid(r: { resultCode: string; status?: string }, niceAmount: number, ourAmount: number) {
@@ -154,3 +160,21 @@ function promotionTerm(
 }
 
 console.log("ok — 금액이 맞고 결제사가 paid 라고 할 때만 인정하고, 주기는 끝나는 날부터 더한다");
+
+/**
+ * 화면에 보일 날짜는 KST 로 센다.
+ *
+ * UTC 로 자르면 KST 자정에 시작한 광고가 전날로 보인다 - 10월 4일에 결제한
+ * 파트너가 "10월 3일부터"를 보고 하루를 손해 본 것으로 읽는다.
+ */
+assert.strictEqual(
+  kstDateString(kstDayStart("2026-10-04")),
+  "2026-10-04",
+  "시작일은 그날로 보여야 한다",
+);
+assert.strictEqual(
+  kstDateString(kstDayEnd("2026-11-03")),
+  "2026-11-03",
+  "종료일도 그날로",
+);
+console.log("ok — 기간 표시는 KST 날짜");
