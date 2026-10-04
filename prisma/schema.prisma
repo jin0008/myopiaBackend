@@ -1310,6 +1310,14 @@ model subscription {
   /// 나이스 빌링키(bid). 카드번호는 우리가 들지 않는다 - 들면 PCI 범위에
   /// 들어오고, 그럴 이유가 없다.
   billing_key        String?
+  /// 자동 갱신 스위치. 카드가 등록돼 있어도 이것이 꺼져 있으면 청구하지
+  /// 않는다 - 카드 등록과 "매달 빼 가도 된다"는 다른 허락이다.
+  auto_renew         Boolean   @default(false)
+  /// 연속 청구 실패 횟수. 한 번 막혔다고 끊지 않고 며칠 다시 해 본다.
+  failed_count       Int       @default(0)
+  /// 결제 예정 안내를 보낸 주기의 종료일. 같은 주기에 두 번 보내지 않는다.
+  /// 전자상거래법상 정기결제는 미리 알려야 한다.
+  notified_for       DateTime? @db.Timestamptz(6)
   /// 이 주기가 끝나는 때. 여기까지는 돈을 받았으므로 광고가 나간다.
   current_period_end DateTime  @db.Timestamptz(6)
   /// 매달 얼마. 값을 바꿔도 지난 결제 이력은 그대로 남는다.
