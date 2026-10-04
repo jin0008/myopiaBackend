@@ -32,6 +32,10 @@ export async function extendSubscription(
   // 산 개월 수만큼. 한 달로 고정하면 석 달치를 낸 사람이 한 달만 받는다.
   next.setMonth(next.getMonth() + months);
 
+  // 한 달치로 적는다. 낸 돈을 그대로 넣으면 6개월치를 산 업체가 "한 달
+  // 600원"으로 기록되고, 만료 안내 메일이 그 값을 그대로 읽는다.
+  const monthly = Math.round(amount / months);
+
   const saved =
     sub == null
       ? await prisma.subscription.create({
@@ -39,7 +43,7 @@ export async function extendSubscription(
             account_id: accountId,
             status: "active",
             current_period_end: next,
-            amount,
+            amount: monthly,
           },
         })
       : await prisma.subscription.update({
@@ -47,6 +51,7 @@ export async function extendSubscription(
           data: {
             status: "active",
             current_period_end: next,
+            amount: monthly,
             canceled_at: null,
             updated_at: new Date(),
           },
