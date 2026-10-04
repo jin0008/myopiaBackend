@@ -66,3 +66,14 @@ export function extendTerm(currentEnd: Date, months: number): Date {
 export function kstTodayString(): string {
   return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
 }
+
+/**
+ * 화면에 보일 날짜(KST).
+ *
+ * toISOString() 을 그대로 자르면 UTC 날짜가 나온다. 광고 시작은 KST 자정이고
+ * UTC 로는 전날 15시라, 10월 4일에 시작한 광고가 10월 3일로 보인다 - 돈을 낸
+ * 파트너가 하루를 손해 본 것으로 읽는다.
+ */
+export function kstDateString(d: Date): string {
+  return new Date(d.getTime() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+}

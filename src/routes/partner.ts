@@ -13,7 +13,7 @@ import {
 import { validationBody, validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
-import { endOfTerm, extendTerm, kstDayStart } from "../lib/promotionTerm";
+import { endOfTerm, extendTerm, kstDateString, kstDayStart } from "../lib/promotionTerm";
 import {
   assertTicket,
   issueCode,
@@ -1668,8 +1668,10 @@ router.get("/promotions/mine", partnerRequired, async (req, res) => {
         name: names.get(k)?.name ?? null,
         address: names.get(k)?.address ?? null,
         tier: p.tier,
-        startsAt: p.starts_at.toISOString(),
-        endsAt: p.ends_at.toISOString(),
+        // 날짜만 준다. 화면이 ISO 를 잘라 쓰면 UTC 날짜가 나와 시작일이
+        // 하루 전으로 보인다.
+        startsAt: kstDateString(p.starts_at),
+        endsAt: kstDateString(p.ends_at),
         live: p.starts_at <= now && p.ends_at >= now,
         impressions: s.impressions,
         clicks: s.clicks,
@@ -1729,8 +1731,8 @@ router.get("/promotions", siteAdminRequired, async (_req, res) => {
       facilityName: facility.get(`${r.kind}:${r.key}`)?.name ?? null,
       facilityAddress: facility.get(`${r.kind}:${r.key}`)?.address ?? null,
       tier: r.tier,
-      startsOn: r.starts_at.toISOString().slice(0, 10),
-      endsOn: r.ends_at.toISOString().slice(0, 10),
+      startsOn: kstDateString(r.starts_at),
+      endsOn: kstDateString(r.ends_at),
       // 기간이 지났는지는 화면이 다시 재지 않아도 되게 서버가 답한다.
       active: r.starts_at.getTime() <= now && r.ends_at.getTime() >= now,
       accountId: r.account?.id ?? null,
