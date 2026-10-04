@@ -131,17 +131,11 @@ export async function approvePayment(tid: string, amount: number): Promise<NiceR
 }
 
 /**
- * 결제창에서 카드 인증을 마친 건으로 빌링키를 발급받는다.
+ * 빌링키로 청구한다.
  *
- * 상점 설정에 따라 결제창이 bid 를 바로 돌려주기도 한다. 그때는 이것을
- * 부를 필요가 없다 - 호출부가 먼저 몸통을 보고 없을 때만 부른다.
- */
-export async function registerBilling(tid: string): Promise<NiceResult> {
-  return must(await call(`/v1/subscribe/regist`, { tid }));
-}
-
-/**
- * 빌링키로 청구한다. 매달 이것을 부른다.
+ * 아직 부르는 곳이 없다. 빌링키를 받을 길이 막혀 있어서다 - V2 결제창에는
+ * 카드 등록이 없고, API 는 카드번호를 직접 받아야 한다. 받는 길이 열리면
+ * 이것만 매달 부르면 된다.
  *
  * orderId 는 우리가 만든다. 같은 번호로 두 번 부르면 나이스가 거절하므로,
  * 재시도가 두 번 청구로 번지지 않는다.
