@@ -9,10 +9,8 @@ import {
   approvePayment,
   cancelPayment,
   clientKey,
-  expireBilling,
   getPayment,
   isConfigured,
-  registerBilling,
 } from "../services/nicepay";
 
 /** 결제가 끝나면 돌아갈 자리. */
@@ -283,11 +281,6 @@ router.get("/me", partnerRequired, async (req, res) => {
             currentPeriodEnd: sub.current_period_end.toISOString(),
             amount: sub.amount,
             canceledAt: sub.canceled_at?.toISOString() ?? null,
-            // 카드가 등록돼 있는지와, 매달 빼 가도 된다는 허락은 다르다.
-            // 둘을 한 값으로 합치면 "카드는 남았는데 갱신은 꺼진" 상태를
-            // 화면이 말할 수 없다.
-            cardRegistered: sub.billing_key != null,
-            autoRenew: sub.auto_renew,
           },
     payments: payments.map((p) => ({
       id: p.id,
@@ -412,187 +405,20 @@ router.post("/sync", siteAdminRequired, async (req, res) => {
 
 /* ---- 자동 갱신 ------------------------------------------------------
  *
- * 카드를 한 번 등록해 두고(빌링키) 매달 그것으로 청구한다. 카드번호는
- * 우리가 들지 않는다 - 들면 PCI 범위에 들어오고, 그럴 이유가 없다.
+ * 아직 없다.
  *
- * 등록과 청구는 다른 허락이다. 카드를 넣었다고 매달 빼 가도 된다는 뜻은
- * 아니라서, auto_renew 를 따로 둔다.
+ * 나이스 V2 결제창에는 카드 등록(빌링키 발급)이 없다 - method 에 billing
+ * 이라는 값 자체가 없어, 넣으면 결제창이 P012(파라미터 오류)를 낸다.
+ * 빌링키를 받으려면 /v1/subscribe/regist 에 카드번호·생년월일·카드
+ * 비밀번호를 암호화해 보내야 하고, 그러려면 그 값들을 우리가 받아야 한다.
+ * 소아 의료 자료를 들고 있는 서버에 카드번호까지 얹을 일이 아니다.
+ *
+ * 그래서 지금은 기간이 끝나기 전에 메일로 알리고(scripts/notify-expiring-
+ * promotions.ts) 파트너가 직접 연장한다.
+ *
+ * 인증형 빌키발급 상품을 계약하면 여기에 등록 경로만 붙이면 된다 -
+ * 청구(chargeBilling), 기간 계산, 결제 기록, 광고 연장은 직접 결제와
+ * 같은 것을 이미 쓰고 있다.
  */
-
-/**
- * 카드 등록을 시작한 주문번호 → 계정.
- *
- * 결제창은 우리 쿠키를 들고 오지 않아, 돌아왔을 때 누구인지 알 방법이
- * 주문번호뿐이다. 계정 번호를 브라우저에 실어 보내고 그대로 믿으면, 남의
- * 계정 번호를 적어 넣어 그 구독에 자기 카드를 붙일 수 있다.
- *
- * 서버에 둔다. 재시작하면 날아가지만, 그 사이 등록 중이던 사람만 한 번
- * 다시 하면 되는 일이라 표를 하나 더 만들 값어치는 없다.
- */
-const pendingCards = new Map<string, { accountId: string; at: number }>();
-const CARD_TTL_MS = 10 * 60 * 1000;
-
-function rememberCardOrder(orderId: string, accountId: string): void {
-  const now = Date.now();
-  for (const [k, v] of pendingCards) {
-    if (now - v.at > CARD_TTL_MS) pendingCards.delete(k);
-  }
-  pendingCards.set(orderId, { accountId, at: now });
-}
-
-/** 카드 등록창을 연다. 돈은 빠지지 않는다. */
-router.post("/billing/register", partnerRequired, async (req, res) => {
-  if (!isConfigured()) {
-    res.status(503).json({ message: "결제 준비가 아직 되지 않았습니다." });
-    return;
-  }
-  const accountId = req.partner!.sub;
-  const account = await prisma.hospital_account.findUnique({
-    where: { id: accountId },
-    select: { facility_key: true, hospital_name: true },
-  });
-  if (account?.facility_key == null) {
-    res.status(403).json({
-      code: "facility_not_linked",
-      message: "업체 인증을 먼저 마쳐 주세요.",
-    });
-    return;
-  }
-  const orderId = `bill_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  rememberCardOrder(orderId, accountId);
-  res.json({
-    clientId: clientKey(),
-    orderId,
-    goodsName: "마이오닥 프리미엄 정기결제",
-    returnUrl: `${PARTNER_ORIGIN}/api/payment/nice/billing-return`,
-    // 빌링 모드는 "이 카드가 누구 것인지"를 요구한다. 한 번 내고 마는
-    // 결제와 달리 카드를 들고 있게 되는 쪽이라, 가맹점 회원 번호가
-    // 있어야 한다. 빠지면 결제창이 P012(파라미터 오류)를 낸다.
-    mallUserId: accountId,
-  });
-});
-
-/**
- * 카드 등록 결과.
- *
- * 나이스가 어떤 모양으로 돌려주는지는 상점마다 설정이 갈린다. 빌링키를
- * 바로 주기도 하고, 인증만 끝내 놓고 발급은 따로 부르게 하기도 한다.
- * 그래서 몸통을 통째로 남긴다 - 처음 한 번은 로그를 보고 맞춰야 한다.
- */
-router.post(
-  "/nice/billing-return",
-  express.urlencoded({ extended: false }),
-  async (req, res) => {
-    const b = req.body as Record<string, string>;
-    const back = (ok: boolean, reason?: string) =>
-      res.redirect(
-        302,
-        `${PARTNER_ORIGIN}/partner/promotions?card=${ok ? "ok" : "fail"}` +
-          (reason ? `&reason=${encodeURIComponent(reason)}` : ""),
-      );
-
-    console.log("[payment] 카드 등록 결과", JSON.stringify(b));
-
-    const authOk = String(b.authResultCode ?? "") === "0000";
-    if (!authOk) {
-      return back(false, String(b.authResultMsg ?? "카드 인증에 실패했습니다."));
-    }
-
-    // 결제창이 빌링키를 바로 주면 그것을 쓰고, 안 주면 거래번호로 발급을
-    // 부른다. 둘 다 아니면 로그를 보고 맞춘다.
-    let bid = String(b.bid ?? "");
-    if (bid === "") {
-      const tid = String(b.tid ?? "");
-      if (tid === "") return back(false, "빌링키를 받지 못했습니다.");
-      try {
-        const r = await registerBilling(tid);
-        bid = String(r.bid ?? "");
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "카드 등록에 실패했습니다.";
-        console.error("[payment] 빌링키 발급 실패", tid, err);
-        return back(false, msg);
-      }
-    }
-    if (bid === "") return back(false, "빌링키를 받지 못했습니다.");
-
-    // 우리가 시작한 등록인지 주문번호로 확인한다.
-    const pending = pendingCards.get(String(b.orderId ?? ""));
-    if (pending == null) {
-      console.error("[payment] 모르는 카드 등록", JSON.stringify(b));
-      return back(false, "등록 시간이 지났습니다. 다시 해 주세요.");
-    }
-    pendingCards.delete(String(b.orderId ?? ""));
-    const accountId = pending.accountId;
-
-    const now = new Date();
-    const sub = await prisma.subscription.findUnique({
-      where: { account_id: accountId },
-    });
-    if (sub == null) {
-      // 아직 한 번도 결제하지 않은 곳이다. 카드만 걸어 두고 주기는
-      // 비워 둔다 - 오늘부터 한 달로 잡으면 돈을 안 받고 광고가 나간다.
-      await prisma.subscription.create({
-        data: {
-          account_id: accountId,
-          status: "active",
-          current_period_end: now,
-          amount: MONTHLY_AMOUNT,
-          billing_key: bid,
-          auto_renew: true,
-        },
-      });
-    } else {
-      await prisma.subscription.update({
-        where: { id: sub.id },
-        data: {
-          billing_key: bid,
-          auto_renew: true,
-          canceled_at: null,
-          failed_count: 0,
-          updated_at: now,
-        },
-      });
-    }
-    return back(true);
-  },
-);
-
-/**
- * 자동 갱신을 끈다.
- *
- * 광고를 바로 내리지 않는다 - 이번 주기까지는 돈을 받았다. 여기서 하는
- * 일은 다음 청구를 막는 것까지다.
- */
-router.post("/subscription/cancel", partnerRequired, async (req, res) => {
-  const sub = await prisma.subscription.findUnique({
-    where: { account_id: req.partner!.sub },
-  });
-  if (sub == null) {
-    res.status(404).json({ message: "구독이 없습니다." });
-    return;
-  }
-  if (sub.billing_key != null) {
-    try {
-      await expireBilling(sub.billing_key, `cancel_${Date.now().toString(36)}`);
-    } catch (err) {
-      // 결제사 쪽에서 못 지웠어도 우리 쪽 스위치는 내린다. 켜 둔 채로
-      // 두면 다음 달에 청구가 나간다 - 끊겠다고 한 사람에게서.
-      console.error("[payment] 빌링키 삭제 실패", sub.id, err);
-    }
-  }
-  await prisma.subscription.update({
-    where: { id: sub.id },
-    data: {
-      auto_renew: false,
-      billing_key: null,
-      canceled_at: new Date(),
-      updated_at: new Date(),
-    },
-  });
-  res.json({
-    ok: true,
-    until: sub.current_period_end.toISOString(),
-  });
-});
 
 export default router;
