@@ -17,7 +17,7 @@ import "dotenv/config";
 
 import prisma from "../lib/prisma";
 import { kstDateString } from "../lib/promotionTerm";
-import { sendEmail } from "../services/email";
+import { isEmailConfigured, sendEmail } from "../services/email";
 
 /** 며칠 전에 알릴지. 하루 이틀로는 결제를 올릴 시간이 모자란다. */
 const NOTICE_DAYS = 7;
@@ -35,6 +35,14 @@ function korean(d: Date): string {
 }
 
 async function main() {
+  // sendEmail 은 SMTP 가 없으면 경고만 남기고 조용히 돌아간다. 그대로
+  // 두면 아래에서 "보냈다"고 적어 두게 되고(notified_for), 그 주기의
+  // 안내는 영영 다시 나가지 않는다 - 한 통도 못 보낸 채로.
+  if (!isEmailConfigured()) {
+    console.error("[광고] SMTP 가 설정돼 있지 않다. 아무것도 하지 않는다.");
+    process.exitCode = 1;
+    return;
+  }
   const now = new Date();
   const until = new Date(now.getTime() + NOTICE_DAYS * 24 * 3600 * 1000);
 
