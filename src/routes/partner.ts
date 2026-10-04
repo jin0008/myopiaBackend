@@ -1683,7 +1683,10 @@ router.get("/promotions/mine", partnerRequired, async (req, res) => {
 
 router.get("/promotions", siteAdminRequired, async (_req, res) => {
   const rows = await prisma.facility_promotion.findMany({
-    orderBy: [{ ends_at: "desc" }],
+    // 결제순으로 본다. 끝나는 날 순으로 두면 방금 결제한 것이 기간에 따라
+    // 목록 가운데에 섞여, 들어왔는지 확인하러 온 사람이 찾아 헤맨다.
+    // 연장은 created_at 을 건드리지 않으니 처음 건 때가 기준이다.
+    orderBy: [{ created_at: "desc" }],
     include: { account: { select: { id: true, hospital_name: true, email: true } } },
   });
 
