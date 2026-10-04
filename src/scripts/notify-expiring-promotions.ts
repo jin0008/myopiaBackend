@@ -16,6 +16,7 @@
 import "dotenv/config";
 
 import prisma from "../lib/prisma";
+import { kstDateString } from "../lib/promotionTerm";
 import { sendEmail } from "../services/email";
 
 /** 며칠 전에 알릴지. 하루 이틀로는 결제를 올릴 시간이 모자란다. */
@@ -25,6 +26,12 @@ const PARTNER_URL =
 
 function won(n: number): string {
   return n.toLocaleString("ko-KR") + "원";
+}
+
+/** "2026년 11월 3일". 업체가 읽을 글이라 숫자만 늘어놓지 않는다. */
+function korean(d: Date): string {
+  const [y, m, day] = kstDateString(d).split("-");
+  return `${y}년 ${Number(m)}월 ${Number(day)}일`;
 }
 
 async function main() {
@@ -49,19 +56,21 @@ async function main() {
     ) {
       continue;
     }
-    const on = s.current_period_end.toISOString().slice(0, 10);
+    const on = korean(s.current_period_end);
     try {
       await sendEmail(
         [s.account.email],
-        "[마이오닥] 프리미엄 노출 기간이 곧 끝납니다",
-        `<p>${s.account.hospital_name} 님,</p>
-         <p>프리미엄 노출이 <b>${on}</b>까지입니다. 그 뒤로는 찾기 탭 상단 노출이
-            멈추고, 결제하시면 다시 시작됩니다.</p>
-         <p>연장은 파트너 페이지에서 하실 수 있습니다. 현재 요금은
-            한 달 ${won(s.amount)}입니다.</p>
-         <p><a href="${PARTNER_URL}">${PARTNER_URL}</a></p>
-         <p>자동으로 결제되는 것은 없습니다. 연장하지 않으시면 기간이 끝나고
-            그대로 멈춥니다.</p>`,
+        "[마이오닥] 프리미엄 노출 기간 안내",
+        `<p>${s.account.hospital_name} 님, 안녕하세요.</p>
+         <p>현재 이용 중인 프리미엄 노출 기간이 <b>${on}</b>에 종료됩니다.</p>
+         <p>기간이 끝나면 찾기 탭 상단 노출이 중단되며, 계속 이용을 원하실 경우
+            파트너 페이지에서 연장하실 수 있습니다.</p>
+         <p>현재 이용 요금은 월 ${won(s.amount)}입니다.</p>
+         <p><a href="${PARTNER_URL}">연장하기</a><br />
+            <a href="${PARTNER_URL}">${PARTNER_URL}</a></p>
+         <p>참고로 별도의 자동결제는 없으며, 연장하지 않으시면 ${on} 이후
+            자동으로 노출이 종료됩니다.</p>
+         <p>감사합니다.</p>`,
       );
     } catch (err) {
       // 주소가 하나 틀렸다고 뒤에 줄 선 업체들까지 못 받으면 안 된다.

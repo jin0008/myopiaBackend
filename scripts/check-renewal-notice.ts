@@ -27,3 +27,19 @@ assert.ok(!shouldSend(end, end), "같은 주기에 또 보내지 않는다");
 assert.ok(shouldSend(end, new Date("2026-12-03T14:59:59Z")), "연장하면 다음 주기에 다시");
 
 console.log("ok — 끝나기 7일 전에 한 번만, 돈을 낸 곳에만");
+
+/**
+ * 메일에 적는 날짜는 KST 로 읽는다.
+ *
+ * 기간 끝은 KST 23:59:59(= UTC 14:59:59)라 UTC 로 자르면 같은 날이지만,
+ * 자정에 끝나는 기간은 하루 전으로 적힌다. 업체가 받는 글에 틀린 날짜가
+ * 적히면 "하루 손해 봤다"는 문의가 된다.
+ */
+function korean(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${y}년 ${Number(m)}월 ${Number(d)}일`;
+}
+assert.strictEqual(korean("2026-11-03"), "2026년 11월 3일", "0 을 떼고 읽는다");
+assert.strictEqual(korean("2026-01-01"), "2026년 1월 1일");
+
+console.log("ok — 날짜는 한국식으로");
