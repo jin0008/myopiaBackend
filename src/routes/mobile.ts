@@ -1,4 +1,5 @@
 import express from "express";
+import { AD_RADIUS_KM, AD_SLOTS } from "../lib/adSlots";
 import fs from "fs";
 import path from "path";
 import bcrypt from "bcrypt";
@@ -5137,13 +5138,6 @@ async function directoryFacilities(
  * 라는 말이 무너진다 - 9km 떨어진 광고가 100m 안 가게보다 위에 온다.     *
  * ------------------------------------------------------------------- */
 
-/** 광고 자리 수. 한 지역에 프리미엄이 열 곳이면 첫 화면이 전부 광고가
- *  된다. */
-const AD_SLOTS = 3;
-
-/** 광고에는 검색 반경보다 좁은 자를 댄다. 반경 10km 를 그대로 쓰면 9km
- *  밖 업체가 맨 위에 붙어, 광고 자체를 믿지 않게 된다. */
-const AD_RADIUS_KM = 5;
 
 /** 검색 결과의 id 에서 광고 대조용 열쇠를 꺼낸다.
  *  id 는 `hira:요양기호` 또는 `opt:인허가번호` 로 만들어진다. */
