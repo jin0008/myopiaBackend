@@ -178,3 +178,17 @@ assert.strictEqual(
   "종료일도 그날로",
 );
 console.log("ok — 기간 표시는 KST 날짜");
+
+/**
+ * 구독에 적는 금액은 한 달치다.
+ *
+ * 낸 돈을 그대로 넣으면 6개월치를 산 업체가 "한 달 600원"으로 기록되고,
+ * 만료 안내 메일이 그 값을 그대로 읽어 여섯 배로 적힌 요금을 보낸다.
+ */
+function monthlyAmount(paid: number, months: number): number {
+  return Math.round(paid / months);
+}
+assert.strictEqual(monthlyAmount(600, 6), 100, "6개월치 600원이면 한 달 100원");
+assert.strictEqual(monthlyAmount(100, 1), 100, "한 달치는 그대로");
+
+console.log("ok — 구독 금액은 한 달치");
