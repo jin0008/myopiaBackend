@@ -18,6 +18,20 @@ import { sendEmail } from "../services/email";
 import { chargeBilling, isConfigured } from "../services/nicepay";
 import { extendSubscription } from "../services/subscription";
 
+/**
+ * 메일은 보내다 실패해도 넘어간다.
+ *
+ * 주소가 하나 틀렸다고 뒤에 줄 선 업체들의 청구가 멈추면, 메일 한 통
+ * 때문에 그달 수금을 통째로 놓친다. 돈 쪽이 먼저다.
+ */
+async function tryEmail(to: string, subject: string, html: string): Promise<void> {
+  try {
+    await sendEmail([to], subject, html);
+  } catch (err) {
+    console.error("[구독] 메일 실패", to, subject, err);
+  }
+}
+
 /** 카드가 막혔다고 바로 끊지 않는다. 고치고 돌아올 틈을 준다. */
 const MAX_FAILS = 3;
 const NOTICE_DAYS = 7;
@@ -39,6 +53,9 @@ async function notifyUpcoming(now: Date): Promise<void> {
       auto_renew: true,
       billing_key: { not: null },
       current_period_end: { gt: now, lte: until },
+      // 청구 대상과 같은 조건이어야 한다. 카드만 등록한 곳에 "결제될
+      // 예정입니다"를 보내 놓고 빼지 않으면, 안내가 거짓말이 된다.
+      payments: { some: { status: "paid" } },
     },
     include: { account: { select: { email: true, hospital_name: true } } },
   });
@@ -51,8 +68,8 @@ async function notifyUpcoming(now: Date): Promise<void> {
       continue;
     }
     const on = s.current_period_end.toISOString().slice(0, 10);
-    await sendEmail(
-      [s.account.email],
+    await tryEmail(
+      s.account.email,
       "[마이오닥] 프리미엄 노출 자동 결제 예정 안내",
       `<p>${s.account.hospital_name} 님,</p>
        <p><b>${on}</b>에 등록하신 카드로 <b>${won(s.amount)}</b>이 결제될 예정입니다.</p>
@@ -150,8 +167,8 @@ async function chargeDue(now: Date): Promise<void> {
         },
       });
       console.error(`[구독] 청구 실패 ${s.account.hospital_name} (${fails}/${MAX_FAILS}) ${msg}`);
-      await sendEmail(
-        [s.account.email],
+      await tryEmail(
+        s.account.email,
         fails < MAX_FAILS
           ? "[마이오닥] 자동 결제가 되지 않았습니다"
           : "[마이오닥] 자동 결제를 중단했습니다",
