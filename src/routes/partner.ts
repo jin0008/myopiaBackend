@@ -13,6 +13,7 @@ import {
 import { validationBody, validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
+import { AD_RADIUS_KM, AD_SLOTS, haversineKm } from "../lib/adSlots";
 import { endOfTerm, extendTerm, kstDateString, kstDayStart } from "../lib/promotionTerm";
 import {
   assertTicket,
@@ -1679,6 +1680,96 @@ router.get("/promotions/mine", partnerRequired, async (req, res) => {
       };
     }),
   );
+});
+
+/**
+ * 내 가게 둘레에 광고 자리가 남았는지.
+ *
+ * 자리는 셋뿐인데 지역별로 파는 것이 아니라, 검색하는 사람 둘레 5km 에서
+ * 가까운 셋을 고른다. 그래서 "이 동네가 찼다"는 고정된 사실이 아니다.
+ * 내 가게 둘레 5km 안에 이미 광고가 셋이면, 내 가게 근처에서 찾는 사람에겐
+ * 내가 밀릴 때가 많다는 뜻이라 그것으로 가늠한다.
+ *
+ * 막지는 않는다. 자리가 차 있어도 멀리서 찾는 사람에겐 뜨고, 기다렸다
+ * 사겠다는 쪽과 그래도 걸겠다는 쪽은 업체가 정할 일이다. 다만 모르고
+ * 사게 두지는 않는다.
+ */
+router.get("/promotions/availability", partnerRequired, async (req, res) => {
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: req.partner!.sub },
+    select: { facility_kind: true, facility_key: true },
+  });
+  if (account?.facility_kind == null || account.facility_key == null) {
+    res.json({ slots: AD_SLOTS, nearby: 0, full: false, nextFreeOn: null });
+    return;
+  }
+  const kind = account.facility_kind;
+  const key = account.facility_key;
+
+  const me =
+    kind === "eye"
+      ? await prisma.eye_clinic.findUnique({
+          where: { ykiho: key },
+          select: { lat: true, lng: true },
+        })
+      : await prisma.optical_shop.findUnique({
+          where: { license_no: key },
+          select: { lat: true, lng: true },
+        });
+  if (me == null) {
+    res.json({ slots: AD_SLOTS, nearby: 0, full: false, nextFreeOn: null });
+    return;
+  }
+
+  const now = new Date();
+  const live = await prisma.facility_promotion.findMany({
+    where: { starts_at: { lte: now }, ends_at: { gte: now } },
+    select: { kind: true, key: true, ends_at: true },
+  });
+  const others = live.filter((p) => !(p.kind === kind && p.key === key));
+  if (others.length === 0) {
+    res.json({ slots: AD_SLOTS, nearby: 0, full: false, nextFreeOn: null });
+    return;
+  }
+
+  const [clinics, shops] = await Promise.all([
+    prisma.eye_clinic.findMany({
+      where: { ykiho: { in: others.filter((p) => p.kind === "eye").map((p) => p.key) } },
+      select: { ykiho: true, lat: true, lng: true },
+    }),
+    prisma.optical_shop.findMany({
+      where: {
+        license_no: { in: others.filter((p) => p.kind === "optical").map((p) => p.key) },
+      },
+      select: { license_no: true, lat: true, lng: true },
+    }),
+  ]);
+  const at = new Map<string, { lat: number; lng: number }>([
+    ...clinics.map((c) => [`eye:${c.ykiho}`, { lat: c.lat, lng: c.lng }] as const),
+    ...shops.map(
+      (sh) => [`optical:${sh.license_no}`, { lat: sh.lat, lng: sh.lng }] as const,
+    ),
+  ]);
+
+  // 같은 업종끼리만 센다. 사용자가 안과를 보고 있으면 안경원 광고는
+  // 그 자리를 차지하지 않는다.
+  const near = others
+    .filter((p) => p.kind === kind)
+    .filter((p) => {
+      const c = at.get(`${p.kind}:${p.key}`);
+      return c != null && haversineKm(me.lat, me.lng, c.lat, c.lng) <= AD_RADIUS_KM;
+    })
+    .sort((a, b) => a.ends_at.getTime() - b.ends_at.getTime());
+
+  const full = near.length >= AD_SLOTS;
+  res.json({
+    slots: AD_SLOTS,
+    nearby: near.length,
+    full,
+    // 자리가 찼을 때, 가장 먼저 끝나는 광고가 끝나는 날. 그 뒤로 사면
+    // 자리가 빈다 - 기다릴지 말지는 업체가 정한다.
+    nextFreeOn: full ? kstDateString(near[0].ends_at) : null,
+  });
 });
 
 router.get("/promotions", siteAdminRequired, async (_req, res) => {
