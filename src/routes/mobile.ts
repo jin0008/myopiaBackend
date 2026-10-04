@@ -5181,7 +5181,7 @@ async function promotedFacilities(
   // 결과가 아니라 끼워 넣은 것이다.
   const adKm = Math.min(AD_RADIUS_KM, radiusM / 1000);
   const now = new Date();
-  let rows: { kind: string; key: string; tier: string }[] = [];
+  let rows: { kind: string; key: string; tier: string; created_at: Date }[] = [];
   try {
     rows = await prisma.facility_promotion.findMany({
       where: {
@@ -5189,7 +5189,7 @@ async function promotedFacilities(
         starts_at: { lte: now },
         ends_at: { gte: now },
       },
-      select: { kind: true, key: true, tier: true },
+      select: { kind: true, key: true, tier: true, created_at: true },
     });
   } catch {
     // 광고를 못 읽는다고 검색이 멈출 이유는 없다.
@@ -5209,6 +5209,12 @@ async function promotedFacilities(
   ]);
 
   const tierOf = new Map(rows.map((r) => [`${r.kind}:${r.key}`, r.tier]));
+  // 먼저 결제한 곳이 위로 간다. created_at 은 처음 광고를 건 때라,
+  // 연장해도 순서가 뒤로 가지 않는다 - 계속 내고 있는 업체가 한 달
+  // 넘길 때마다 밀리면 그건 연장이 아니라 벌이다.
+  const boughtAt = new Map(
+    rows.map((r) => [`${r.kind}:${r.key}`, r.created_at.getTime()]),
+  );
   const out: FacilityDTO[] = [];
   for (const c of clinics) {
     const d = haversineKm(lat, lng, c.lat, c.lng);
@@ -5226,7 +5232,17 @@ async function promotedFacilities(
       promotion: { tier: tierOf.get(`optical:${sh.license_no}`) ?? "premium" },
     });
   }
-  out.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
+  // 결제순이다. 거리순이 아니다 - 자리가 셋뿐이라 거리로 자르면 돈을 낸
+  // 업체가 사용자 위치에 따라 어떤 날은 안 나간다. 같은 때 걸린 것끼리만
+  // 가까운 쪽을 위에 둔다.
+  const bought = (d: FacilityDTO): number => {
+    const k = facilityIdToPromotionKey(d.id);
+    return k == null ? 0 : (boughtAt.get(`${k.kind}:${k.key}`) ?? 0);
+  };
+  out.sort((a, b) => {
+    const d = bought(a) - bought(b);
+    return d !== 0 ? d : (a.distanceKm ?? 0) - (b.distanceKm ?? 0);
+  });
   return out.slice(0, AD_SLOTS);
 }
 

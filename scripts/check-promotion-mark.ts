@@ -52,3 +52,57 @@ assert.deepStrictEqual(out[2].promotion, { tier: "premium" }, "광고 안과에�
 assert.deepStrictEqual(out.map((f) => f.id), list.map((f) => f.id), "순서 그대로");
 
 console.log("ok — 광고 중인 곳에만 표가 붙고, 순서는 그대로다");
+
+/**
+ * 광고 자리 순서는 결제순이다.
+ *
+ * 자리가 셋뿐이라 거리로 자르면 돈을 낸 업체가 사용자 위치에 따라 어떤
+ * 날은 아예 안 나간다. 먼저 결제한 곳이 위로 가고, 같은 때 걸린 것끼리만
+ * 가까운 쪽을 위에 둔다.
+ */
+const AD_SLOTS = 3;
+function adOrder(
+  ads: { id: string; distanceKm: number; boughtAt: number }[],
+): string[] {
+  return [...ads]
+    .sort((a, b) =>
+      a.boughtAt !== b.boughtAt
+        ? a.boughtAt - b.boughtAt
+        : a.distanceKm - b.distanceKm,
+    )
+    .slice(0, AD_SLOTS)
+    .map((a) => a.id);
+}
+
+assert.deepStrictEqual(
+  adOrder([
+    { id: "먼곳-먼저결제", distanceKm: 4.5, boughtAt: 100 },
+    { id: "가까운곳-나중결제", distanceKm: 0.2, boughtAt: 200 },
+  ]),
+  ["먼곳-먼저결제", "가까운곳-나중결제"],
+  "가까워도 나중에 결제했으면 아래",
+);
+
+assert.deepStrictEqual(
+  adOrder([
+    { id: "A", distanceKm: 3, boughtAt: 100 },
+    { id: "B", distanceKm: 1, boughtAt: 100 },
+  ]),
+  ["B", "A"],
+  "같은 때 결제했으면 가까운 쪽이 위",
+);
+
+// 네 번째부터는 자리가 없다. 같은 동네에 넷을 팔면 한 곳은 돈을 내고도
+// 광고 자리에 못 나간다 - 파는 쪽에서 막아야 하는 일이다.
+assert.deepStrictEqual(
+  adOrder([
+    { id: "1", distanceKm: 1, boughtAt: 1 },
+    { id: "2", distanceKm: 1, boughtAt: 2 },
+    { id: "3", distanceKm: 1, boughtAt: 3 },
+    { id: "4", distanceKm: 0.1, boughtAt: 4 },
+  ]),
+  ["1", "2", "3"],
+  "늦게 산 곳은 가까워도 자리가 없다",
+);
+
+console.log("ok — 광고 자리는 결제순, 같은 때면 가까운 순");
