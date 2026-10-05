@@ -4,6 +4,14 @@ import zod from "zod";
 import prisma from "../lib/prisma";
 import { partnerRequired } from "../lib/partnerAuth";
 import { extendSubscription } from "../services/subscription";
+import { AD_SLOTS } from "../lib/adSlots";
+import { GOODS_NAME, MONTHLY_AMOUNT, isPriced } from "../lib/pricing";
+import {
+  RegionUnknown,
+  adsInRegion,
+  linkedFacility,
+  regionOf,
+} from "../services/promotionSlots";
 import { siteAdminRequired } from "../lib/middlewares";
 import {
   approvePayment,
@@ -37,9 +45,6 @@ const checkoutSchema = zod.object({
   months: zod.number().int().min(1).max(12),
 });
 
-/** 한 달 구독료(원). 값이 정해지면 설정으로 뺀다. */
-const MONTHLY_AMOUNT = Number(process.env.SUBSCRIPTION_MONTHLY_AMOUNT ?? 100);
-
 /**
  * 주문을 만든다. 금액은 서버가 정한다.
  *
@@ -47,7 +52,9 @@ const MONTHLY_AMOUNT = Number(process.env.SUBSCRIPTION_MONTHLY_AMOUNT ?? 100);
  * 것을 막을 수 없다. 화면은 몇 달치인지만 말한다.
  */
 router.post("/checkout", partnerRequired, async (req, res) => {
-  if (!isConfigured()) {
+  if (!isConfigured() || !isPriced()) {
+    // 값이 설정되지 않은 서버에서는 팔지 않는다. 기본값으로 긁으면 업체가
+    // 본 값과 빠진 값이 달라진다.
     res.status(503).json({ message: "결제 준비가 아직 되지 않았습니다." });
     return;
   }
@@ -73,6 +80,40 @@ router.post("/checkout", partnerRequired, async (req, res) => {
   }
 
   const months = parsed.data.months;
+
+  // 같은 행정동에 이미 광고가 있으면 팔지 않는다. 동 하나에 한 곳이 이
+  // 상품의 전부고, 돈을 받고 나서 거절하면 환불을 해야 하는 데다 그 사이
+  // "독점을 샀는데 옆집도 뜬다"는 말을 듣는다. 막는 자리는 결제 전이다.
+  const me = await linkedFacility(accountId);
+  if (me == null) {
+    res.status(403).json({
+      code: "facility_not_linked",
+      message: "업체 인증을 먼저 마쳐 주세요.",
+    });
+    return;
+  }
+  try {
+    const region = await regionOf(me.lat, me.lng);
+    const taken = await adsInRegion(me.kind, region.code, me.key);
+    if (taken.length >= AD_SLOTS) {
+      res.status(409).json({
+        code: "region_taken",
+        message: `${region.name}에 이미 노출 중인 곳이 있어 신청할 수 없습니다.`,
+      });
+      return;
+    }
+  } catch (e) {
+    // 동을 모르면 팔지 않는다. 모르는 채로 팔면 같은 동에 둘이 걸린다.
+    if (e instanceof RegionUnknown) {
+      res.status(503).json({
+        code: "region_unknown",
+        message: "지금은 신청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+      });
+      return;
+    }
+    throw e;
+  }
+
   const amount = MONTHLY_AMOUNT * months;
   // 주문번호는 우리가 만든다. 같은 번호로 두 번 승인되지 않는다(unique).
   const orderId = `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -85,7 +126,7 @@ router.post("/checkout", partnerRequired, async (req, res) => {
     clientId: clientKey(),
     orderId,
     amount,
-    goodsName: `마이오닥 프리미엄 ${months}개월`,
+    goodsName: `${GOODS_NAME} ${months}개월`,
     returnUrl: RETURN_URL,
   });
 });
@@ -271,7 +312,8 @@ router.get("/me", partnerRequired, async (req, res) => {
   res.json({
     // 결제 설정이 안 되어 있으면 화면이 "구독하기"를 띄워 봐야 눌러도
     // 아무 일이 없다. 그 사실을 숨기지 않는다.
-    available: isConfigured(),
+    // 값이 없으면 결제 버튼도 보이지 않는다. 눌러도 503 이 날 뿐이다.
+    available: isConfigured() && isPriced(),
     subscription:
       sub == null
         ? null

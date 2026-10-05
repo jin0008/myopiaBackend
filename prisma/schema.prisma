@@ -1373,10 +1373,17 @@ model facility_promotion {
   kind       String
   /// 안과면 요양기호(ykiho), 안경점이면 인허가번호(license_no).
   key        String
-  /// 지금은 premium 하나뿐이다. 등급이 늘면 여기에 붙인다.
+  /// 지금은 premium 하나뿐이다. 상품이 하나라 쓰는 곳이 없고, 등급이
+  /// 생기면 여기에 붙인다.
   tier       String   @default("premium")
   starts_at  DateTime @db.Timestamptz(6)
   ends_at    DateTime @db.Timestamptz(6)
+  /// 행정동 코드와 이름("신월2동"). 독점은 동 하나에 하나씩 팔므로 이것이
+  /// 곧 독점 구역이다. 주소에서 뽑지 않는다 - 도로명 주소에는 동이 없고,
+  /// 지번의 "신월동"은 법정동이라 행정동 둘을 한 덩어리로 묶는다.
+  /// 좌표로 카카오에 물어 광고를 걸 때 한 번 적어 둔다.
+  region_code String?
+  region_name String?
   /// 어느 파트너 계정의 광고인지. 계정이 지워져도 이력은 남긴다.
   account_id String?  @db.Uuid
   note       String?
@@ -1387,6 +1394,9 @@ model facility_promotion {
 
   @@unique([kind, key], map: "facility_promotion_unique")
   @@index([kind, ends_at], map: "idx_facility_promotion_active")
+  /// 같은 업종, 같은 동에 둘은 걸리지 않는다. 코드로만 막으면 동시에 결제한
+  /// 둘이 함께 지나간다. 기간이 끝나면 region_code 를 비워 자리를 내놓는다.
+  @@unique([kind, region_code], map: "facility_promotion_region_unique")
 }
 
 model optical_shop {

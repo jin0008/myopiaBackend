@@ -5220,6 +5220,9 @@ async function promotedFacilities(
       promotion: { tier: tierOf.get(`optical:${sh.license_no}`) ?? "premium" },
     });
   }
+  // 가까운 쪽이 자리를 가져간다. 자리는 하나고(AD_SLOTS), 둘레 5km 에는
+  // 여러 동이 들어와 후보가 여럿일 수 있다. 사용자가 서 있는 동을 매번
+  // 되묻는 것보다 싸고, 보통 그쪽이 그 동의 광고주다.
   out.sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
   return out.slice(0, AD_SLOTS);
 }

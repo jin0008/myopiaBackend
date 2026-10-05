@@ -13,7 +13,15 @@ import {
 import { validationBody, validationMessage } from "../lib/validationError";
 import { partnerRequired, signPartnerToken } from "../lib/partnerAuth";
 import { siteAdminRequired } from "../lib/middlewares";
-import { AD_RADIUS_KM, AD_SLOTS, haversineKm } from "../lib/adSlots";
+import { AD_SLOTS } from "../lib/adSlots";
+import {
+  RegionUnknown,
+  adsInRegion,
+  at,
+  linkedFacility,
+  regionOf,
+} from "../services/promotionSlots";
+import { MONTHLY_AMOUNT } from "../lib/pricing";
 import { endOfTerm, extendTerm, kstDateString, kstDayStart } from "../lib/promotionTerm";
 import {
   assertTicket,
@@ -1468,12 +1476,62 @@ router.get("/promotion-requests", siteAdminRequired, async (req, res) => {
 /**
  * 운영자가 허락한다. 여기서 광고가 생긴다.
  *
- * 나중에 결제가 붙으면 이 자리가 "입금 확인"이 된다. 흐름은 그대로다.
+ * 돈이 붙은 길은 결제(payment.ts)다. 여기는 무료 제휴나 보상처럼 사람이
+ * 손으로 걸어 주는 길이다.
+ *
+ * 상품은 하나다. 걸어 주는 순간 그 동은 이 가게 것이 된다.
  */
 router.post("/promotion-requests/:id/approve", siteAdminRequired, async (req, res) => {
   const id = String(req.params.id);
   const reviewNote =
     typeof req.body?.note === "string" ? req.body.note.trim().slice(0, 500) || null : null;
+
+  // 동을 알아내고 자리를 보는 일은 트랜잭션 밖에서 한다. 카카오에 묻는
+  // HTTP 호출이 섞여 있어, 트랜잭션 안에 두면 느린 응답 하나가 Prisma 기본
+  // 제한(5초)을 넘겨 승인 자체를 되돌린다. 커넥션도 그동안 붙잡는다.
+  //
+  // 여기 확인은 운영자에게 미리 알리는 용도다. 둘을 실제로 막는 자는 DB
+  // 유니크(kind, region_code)이고, 아래 P2002 로 걸린다.
+  const pending = await prisma.promotion_request.findUnique({ where: { id } });
+  if (pending == null || pending.status !== "pending") {
+    res.status(409).json({ error: "already reviewed", code: "already_reviewed" });
+    return;
+  }
+  const me = await at(pending.kind === "eye" ? "eye" : "optical", pending.key);
+  if (me == null) {
+    // 번호가 명부에 없다. 자리가 찬 것과 다른 일이라 다른 말을 해야 한다 -
+    // 아니면 운영자가 있지도 않은 경쟁 광고를 찾아 헤맨다.
+    res.status(404).json({
+      error: "facility not found",
+      code: "facility_not_found",
+      message: "명부에서 이 번호의 업체를 찾을 수 없습니다. 번호를 확인해 주세요.",
+    });
+    return;
+  }
+  let region: { code: string; name: string };
+  try {
+    region = await regionOf(me.lat, me.lng);
+    const taken = await adsInRegion(me.kind, region.code, me.key);
+    if (taken.length >= AD_SLOTS) {
+      res.status(409).json({
+        error: "region taken",
+        code: "region_taken",
+        message: "같은 동에 이미 노출 중인 곳이 있어 승인할 수 없습니다.",
+      });
+      return;
+    }
+  } catch (e) {
+    if (e instanceof RegionUnknown) {
+      // 동을 모르면 걸어 주지 않는다. 모르는 채로 걸면 같은 동에 둘이 걸린다.
+      res.status(503).json({
+        error: "region unknown",
+        code: "region_unknown",
+        message: "행정동을 확인하지 못해 승인할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+      });
+      return;
+    }
+    throw e;
+  }
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -1513,13 +1571,16 @@ router.post("/promotion-requests/:id/approve", siteAdminRequired, async (req, re
         create: {
           kind: row.kind,
           key: row.key,
-          tier: "premium",
+          region_code: region.code,
+          region_name: region.name,
           starts_at: startsAt,
           ends_at: endOfTerm(startsOn, row.months),
           account_id: row.account_id,
           note: row.note,
         },
         update: {
+          region_code: region.code,
+          region_name: region.name,
           starts_at: stillRunning ? existing!.starts_at : startsAt,
           ends_at: stillRunning
             ? extendTerm(existing!.ends_at, row.months)
@@ -1531,6 +1592,16 @@ router.post("/promotion-requests/:id/approve", siteAdminRequired, async (req, re
       });
     });
   } catch (e) {
+    // 위에서 봤는데도 걸렸다면 그 사이에 누가 같은 동을 샀다는 뜻이다.
+    // 마지막 자는 DB 다.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      res.status(409).json({
+        error: "region taken",
+        code: "region_taken",
+        message: "같은 동에 이미 노출 중인 곳이 있어 승인할 수 없습니다.",
+      });
+      return;
+    }
     if (e instanceof AlreadyReviewed) {
       // 없는 신청인지 이미 처리된 신청인지는 운영자에게는 같은 말이다 -
       // 어느 쪽이든 지금 할 일이 없다.
@@ -1683,92 +1754,45 @@ router.get("/promotions/mine", partnerRequired, async (req, res) => {
 });
 
 /**
- * 내 가게 둘레에 광고 자리가 남았는지.
+ * 내 동에 광고 자리가 남았는지.
  *
- * 자리는 셋뿐인데 지역별로 파는 것이 아니라, 검색하는 사람 둘레 5km 에서
- * 가까운 셋을 고른다. 그래서 "이 동네가 찼다"는 고정된 사실이 아니다.
- * 내 가게 둘레 5km 안에 이미 광고가 셋이면, 내 가게 근처에서 찾는 사람에겐
- * 내가 밀릴 때가 많다는 뜻이라 그것으로 가늠한다.
- *
- * 막지는 않는다. 자리가 차 있어도 멀리서 찾는 사람에겐 뜨고, 기다렸다
- * 사겠다는 쪽과 그래도 걸겠다는 쪽은 업체가 정할 일이다. 다만 모르고
- * 사게 두지는 않는다.
+ * 광고는 행정동 하나에 한 곳만 판다. 그래서 이 답은 가늠이 아니라 곧 살 수
+ * 있는지이고, 실제로 막는 자리는 결제(payment.ts)다.
  */
 router.get("/promotions/availability", partnerRequired, async (req, res) => {
-  const account = await prisma.hospital_account.findUnique({
-    where: { id: req.partner!.sub },
-    select: { facility_kind: true, facility_key: true },
-  });
-  if (account?.facility_kind == null || account.facility_key == null) {
-    res.json({ slots: AD_SLOTS, nearby: 0, full: false, nextFreeOn: null });
-    return;
-  }
-  const kind = account.facility_kind;
-  const key = account.facility_key;
-
-  const me =
-    kind === "eye"
-      ? await prisma.eye_clinic.findUnique({
-          where: { ykiho: key },
-          select: { lat: true, lng: true },
-        })
-      : await prisma.optical_shop.findUnique({
-          where: { license_no: key },
-          select: { lat: true, lng: true },
-        });
+  // 값도 함께 보낸다. 화면이 숫자를 들고 있으면 가격을 올린 날 결제창과
+  // 안내가 어긋난다.
+  const monthly = MONTHLY_AMOUNT;
+  const me = await linkedFacility(req.partner!.sub);
   if (me == null) {
-    res.json({ slots: AD_SLOTS, nearby: 0, full: false, nextFreeOn: null });
+    res.json({ monthly, regionName: null, nearby: 0, full: false, nextFreeOn: null });
     return;
   }
 
-  const now = new Date();
-  const live = await prisma.facility_promotion.findMany({
-    where: { starts_at: { lte: now }, ends_at: { gte: now } },
-    select: { kind: true, key: true, ends_at: true },
-  });
-  const others = live.filter((p) => !(p.kind === kind && p.key === key));
-  if (others.length === 0) {
-    res.json({ slots: AD_SLOTS, nearby: 0, full: false, nextFreeOn: null });
-    return;
+  let region: { code: string; name: string };
+  let taken: { endsAt: Date }[];
+  try {
+    region = await regionOf(me.lat, me.lng);
+    taken = await adsInRegion(me.kind, region.code, me.key);
+  } catch (e) {
+    if (e instanceof RegionUnknown) {
+      // 동을 모르면 "자리 있음"이라고 말하지 않는다. 그 말을 믿고 결제로
+      // 가면 거기서 막힌다.
+      res.status(503).json({ error: "region unknown", code: "region_unknown" });
+      return;
+    }
+    throw e;
   }
 
-  const [clinics, shops] = await Promise.all([
-    prisma.eye_clinic.findMany({
-      where: { ykiho: { in: others.filter((p) => p.kind === "eye").map((p) => p.key) } },
-      select: { ykiho: true, lat: true, lng: true },
-    }),
-    prisma.optical_shop.findMany({
-      where: {
-        license_no: { in: others.filter((p) => p.kind === "optical").map((p) => p.key) },
-      },
-      select: { license_no: true, lat: true, lng: true },
-    }),
-  ]);
-  const at = new Map<string, { lat: number; lng: number }>([
-    ...clinics.map((c) => [`eye:${c.ykiho}`, { lat: c.lat, lng: c.lng }] as const),
-    ...shops.map(
-      (sh) => [`optical:${sh.license_no}`, { lat: sh.lat, lng: sh.lng }] as const,
-    ),
-  ]);
-
-  // 같은 업종끼리만 센다. 사용자가 안과를 보고 있으면 안경원 광고는
-  // 그 자리를 차지하지 않는다.
-  const near = others
-    .filter((p) => p.kind === kind)
-    .filter((p) => {
-      const c = at.get(`${p.kind}:${p.key}`);
-      return c != null && haversineKm(me.lat, me.lng, c.lat, c.lng) <= AD_RADIUS_KM;
-    })
-    .sort((a, b) => a.ends_at.getTime() - b.ends_at.getTime());
-
-  const full = near.length >= AD_SLOTS;
+  const full = taken.length >= AD_SLOTS;
   res.json({
-    slots: AD_SLOTS,
-    nearby: near.length,
+    monthly,
+    regionName: region.name,
+    nearby: taken.length,
     full,
-    // 자리가 찼을 때, 가장 먼저 끝나는 광고가 끝나는 날. 그 뒤로 사면
-    // 자리가 빈다 - 기다릴지 말지는 업체가 정한다.
-    nextFreeOn: full ? kstDateString(near[0].ends_at) : null,
+    // 찼을 때, 가장 먼저 끝나는 광고가 끝나는 날. 그 뒤로 사면 자리가
+    // 빈다 - 기다릴지 말지는 업체가 정한다.
+    nextFreeOn: full ? kstDateString(taken[0].endsAt) : null,
   });
 });
 

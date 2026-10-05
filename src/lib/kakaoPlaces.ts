@@ -169,3 +169,38 @@ export function rankEyeClinics<T extends { category_name: string }>(
   const others = docs.filter((d) => !isEyeClinic(d.category_name));
   return [...clinics, ...others].slice(0, limit);
 }
+
+/** 행정동 하나. code 는 10자리 행정동 코드, name 은 "신월2동" 같은 이름이다. */
+export interface KakaoRegion {
+  code: string;
+  name: string;
+}
+
+/**
+ * 좌표가 어느 행정동인지.
+ *
+ * 주소 문자열로는 알 수 없다. 도로명 주소에는 동이 없고(toDistrictAddress
+ * 주석과 같은 이유), 지번 주소에 적힌 "신월동"은 법정동이라 행정동인
+ * 신월2동·신월3동을 한 덩어리로 묶어 버린다. 독점을 동 하나에 하나씩 파는
+ * 자리에서 그 차이는 광고를 두 곳에 파는 것과 같다.
+ *
+ * region_type 은 B(법정동)와 H(행정동) 둘이 온다. H 를 쓴다.
+ */
+export async function coordToRegion(lat: number, lng: number): Promise<KakaoRegion | null> {
+  const params = new URLSearchParams({ x: String(lng), y: String(lat) });
+  const resp = await fetch(
+    `https://dapi.kakao.com/v2/local/geo/coord2regioncode.json?${params.toString()}`,
+    { headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` } },
+  );
+  if (!resp.ok) throw new KakaoLookupError(resp.status);
+  const data = (await resp.json()) as {
+    documents?: {
+      region_type?: string;
+      code?: string;
+      region_3depth_name?: string;
+    }[];
+  };
+  const h = (data.documents ?? []).find((d) => d.region_type === "H");
+  if (h?.code == null || !h.region_3depth_name) return null;
+  return { code: h.code, name: h.region_3depth_name };
+}
