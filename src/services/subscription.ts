@@ -6,7 +6,10 @@
  * 길이가 달라진다.
  */
 
+import { Prisma } from "@prisma/client";
+
 import prisma from "../lib/prisma";
+import { at, regionOf } from "./promotionSlots";
 import {
   endOfTerm,
   extendTerm,
@@ -93,6 +96,22 @@ async function startPromotion(accountId: string, months: number): Promise<void> 
   const today = kstTodayString();
   const startsAt = kstDayStart(today);
 
+  // 어느 동인지 적어 둔다. 이것이 곧 독점 구역이라, 다음 업체가 같은 동을
+  // 사려 할 때 이 값으로 막는다.
+  //
+  // 실패하면 비워 둔 채 넘어간다. 여기는 돈이 이미 빠진 자리라 카카오가
+  // 답하지 않는다고 광고를 걸지 않을 수는 없다 - 비어 있으면 다음 판정
+  // 때 그 자리에서 채운다(promotionSlots.exclusivesInRegion).
+  let region: { code: string; name: string } | null = null;
+  const place = await at(kind === "eye" ? "eye" : "optical", key);
+  if (place != null) {
+    try {
+      region = await regionOf(place.lat, place.lng);
+    } catch {
+      console.error("[payment] 광고의 행정동을 알아내지 못했다", kind, key);
+    }
+  }
+
   // 이미 광고가 걸린 곳이면 기간을 이어 붙인다. 덮어쓰면 남은 기간이
   // 사라져 돈을 낸 만큼 나가지 않는다.
   //
@@ -104,25 +123,48 @@ async function startPromotion(accountId: string, months: number): Promise<void> 
   });
   const stillRunning = existing != null && existing.ends_at > startsAt;
 
-  await prisma.facility_promotion.upsert({
-    where: { kind_key: { kind, key } },
-    create: {
-      kind,
-      key,
-      tier: "premium",
-      starts_at: startsAt,
-      ends_at: endOfTerm(today, months),
-      account_id: accountId,
-      note: "구독 결제",
-    },
-    update: {
-      starts_at: stillRunning ? existing!.starts_at : startsAt,
-      ends_at: stillRunning
-        ? extendTerm(existing!.ends_at, months)
-        : endOfTerm(today, months),
-      account_id: accountId,
-      updated_at: new Date(),
-    },
-  });
+  // 같은 동에 이미 주인이 있으면 걸지 않는다.
+  //
+  // /checkout 이 결제 전에 한 번 보지만 그것만으로는 못 막는다 - 두 업체가
+  // 같은 때에 결제를 끝내면 둘 다 "비어 있다"를 보고 지나간다. 마지막 자는
+  // DB 의 유니크(kind, region_code)이고, 걸리면 P2002 로 온다.
+  //
+  // 걸렸을 때 터뜨리지 않는다. 여기는 돈이 이미 빠진 자리라, 예외를 던지면
+  // 결제 쪽이 실패로 적고 업체는 돈만 낸 채 아무 말도 못 듣는다. 광고 없이
+  // 남기고 크게 적어 둔다 - 사람이 보고 환불하거나 다른 동을 권해야 한다.
+  try {
+    await prisma.facility_promotion.upsert({
+      where: { kind_key: { kind, key } },
+      create: {
+        kind,
+        key,
+        region_code: region?.code ?? null,
+        region_name: region?.name ?? null,
+        starts_at: startsAt,
+        ends_at: endOfTerm(today, months),
+        account_id: accountId,
+        note: "구독 결제",
+      },
+      update: {
+        // 동을 새로 알아냈으면 적고, 못 알아냈으면 전에 적힌 것을 지우지
+        // 않는다. 지우면 그 자리에 다른 광고가 팔릴 수 있다.
+        ...(region == null ? {} : { region_code: region.code, region_name: region.name }),
+        starts_at: stillRunning ? existing!.starts_at : startsAt,
+        ends_at: stillRunning
+          ? extendTerm(existing!.ends_at, months)
+          : endOfTerm(today, months),
+        account_id: accountId,
+        updated_at: new Date(),
+      },
+    });
+  } catch (e) {
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      console.error(
+        "[payment] 같은 동에 이미 광고가 있어 걸지 못했다 - 환불이나 안내가 필요하다",
+        { accountId, kind, key, region: region?.name ?? null },
+      );
+      return;
+    }
+    throw e;
+  }
 }
-

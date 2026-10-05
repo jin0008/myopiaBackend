@@ -34,7 +34,29 @@ function korean(d: Date): string {
   return `${y}년 ${Number(m)}월 ${Number(day)}일`;
 }
 
+/**
+ * 기간이 끝난 광고가 쥐고 있던 동을 내놓는다.
+ *
+ * 자리는 DB 유니크(kind, region_code)가 지킨다. 끝난 광고가 코드를 그대로
+ * 들고 있으면 그 동은 영영 다시 팔리지 않는다 - 안 파는 것이 아니라 아무도
+ * 살 수 없게 된다.
+ *
+ * 이름(region_name)은 남긴다. 이력에서 "어느 동을 샀던 곳인가"가 사라지면
+ * 지난 계약을 읽을 수 없다.
+ */
+async function releaseExpiredRegions(now: Date): Promise<void> {
+  const done = await prisma.facility_promotion.updateMany({
+    where: { ends_at: { lt: now }, region_code: { not: null } },
+    data: { region_code: null, updated_at: new Date() },
+  });
+  if (done.count > 0) console.log(`[광고] 끝난 광고 ${done.count}건의 동을 비웠다`);
+}
+
 async function main() {
+  // 자리 비우기가 먼저다. 메일 설정이 없다고 아래에서 돌아가 버리면, 끝난
+  // 광고가 동을 쥔 채로 남아 그 동이 영영 안 팔린다.
+  await releaseExpiredRegions(new Date());
+
   // sendEmail 은 SMTP 가 없으면 경고만 남기고 조용히 돌아간다. 그대로
   // 두면 아래에서 "보냈다"고 적어 두게 되고(notified_for), 그 주기의
   // 안내는 영영 다시 나가지 않는다 - 한 통도 못 보낸 채로.
