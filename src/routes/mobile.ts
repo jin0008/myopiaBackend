@@ -37,7 +37,7 @@ import { authorBlockFilter } from "../lib/blocks";
 import { notify } from "../lib/notify";
 import { hotScore, popularSince } from "../lib/ranking";
 import { toDistrictAddress } from "../lib/kakaoPlaces";
-import { CONSENT_VERSION } from "../lib/consent";
+import { APP_CONSENT_VERSION, CONSENT_VERSION, consentRows } from "../lib/consent";
 import { isCommunityImageUrl } from "./communityUpload";
 import { compareHospitalNames, hospitalDisplayName } from "../lib/hospitalName";
 
@@ -695,8 +695,51 @@ router.get("/auth/me", requireMobileAuth, async (req, res) => {
     res.status(404).json({ error: "user not found", code: "not_found" });
     return;
   }
-  res.json(dto);
+  // 필수 동의(약관·개인정보)가 지금 판본으로 둘 다 있어야 통과다. 앱은 이걸
+  // 보고 동의 화면을 띄운다. 가입 경로(이메일·소셜)를 가리지 않고, 동의가
+  // 생기기 전에 가입한 사람과 문서가 바뀐 뒤의 사람도 여기서 함께 걸린다.
+  const agreed = await prisma.user_consent.count({
+    where: {
+      user_id: user.sub,
+      version: APP_CONSENT_VERSION,
+      agreed: true,
+      consent_type: { in: ["terms_of_service", "privacy_policy"] },
+    },
+  });
+  res.json({ ...dto, needsConsent: agreed < 2 });
 });
+
+const consentSchema = zod.object({
+  agree_terms: zod.literal(true),
+  agree_privacy: zod.literal(true),
+  agree_marketing: zod.boolean().optional(),
+});
+
+router.post(
+  "/auth/consent",
+  requireMobileAuth,
+  validateRequestBody(consentSchema),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const agreeMarketing = (req.body as zod.infer<typeof consentSchema>).agree_marketing ?? false;
+    // 같은 판본을 다시 보내도 줄이 늘지 않게 지우고 쓴다.
+    // receive_email_updates 는 건드리지 않는다. 그 값은 의료진의 병원 알림
+    // 메일도 켜고 끄므로(notification.ts), 의사가 앱에서 마케팅을 비우면
+    // 병원 알림까지 끊긴다. 마케팅 동의는 이 기록으로만 남긴다.
+    await prisma.$transaction([
+      prisma.user_consent.deleteMany({
+        where: { user_id: user.sub, version: APP_CONSENT_VERSION },
+      }),
+      prisma.user_consent.createMany({
+        data: consentRows(APP_CONSENT_VERSION, agreeMarketing).map((r) => ({
+          ...r,
+          user_id: user.sub,
+        })),
+      }),
+    ]);
+    res.json({ ok: true });
+  },
+);
 
 /**
  * DELETE /api/mobile/auth/me — 회원 탈퇴.

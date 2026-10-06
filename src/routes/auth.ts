@@ -5,36 +5,13 @@ import prisma from "../lib/prisma";
 import { generateSession, getAuthSession } from "../lib/session";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { loginRequired, validateRequestBody } from "../lib/middlewares";
-import { CONSENT_VERSION } from "../lib/consent";
+import { CONSENT_VERSION, consentRows } from "../lib/consent";
 
 import { OAuth2Client } from "google-auth-library";
 
 import zod from "zod";
 
 const client = new OAuth2Client();
-
-// Builds the nested user_consent rows recorded at signup. Required consents
-// (terms / privacy) are enforced as `true` by the zod schema; marketing is
-// optional and mirrored into user.receive_email_updates.
-function signupConsentRows(agreeMarketing: boolean) {
-  return [
-    {
-      consent_type: "terms_of_service" as const,
-      version: CONSENT_VERSION,
-      agreed: true,
-    },
-    {
-      consent_type: "privacy_policy" as const,
-      version: CONSENT_VERSION,
-      agreed: true,
-    },
-    {
-      consent_type: "marketing" as const,
-      version: CONSENT_VERSION,
-      agreed: agreeMarketing,
-    },
-  ];
-}
 
 const router = express.Router();
 
@@ -198,7 +175,7 @@ router.post(
         where: { user_id: userId, version: CONSENT_VERSION },
       });
       await tx.user_consent.createMany({
-        data: signupConsentRows(agreeMarketing).map((row) => ({
+        data: consentRows(CONSENT_VERSION, agreeMarketing).map((row) => ({
           ...row,
           user_id: userId,
         })),
@@ -284,7 +261,7 @@ router.post(
           email: email,
           receive_email_updates: receive_email_updates,
           user_consent: {
-            create: signupConsentRows(receive_email_updates),
+            create: consentRows(CONSENT_VERSION, receive_email_updates),
           },
         },
       })
@@ -453,7 +430,7 @@ router.post(
           email: payload.email,
           receive_email_updates: receive_email_updates,
           user_consent: {
-            create: signupConsentRows(receive_email_updates),
+            create: consentRows(CONSENT_VERSION, receive_email_updates),
           },
         },
       })
