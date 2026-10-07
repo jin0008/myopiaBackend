@@ -834,23 +834,30 @@ async function facilitiesByName(q: string) {
   // 폐업한 곳은 새로 고르지 못한다. 반대로 이미 광고가 걸린 곳의 상호를
   // 되찾는 조회(in: keys)에서는 감추지 않는다 - 거기서 빠지면 운영자
   // 화면에 번호만 남아 무엇이 폐업했는지 알 수 없다.
-  if (q.length < 2) return [];
+  if (q.replace(/\s+/g, "").length < 2) return [];
   // 낱말마다 이름이나 주소 어딘가에 있어야 한다. "연세안과" 하나로는 전국
-  // 수십 곳이 걸려 15곳 안에 원하는 곳이 안 들 수 있다 - "연세안과 신정동"
-  // 처럼 동네를 붙여 좁힌다.
+  // 수십 곳이 걸린다 - "연세안과 신정동"처럼 동네를 붙여 좁힌다.
+  //
+  // 띄어쓰기는 보지 않는다. 명부의 주소는 "신정중앙로 103" 인데 사람은
+  // "신정중앙로103" 으로 친다. 양쪽 다 공백을 빼고 맞춘다 - 그래서 Prisma 의
+  // contains 대신 replace() 를 쓰는 SQL 이다.
   const words = q.split(/\s+/).filter((w) => w !== "");
-  const where = {
-    closed_at: null,
-    AND: words.map((w) => {
-      const like = { contains: w, mode: "insensitive" as const };
-      return { OR: [{ name: like }, { address: like }] };
-    }),
-  };
-  // 넉넉히 받아 정렬한 뒤 자른다. DB 가 주는 순서는 아무 의미가 없어, 상호가
-  // 정확히 같은 곳이 뒤로 밀려 잘린 적이 있다(양천구 연세안과의원).
+  // LIKE 의 %, _ 는 글자로 취급한다. 안 막으면 "_" 하나로 전부 걸린다.
+  const pat = (w: string) => `%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const cond = Prisma.join(
+    words.map(
+      (w) =>
+        Prisma.sql`(replace(name, ' ', '') ILIKE ${pat(w)} OR replace(address, ' ', '') ILIKE ${pat(w)})`,
+    ),
+    " AND ",
+  );
   const [clinics, shops] = await Promise.all([
-    prisma.eye_clinic.findMany({ where, select: { ykiho: true, name: true, address: true }, take: 200 }),
-    prisma.optical_shop.findMany({ where, select: { license_no: true, name: true, address: true }, take: 200 }),
+    prisma.$queryRaw<{ ykiho: string; name: string; address: string }[]>`
+      SELECT ykiho, name, address FROM eye_clinic
+      WHERE closed_at IS NULL AND ${cond} LIMIT 2000`,
+    prisma.$queryRaw<{ license_no: string; name: string; address: string }[]>`
+      SELECT license_no, name, address FROM optical_shop
+      WHERE closed_at IS NULL AND ${cond} LIMIT 2000`,
   ]);
   return [
     ...rankByName(
@@ -864,16 +871,21 @@ async function facilitiesByName(q: string) {
   ];
 }
 
-/** 상호가 첫 낱말과 같은 곳 → 그것으로 시작하는 곳 → 포함하는 곳 → 주소만 맞는 곳. 15곳까지. */
+/** 업종마다 이만큼까지 보여 준다. "안과"처럼 넓게 치면 수천 곳이라 끝이 있어야 한다.
+ *  화면은 이 수가 꽉 차면 "동네를 붙여 좁혀 보세요"라고 안내한다. */
+export const FACILITY_SEARCH_LIMIT = 200;
+
+/** 상호가 첫 낱말과 같은 곳 → 그것으로 시작하는 곳 → 포함하는 곳 → 주소만 맞는 곳.
+ *  띄어쓰기는 보지 않는다. FACILITY_SEARCH_LIMIT 곳까지. */
 function rankByName<T extends { name: string }>(rows: T[], word: string): T[] {
-  const w = word.toLowerCase();
+  const w = word.replace(/\s+/g, "").toLowerCase();
   const score = (name: string) => {
-    const n = name.toLowerCase();
+    const n = name.replace(/\s+/g, "").toLowerCase();
     return n === w ? 0 : n.startsWith(w) ? 1 : n.includes(w) ? 2 : 3;
   };
   return [...rows]
     .sort((a, b) => score(a.name) - score(b.name) || a.name.localeCompare(b.name, "ko"))
-    .slice(0, 15);
+    .slice(0, FACILITY_SEARCH_LIMIT);
 }
 
 /** 운영자가 광고를 걸 업체를 찾는다. */
