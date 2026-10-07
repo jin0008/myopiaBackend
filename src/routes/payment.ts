@@ -142,25 +142,20 @@ router.post(
     // 그 금액으로는 승인되지 않는다.
     try {
       const r = await approvePayment(tid, row.amount);
-      await prisma.payment.update({
-        where: { id: row.id },
-        data: {
-          tid,
-          status: "paid",
-          pay_method: typeof r.payMethod === "string" ? r.payMethod : null,
-          paid_at: new Date(),
-          failed_reason: null,
-          raw: r as object,
-          updated_at: new Date(),
-        },
-      });
-      await extendSubscription(row.account_id, row.id, row.amount, row.months);
+      // 웹훅이 먼저 확정했으면 그쪽이 기간을 늘렸다. 바꾼 쪽만 늘린다.
+      if (
+        await markPaidOnce(row.id, { ...r, tid }, typeof r.payMethod === "string" ? r.payMethod : null)
+      ) {
+        await extendSubscription(row.account_id, row.id, row.amount, row.months);
+      }
       return back(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "승인에 실패했습니다.";
       console.error("[payment] 승인 실패", orderId, tid, err);
-      await prisma.payment.update({
-        where: { id: row.id },
+      // 대기 중일 때만 실패로 적는다. 승인 응답이 끊긴 사이 웹훅이 '결제됨'으로
+      // 확정했으면 그대로 둔다.
+      await prisma.payment.updateMany({
+        where: { id: row.id, status: "pending" },
         data: { tid, status: "failed", failed_reason: msg, updated_at: new Date() },
       });
       return back(false, msg);
@@ -235,8 +230,11 @@ export async function syncFromNice(tid: string): Promise<void> {
 
   // pending 인 줄만 바꾼다. 위에서 읽은 뒤 청구 경로가 먼저 확정했을 수 있다
   // - 읽고 나서 쓰면 둘 다 기간을 늘린다. 바꾼 쪽만 기간을 늘린다.
+  const ok = paid && amountOk;
   const claimed = await prisma.payment.updateMany({
-    where: { id: row.id, status: "pending" },
+    // 결제됨은 실패로 적힌 줄에도 적는다(응답이 끊겨 실패로 적었는데 실제로는
+    // 빠진 경우). 실패는 대기 중인 줄에만 적는다.
+    where: { id: row.id, status: ok ? { in: ["pending", "failed"] } : "pending" },
     data: {
       tid,
       status: paid && amountOk ? "paid" : "failed",
@@ -255,18 +253,24 @@ export async function syncFromNice(tid: string): Promise<void> {
     },
   });
 
-  if (claimed.count !== 1 || !(paid && amountOk)) return;
+  if (claimed.count !== 1 || !ok) return;
 
   // 결제창을 거치지 않고 웹훅만 먼저 오는 경우(가상계좌 입금 등)가 있다.
   // 그때도 같은 함수를 쓴다 - 두 벌로 두면 한쪽만 고쳐져 기간이 갈린다.
   await extendSubscription(row.account_id, row.id, row.amount, row.months);
 
-  // 결과를 모르던 첫 자동결제를 웹훅이 확정했다. 카드 등록 때 구독에 적어 둔
-  // 빌키로 자동결제를 켠다.
-  if (orderId.startsWith("bil_")) {
+  // 자동결제 건을 웹훅이 확정했다. 실패 횟수를 되돌리고(안 그러면 지난
+  // 실패가 쌓여 다음 한 번에 끊긴다), 결과를 모르던 첫 결제(bil_)였으면
+  // 카드 등록 때 구독에 적어 둔 빌키로 자동결제를 켠다.
+  if (row.pay_method === "billing") {
     await prisma.subscription.updateMany({
       where: { account_id: row.account_id, billing_key: { not: null } },
-      data: { auto_renew: true, failed_count: 0, updated_at: new Date() },
+      data: {
+        failed_count: 0,
+        status: "active",
+        ...(orderId.startsWith("bil_") ? { auto_renew: true } : {}),
+        updated_at: new Date(),
+      },
     });
   }
 }

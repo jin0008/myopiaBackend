@@ -149,7 +149,7 @@ export async function chargeSafely(args: {
 }
 
 /**
- * 대기 중인 결제를 '결제됨'으로 바꾼다. 한 번만 성공한다.
+ * 결제를 '결제됨'으로 바꾼다. 한 번만 성공한다.
  *
  * 같은 결제를 확정하는 길이 여럿이다(청구 응답, 웹훅, 갱신의 재확인, 첫
  * 결제 정리). 각자 읽고 나서 쓰면 둘이 함께 '아직 대기'를 보고 둘 다 기간을
@@ -159,10 +159,15 @@ export async function chargeSafely(args: {
 export async function markPaidOnce(
   paymentId: string,
   r: NiceResult,
+  payMethod?: string | null,
 ): Promise<boolean> {
   const done = await prisma.payment.updateMany({
-    where: { id: paymentId, status: "pending" },
+    // 실패로 적힌 줄도 바꾼다. 응답이 끊겨 실패로 적었는데 나이스가 나중에
+    // '결제됨'이라고 하면 돈은 빠진 것이다 - 기간을 늘려야 한다. 이미 결제됨·
+    // 취소된 줄은 건드리지 않으므로 기간은 여전히 한 번만 늘어난다.
+    where: { id: paymentId, status: { in: ["pending", "failed"] } },
     data: {
+      ...(payMethod !== undefined ? { pay_method: payMethod } : {}),
       tid: typeof r.tid === "string" ? r.tid : null,
       status: "paid",
       paid_at: new Date(),
@@ -338,10 +343,11 @@ async function renewOne(
     return;
   }
   // 웹훅이 먼저 확정했으면 그쪽이 기간을 늘렸다. 여기서 또 늘리지 않는다.
-  if (!(await markPaidOnce(paymentId, outcome.r))) return;
-
-  // 단건 결제와 같은 함수로 기간과 광고를 민다.
-  await extendSubscription(s.account_id, paymentId, s.amount, 1);
+  // 실패 횟수는 어느 쪽이 확정했든 되돌린다.
+  if (await markPaidOnce(paymentId, outcome.r)) {
+    // 단건 결제와 같은 함수로 기간과 광고를 민다.
+    await extendSubscription(s.account_id, paymentId, s.amount, 1);
+  }
   await prisma.subscription.update({
     where: { id: s.id },
     data: { failed_count: 0, status: "active", updated_at: new Date() },
