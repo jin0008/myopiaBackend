@@ -10,7 +10,6 @@ import {
   NiceError,
   approvePayment,
   cancelPayment,
-  chargeBilling,
   clientKey,
   expireBilling,
   getPayment,
@@ -18,7 +17,7 @@ import {
   registerBilling,
 } from "../services/nicepay";
 import { billingLimiter } from "../lib/security";
-import { newOrderId, whyNotSellable } from "../services/billing";
+import { chargeSafely, newOrderId, whyNotSellable } from "../services/billing";
 
 /** 결제가 끝나면 돌아갈 자리. */
 const PARTNER_ORIGIN = "https://myopiamanage.org";
@@ -334,6 +333,15 @@ const cardSchema = zod.object({
  * 첫 청구가 실패하면 받은 빌키를 지운다. 남겨 두면 쓰지 않는 카드 연결이
  * 나이스에 쌓이고, 나중에 누군가 그 빌키로 청구할 수도 있다.
  */
+/**
+ * 지금 카드 등록을 처리 중인 계정. 버튼을 두 번 누르면 두 요청이 모두
+ * "아직 등록 안 됨"을 보고 지나가 두 달치가 빠진다.
+ *
+ * ponytail: 프로세스 하나(systemd myopia)라 메모리로 막는다. 서버를 여러
+ * 대로 늘리면 DB 잠금(예: 계정 행 SELECT ... FOR UPDATE)으로 바꿔야 한다.
+ */
+const billingInFlight = new Set<string>();
+
 router.post("/billing", partnerRequired, billingLimiter, async (req, res) => {
   if (!billingEnabled()) {
     res.status(503).json({ message: "정기결제는 아직 준비 중입니다." });
@@ -346,12 +354,49 @@ router.post("/billing", partnerRequired, billingLimiter, async (req, res) => {
     return;
   }
   const accountId = req.partner!.sub;
+  if (billingInFlight.has(accountId)) {
+    res.status(409).json({
+      code: "in_progress",
+      message: "카드 등록을 처리하고 있습니다. 잠시만 기다려 주세요.",
+    });
+    return;
+  }
+  billingInFlight.add(accountId);
+  try {
+    await registerAndCharge(accountId, parsed.data, res);
+  } finally {
+    billingInFlight.delete(accountId);
+  }
+});
 
+async function registerAndCharge(
+  accountId: string,
+  form: zod.infer<typeof cardSchema>,
+  res: express.Response,
+): Promise<void> {
   const existing = await prisma.subscription.findUnique({ where: { account_id: accountId } });
   if (existing?.auto_renew && existing.billing_key != null) {
     res.status(409).json({
       code: "already_subscribed",
       message: "이미 자동결제가 등록되어 있습니다. 카드를 바꾸려면 해지 후 다시 등록해 주세요.",
+    });
+    return;
+  }
+  // 지난 첫 결제의 결과를 아직 모르면 새로 받지 않는다. 그쪽이 실제로는
+  // 빠졌을 수 있어, 다시 등록하면 두 번 빠진다.
+  const unsettled = await prisma.payment.findFirst({
+    where: {
+      account_id: accountId,
+      status: "pending",
+      order_id: { startsWith: "bil_" },
+      created_at: { gt: new Date(Date.now() - 24 * 3600 * 1000) },
+    },
+  });
+  if (unsettled != null) {
+    res.status(409).json({
+      code: "unsettled",
+      message:
+        "이전 결제 결과를 확인하고 있습니다. 다시 결제하지 마시고 담당자(myodoc@idx.ai.kr)에게 알려 주세요.",
     });
     return;
   }
@@ -361,7 +406,7 @@ router.post("/billing", partnerRequired, billingLimiter, async (req, res) => {
     return;
   }
 
-  const { agree: _agree, ...card } = parsed.data;
+  const { agree: _agree, ...card } = form;
   let bid: string;
   try {
     ({ bid } = await registerBilling({ orderId: newOrderId("reg"), card }));
@@ -378,38 +423,65 @@ router.post("/billing", partnerRequired, billingLimiter, async (req, res) => {
   }
 
   const amount = MONTHLY_AMOUNT;
-  const orderId = newOrderId("sub");
+  // bil_ 로 시작한다 - 결과를 모르는 첫 결제를 위에서 찾는 열쇠다.
+  const orderId = newOrderId("bil");
   const row = await prisma.payment.create({
-    data: { account_id: accountId, order_id: orderId, amount, months: 1, status: "pending" },
+    data: {
+      account_id: accountId,
+      order_id: orderId,
+      amount,
+      months: 1,
+      status: "pending",
+      pay_method: "billing",
+    },
   });
 
-  try {
-    const r = await chargeBilling({ bid, orderId, amount, goodsName: `${GOODS_NAME} 월 자동결제` });
+  const outcome = await chargeSafely({
+    bid,
+    orderId,
+    amount,
+    goodsName: `${GOODS_NAME} 월 자동결제`,
+    createdAt: row.created_at,
+  });
+
+  if (outcome.outcome === "unknown") {
+    // 돈이 빠졌는지 모른다. 실패로 적고 빌키를 지우면, 실제로는 빠진 돈이
+    // 남고 파트너는 다시 결제한다. 줄은 pending 으로 두고 빌키를 남겨 사람이
+    // 확정한다(나이스 가맹점 관리자에서 주문번호로 확인).
     await prisma.payment.update({
       where: { id: row.id },
-      data: {
-        tid: typeof r.tid === "string" ? r.tid : null,
-        status: "paid",
-        pay_method: "billing",
-        paid_at: new Date(),
-        raw: r as object,
-        updated_at: new Date(),
-      },
+      data: { failed_reason: "결제 결과 확인 중", raw: { bid } as object, updated_at: new Date() },
     });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "결제에 실패했습니다.";
-    console.error("[billing] 첫 청구 실패", accountId, orderId, e instanceof NiceError ? e.code : "");
+    console.error("[billing] 첫 결제 결과 불명 - 사람이 확인해야 한다", accountId, orderId);
+    res.status(202).json({
+      code: "unsettled",
+      message: "결제 결과를 확인하고 있습니다. 다시 결제하지 마시고 잠시 후 새로고침해 주세요.",
+    });
+    return;
+  }
+  if (outcome.outcome === "failed") {
+    console.error("[billing] 첫 청구 실패", accountId, orderId);
     await prisma.payment.update({
       where: { id: row.id },
-      data: { status: "failed", failed_reason: msg, updated_at: new Date() },
+      data: { status: "failed", failed_reason: outcome.message, updated_at: new Date() },
     });
     await expireBilling(bid, newOrderId("exp")).catch((err) =>
       console.error("[billing] 실패한 등록의 빌키를 지우지 못했다", accountId, err),
     );
-    res.status(400).json({ code: "charge_failed", message: msg });
+    res.status(400).json({ code: "charge_failed", message: outcome.message });
     return;
   }
 
+  await prisma.payment.update({
+    where: { id: row.id },
+    data: {
+      tid: typeof outcome.r.tid === "string" ? outcome.r.tid : null,
+      status: "paid",
+      paid_at: new Date(),
+      raw: outcome.r as object,
+      updated_at: new Date(),
+    },
+  });
   // 돈이 들어왔다. 기간과 광고는 단건 결제와 같은 함수로 민다.
   await extendSubscription(accountId, row.id, amount, 1);
   await prisma.subscription.update({
@@ -417,7 +489,7 @@ router.post("/billing", partnerRequired, billingLimiter, async (req, res) => {
     data: { billing_key: bid, auto_renew: true, failed_count: 0, updated_at: new Date() },
   });
   res.json({ ok: true });
-});
+}
 
 /**
  * 자동결제를 끊는다.

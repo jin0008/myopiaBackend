@@ -110,6 +110,18 @@ export function getPayment(tid: string): Promise<NiceResult> {
 }
 
 /**
+ * 주문번호로 거래를 조회한다. orderDate 는 주문을 만든 날(YYYYMMDD).
+ *
+ * 청구 응답이 끊겼을 때 쓴다. 우리는 tid 를 못 받았지만 주문번호는 우리가
+ * 만들었으니 안다.
+ */
+export function findPayment(orderId: string, orderDate: string): Promise<NiceResult> {
+  return call(
+    `/v1/payments/find/${encodeURIComponent(orderId)}?orderDate=${encodeURIComponent(orderDate)}`,
+  );
+}
+
+/**
  * 결제창에서 인증을 마친 거래를 승인한다.
  *
  * 인증과 승인은 다른 단계다. 인증까지는 카드사가 "이 사람 맞다"고 한

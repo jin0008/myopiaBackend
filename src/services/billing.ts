@@ -9,7 +9,7 @@ import prisma from "../lib/prisma";
 import { AD_SLOTS } from "../lib/adSlots";
 import { GOODS_NAME } from "../lib/pricing";
 import { kstDateString } from "../lib/promotionTerm";
-import { NiceError, chargeBilling, expireBilling } from "./nicepay";
+import { NiceError, type NiceResult, chargeBilling, expireBilling, findPayment } from "./nicepay";
 import { RegionUnknown, adsInRegion, linkedFacility, regionOf } from "./promotionSlots";
 import { extendSubscription } from "./subscription";
 
@@ -70,6 +70,82 @@ export async function whyNotSellable(
 /** 주문번호. 같은 번호로 두 번 청구되지 않는다(payment.order_id unique). */
 export function newOrderId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** 청구 결과. 'unknown' 은 돈이 빠졌는지 모르는 상태다 - 실패로 다루면 안 된다. */
+export type ChargeOutcome =
+  | { outcome: "paid"; r: NiceResult }
+  | { outcome: "failed"; message: string }
+  | { outcome: "unknown" };
+
+/**
+ * 나이스가 결과를 말해 준 오류인가.
+ *
+ * resultCode 를 받아 던진 NiceError 는 "나이스가 거절했다"는 확실한 답이다.
+ * 시간 초과·연결 끊김(fetch 가 던짐)과 응답을 못 읽은 bad_response 는
+ * 나이스 쪽에서 승인됐을 수도 있는 상태다.
+ */
+function isDefiniteRejection(e: unknown): boolean {
+  return e instanceof NiceError && e.code !== "bad_response";
+}
+
+/**
+ * 주문번호로 결과를 확정한다.
+ *
+ * notFoundMeans: 나이스에 그 주문이 없을 때 어떻게 볼지. 끊긴 직후에는
+ * 아직 안 보일 수 있어 'unknown', 하루 지난 뒤라면 'failed' 로 본다.
+ */
+export async function resolveByOrderId(
+  orderId: string,
+  createdAt: Date,
+  amount: number,
+  notFoundMeans: "unknown" | "failed",
+): Promise<ChargeOutcome> {
+  let f: NiceResult;
+  try {
+    f = await findPayment(orderId, kstDateString(createdAt).replace(/-/g, ""));
+  } catch {
+    return { outcome: "unknown" };
+  }
+  return outcomeFromLookup(f, amount, notFoundMeans);
+}
+
+/** 조회 응답을 결과로. 네트워크 없이 맞춰 볼 수 있게 따로 둔다. */
+export function outcomeFromLookup(
+  f: NiceResult,
+  amount: number,
+  notFoundMeans: "unknown" | "failed",
+): ChargeOutcome {
+  if (f.resultCode === "0000" && f.status === "paid") {
+    // 금액이 다르면 성공으로 보지 않는다(check-payment.ts 와 같은 규칙).
+    return f.amount === amount
+      ? { outcome: "paid", r: f }
+      : { outcome: "failed", message: "결제 금액이 주문과 다릅니다." };
+  }
+  if (f.resultCode === "0000" && (f.status === "failed" || f.status === "expired")) {
+    return { outcome: "failed", message: f.resultMsg || "결제에 실패했습니다." };
+  }
+  // 'ready' 같은 진행 중 상태나 '주문 없음'. 시간이 지났으면 실패로 본다.
+  return notFoundMeans === "failed"
+    ? { outcome: "failed", message: f.resultMsg || "결제가 확인되지 않았습니다." }
+    : { outcome: "unknown" };
+}
+
+/** 빌키로 청구한다. 응답이 끊기면 주문번호로 다시 물어 확정한다. */
+export async function chargeSafely(args: {
+  bid: string;
+  orderId: string;
+  amount: number;
+  goodsName: string;
+  createdAt: Date;
+}): Promise<ChargeOutcome> {
+  try {
+    return { outcome: "paid", r: await chargeBilling(args) };
+  } catch (e) {
+    if (isDefiniteRejection(e)) return { outcome: "failed", message: (e as Error).message };
+    console.error("[billing] 청구 응답이 끊겼다. 주문번호로 확인한다", args.orderId);
+    return resolveByOrderId(args.orderId, args.createdAt, args.amount, "unknown");
+  }
 }
 
 /** 하루. 갱신은 끝나기 하루 안쪽에 들어오면 청구한다. */
@@ -149,18 +225,37 @@ async function renewOne(
 
   // 팔 수 없는 상태면 청구하지 않는다. 연체 중 기간이 끝나 동이 풀리고 그
   // 사이 다른 업체가 샀을 수 있다 - 돈을 받고 광고를 못 거는 일이 생긴다.
+  //
+  // 다만 동을 잠깐 못 알아낸 것(카카오 장애)은 카드 탓이 아니다. 실패로
+  // 세면 장애 사흘에 자동결제가 끊기고 "카드를 확인하라"는 메일이 간다.
+  // 그날은 건너뛰고 다음 날 다시 한다.
   const blocked = await whyNotSellable(s.account_id);
+  if (blocked?.body.code === "region_unknown") {
+    console.warn("[갱신] 동을 알아내지 못해 오늘은 건너뛴다", s.account_id);
+    return;
+  }
   if (blocked != null) {
     await onFailure(s, blocked.body.message, mail);
     return;
   }
 
-  // 줄을 먼저 만든다. 같은 번호가 이미 있으면 다른 실행이 이 일을 하고
-  // 있거나 끝낸 것이다.
+  // 같은 주문번호의 줄이 이미 있으면 지난 실행이 끝을 못 본 것이다(응답이
+  // 끊겼거나 겹쳐 돌았다). 새로 청구하지 않고 그 주문의 결과를 확정한다 -
+  // 새로 청구하면 같은 달이 두 번 빠질 수 있다.
+  const prior = await prisma.payment.findUnique({ where: { order_id: orderId } });
   let paymentId: string;
-  try {
-    paymentId = (
-      await prisma.payment.create({
+  let outcome: ChargeOutcome;
+  if (prior != null) {
+    if (prior.status === "paid") return;
+    paymentId = prior.id;
+    outcome =
+      prior.status === "failed"
+        ? { outcome: "failed", message: prior.failed_reason ?? "결제에 실패했습니다." }
+        : await resolveByOrderId(orderId, prior.created_at, prior.amount, "failed");
+  } else {
+    let row;
+    try {
+      row = await prisma.payment.create({
         data: {
           account_id: s.account_id,
           subscription_id: s.id,
@@ -170,40 +265,47 @@ async function renewOne(
           status: "pending",
           pay_method: "billing",
         },
-      })
-    ).id;
-  } catch {
-    console.log("[갱신] 이미 처리된 주문", orderId);
-    return;
-  }
-
-  try {
-    const r = await chargeBilling({
+      });
+    } catch {
+      // 바로 앞에서 다른 실행이 만들었다. 그쪽이 끝낸다.
+      console.log("[갱신] 다른 실행이 처리 중인 주문", orderId);
+      return;
+    }
+    paymentId = row.id;
+    outcome = await chargeSafely({
       bid: s.billing_key,
       orderId,
       amount: s.amount,
       goodsName: `${GOODS_NAME} 월 자동결제`,
+      createdAt: row.created_at,
     });
-    await prisma.payment.update({
-      where: { id: paymentId },
-      data: {
-        tid: typeof r.tid === "string" ? r.tid : null,
-        status: "paid",
-        paid_at: new Date(),
-        raw: r as object,
-        updated_at: new Date(),
-      },
-    });
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : "결제에 실패했습니다.";
-    console.error("[갱신] 청구 실패", s.account_id, orderId, e instanceof NiceError ? e.code : "");
-    await prisma.payment.update({
-      where: { id: paymentId },
-      data: { status: "failed", failed_reason: msg, updated_at: new Date() },
-    });
-    await onFailure(s, msg, mail);
+  }
+
+  if (outcome.outcome === "unknown") {
+    // 돈이 빠졌는지 모른다. 실패로 세지도, 다시 청구하지도 않는다. 줄을
+    // pending 으로 두면 내일 위의 prior 경로가 결과를 확정한다.
+    console.error("[갱신] 결과를 모르는 청구 - 내일 다시 확인한다", s.account_id, orderId);
     return;
   }
+  if (outcome.outcome === "failed") {
+    console.error("[갱신] 청구 실패", s.account_id, orderId);
+    await prisma.payment.update({
+      where: { id: paymentId },
+      data: { status: "failed", failed_reason: outcome.message, updated_at: new Date() },
+    });
+    await onFailure(s, outcome.message, mail);
+    return;
+  }
+  await prisma.payment.update({
+    where: { id: paymentId },
+    data: {
+      tid: typeof outcome.r.tid === "string" ? outcome.r.tid : null,
+      status: "paid",
+      paid_at: new Date(),
+      raw: outcome.r as object,
+      updated_at: new Date(),
+    },
+  });
 
   // 단건 결제와 같은 함수로 기간과 광고를 민다.
   await extendSubscription(s.account_id, paymentId, s.amount, 1);

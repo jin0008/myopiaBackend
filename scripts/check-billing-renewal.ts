@@ -7,7 +7,13 @@
  */
 import assert from "assert";
 
-import { MAX_RENEW_FAILS, isRenewalDue, renewalOrderId, shouldStopAfter } from "../src/services/billing";
+import {
+  MAX_RENEW_FAILS,
+  isRenewalDue,
+  outcomeFromLookup,
+  renewalOrderId,
+  shouldStopAfter,
+} from "../src/services/billing";
 
 const now = new Date("2026-11-06T18:00:00Z"); // KST 11/7 03:00, 매일 도는 시각쯤
 const h = 3600 * 1000;
@@ -33,5 +39,17 @@ assert.ok(renewalOrderId(sub, end, 9).length <= 64, "나이스 orderId 64자 제
 
 assert.ok(!shouldStopAfter(1) && !shouldStopAfter(MAX_RENEW_FAILS - 1), "한두 번 실패로는 끊지 않는다");
 assert.ok(shouldStopAfter(MAX_RENEW_FAILS), `${MAX_RENEW_FAILS}번 연속이면 끊는다`);
+
+// 응답이 끊긴 청구를 주문번호로 확정할 때.
+const paid = { resultCode: "0000", resultMsg: "", status: "paid", amount: 100000 };
+assert.strictEqual(outcomeFromLookup(paid, 100000, "unknown").outcome, "paid", "실제로 빠졌으면 성공 - 다시 청구하지 않는다");
+assert.strictEqual(outcomeFromLookup({ ...paid, amount: 100 }, 100000, "unknown").outcome, "failed", "금액이 다르면 성공 아님");
+assert.strictEqual(
+  outcomeFromLookup({ resultCode: "0000", resultMsg: "한도초과", status: "failed" }, 100000, "unknown").outcome,
+  "failed",
+);
+const missing = { resultCode: "2001", resultMsg: "거래 없음" };
+assert.strictEqual(outcomeFromLookup(missing, 100000, "unknown").outcome, "unknown", "끊긴 직후 안 보이면 모른다 - 실패로 세지 않는다");
+assert.strictEqual(outcomeFromLookup(missing, 100000, "failed").outcome, "failed", "하루 지나도 없으면 실패");
 
 console.log("billing renewal ok");
