@@ -355,19 +355,29 @@ async function refreshOpticalShops() {
   const existing = new Map(parseCsv(fs.readFileSync(file, "utf8")).map((r) => [r.licenseNo, r]));
 
   // 받는 사이 자료가 갱신되면 순서가 밀려 같은 곳이 두 번 오고, 그만큼 다른
-  // 곳이 빠진다. 빠진 곳은 폐업으로 잡히므로 중복을 합치고 넘어가면 안 된다.
-  // 한 번 더 받아 보고, 그래도 겹치면 이번 회차를 멈춘다.
-  let raw: Row[] = [];
-  let byNo = new Map<string, Row>();
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // 곳이 빠진다. 빠진 곳은 폐업으로 잡히므로 그냥 합치고 넘어가면 안 된다.
+  //
+  // 그런데 공공자료에는 같은 관리번호가 원래 두 번 들어 있는 줄도 있다
+  // (2026-10 기준 1건 - totalCount 가 고유 번호보다 하나 많다). 이건 받을 때마다
+  // 같은 번호로 겹친다. 그래서 겹치면 한 번 더 받아 보고, 겹친 번호가 두 번
+  // 같으면 원래 있는 중복으로 보고 넘어간다. 달라지면 밀린 것이니 멈춘다.
+  const dupKeys = (rows: Row[]) => {
+    const seen = new Set<string>();
+    const dup = new Set<string>();
+    for (const r of rows) (seen.has(r.MNG_NO) ? dup : seen).add(r.MNG_NO);
+    return [...dup].sort().join(",");
+  };
+  let raw = await fetchAllPages(OPTICAL_URL, { returnType: "json" }, pickItems, 100);
+  let dups = dupKeys(raw);
+  if (dups !== "") {
+    console.log(`  안경업 목록에 겹친 번호(${dups}) - 다시 받아 같은지 본다`);
     raw = await fetchAllPages(OPTICAL_URL, { returnType: "json" }, pickItems, 100);
-    byNo = new Map(raw.map((r) => [r.MNG_NO, r]));
-    if (byNo.size === raw.length) break;
-    console.error(`  안경업 목록에 겹친 곳 ${raw.length - byNo.size}건 - 다시 받는다`);
-    if (attempt === 2) {
-      throw new Error(`안경업 목록이 받는 사이 바뀌었다(겹친 곳 ${raw.length - byNo.size}건)`);
+    const again = dupKeys(raw);
+    if (again !== dups) {
+      throw new Error(`안경업 목록이 받는 사이 바뀌었다(겹친 번호 ${dups} → ${again})`);
     }
   }
+  const byNo = new Map(raw.map((r) => [r.MNG_NO, r]));
   assertColumns(
     raw,
     ["MNG_NO", "BPLC_NM", "SALS_STTS_CD", "ROAD_NM_ADDR", "LOTNO_ADDR", "TELNO", "VRTX_RFRCTMTR_CNT", "EYCHRT_CNT", "LCPMT_YMD"],
