@@ -54,3 +54,18 @@ export const inquiryLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: "문의가 너무 잦습니다. 잠시 후 다시 시도해 주세요." },
 });
+
+/**
+ * 카드 등록(빌키 발급)용.
+ *
+ * 훔친 카드번호를 맞춰 보는 창구로 쓰이기 쉬운 자리다 - 등록이 되면 살아
+ * 있는 카드라는 뜻이라서. 로그인한 파트너만 오지만 계정 하나로도 수백 번
+ * 돌릴 수 있으니 횟수를 묶는다. 사람이 오타로 몇 번 틀리는 것은 넉넉히 남긴다.
+ */
+export const billingLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "카드 등록 시도가 너무 잦습니다. 한 시간 뒤에 다시 시도해 주세요." },
+});
