@@ -67,7 +67,7 @@ router.post("/", async (req, res) => {
   // 답장은 운영자가 직접 쓴다 - 메일에서 '답장'을 누르면 문의한 사람에게 간다.
   const kindName = { optical: "안경원", eye: "안과", company: "제약·관련회사" }[b.kind];
   const e = escapeHtml;
-  alertAdmin(
+  void alertAdmin(
     `[마이오닥 광고 문의] ${b.org} (${kindName})`,
     `<p>새 광고 문의가 들어왔습니다.</p>
      <table cellpadding="4">

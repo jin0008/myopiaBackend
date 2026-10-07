@@ -33,3 +33,6 @@ dist-ssr
 
 # User-uploaded files (banner images etc.) — persist on disk, not in git
 /uploads
+
+# 서버 주간 명부 갱신이 쓰는 CSV(scripts/refresh-facilities-auto.ts). 저장소 파일을 고치면 git pull 이 충돌한다.
+/data/

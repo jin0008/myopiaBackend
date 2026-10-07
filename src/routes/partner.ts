@@ -1090,7 +1090,7 @@ router.post(
       res.status(201).json(verificationDTO(row));
 
       // 승인할 사람이 관리자 페이지를 매일 열어 보지 않아도 되게 알린다.
-      alertAdmin(
+      void alertAdmin(
         `[마이오닥 업체 인증 신청] ${exists.name} (${kind === "optical" ? "안경원" : "안과"})`,
         `<p>새 업체 인증 신청이 들어왔습니다.</p>
          <table cellpadding="4">

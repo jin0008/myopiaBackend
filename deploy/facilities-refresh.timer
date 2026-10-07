@@ -1,0 +1,10 @@
+# 매주 월요일 03:30 (한국 시간). 서버가 꺼져 있다 켜지면 놓친 회차를 한 번 돈다.
+[Unit]
+Description=마이오닥 안과·안경원 명부 주간 갱신
+
+[Timer]
+OnCalendar=Mon *-*-* 03:30:00 Asia/Seoul
+Persistent=true
+
+[Install]
+WantedBy=timers.target
