@@ -3,6 +3,7 @@ import { Prisma } from "@prisma/client";
 
 import prisma from "../lib/prisma";
 import { siteAdminRequired } from "../lib/middlewares";
+import { auditContextFromRequest, writeAuditLog } from "../services/audit";
 
 const router = express.Router();
 
@@ -104,6 +105,87 @@ router.get("/", siteAdminRequired, async (_req, res) => {
     linkedChildren: n(children[0]?.linked),
     active7: n(active[0]?.active7),
     active30: n(active[0]?.active30),
+  });
+});
+
+/** 보호자 목록 한 쪽에 몇 명. */
+const PAGE_SIZE = 50;
+
+/**
+ * GET /app-stats/guardians?q=&page= — 보호자 목록(최신 가입순, 50명씩).
+ *
+ * 문의 응대용이다("로그인이 안 돼요" → 이메일·아이디로 찾기). 그래서 계정을
+ * 알아보는 데 필요한 것만 준다: 이메일, 아이디, 가입일·방법, 자녀·연동 수,
+ * 최근 접속. 자녀 이름·생년월일·측정값 같은 민감정보는 싣지 않는다.
+ *
+ * 개인정보를 여는 화면이라 볼 때마다 누가·언제·무엇으로 찾았는지 감사 기록에
+ * 남긴다(audit_log READ). 기록을 못 남기면 보여 주지 않는다.
+ */
+router.get("/guardians", siteAdminRequired, async (req, res) => {
+  const q = String(req.query.q ?? "").trim().slice(0, 100);
+  const page = Math.max(1, Math.floor(Number(req.query.page) || 1));
+  const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  const filter =
+    q === "" ? Prisma.sql`TRUE` : Prisma.sql`(u.email ILIKE ${like} OR p.username ILIKE ${like})`;
+
+  const rows = await prisma.$queryRaw<
+    {
+      id: string;
+      joined: string;
+      email: string | null;
+      username: string | null;
+      providers: string[] | null;
+      children: bigint;
+      linked: bigint;
+      last_seen: string | null;
+      total: bigint;
+    }[]
+  >`
+    ${GUARDIANS}
+    SELECT
+      g.id,
+      to_char(g.created_at + interval '9 hours', 'YYYY-MM-DD HH24:MI') AS joined,
+      u.email,
+      p.username,
+      (SELECT array_agg(DISTINCT o.provider ORDER BY o.provider)
+         FROM oauth_identity o WHERE o.user_id = g.id) AS providers,
+      (SELECT count(*) FROM parent_child_link pc WHERE pc.user_id = g.id) AS children,
+      (SELECT count(DISTINCT chl.parent_child_link_id)
+         FROM child_hospital_link chl
+         JOIN parent_child_link pc ON pc.id = chl.parent_child_link_id
+        WHERE pc.user_id = g.id AND chl.status = 'active') AS linked,
+      (SELECT to_char(max(t.created_at) AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD')
+         FROM mobile_refresh_token t WHERE t.user_id = g.id) AS last_seen,
+      count(*) OVER () AS total
+    FROM g
+    JOIN "user" u ON u.id = g.id
+    LEFT JOIN password_auth p ON p.user_id = g.id
+    WHERE ${filter}
+    ORDER BY g.created_at DESC
+    LIMIT ${PAGE_SIZE} OFFSET ${(page - 1) * PAGE_SIZE}`;
+
+  await writeAuditLog({
+    ...auditContextFromRequest(req),
+    tableName: "user",
+    action: "READ",
+    newValue: { view: "myodoc_guardian_list", q, page, shown: rows.length },
+  });
+
+  res.json({
+    page,
+    pageSize: PAGE_SIZE,
+    total: n(rows[0]?.total),
+    guardians: rows.map((r) => ({
+      id: r.id,
+      joined: r.joined,
+      email: r.email,
+      username: r.username,
+      // 아이디가 있으면 이메일로 가입한 것이다(password_auth).
+      methods: [...(r.username != null ? ["email"] : []), ...(r.providers ?? [])],
+      children: n(r.children),
+      linkedChildren: n(r.linked),
+      lastSeen: r.last_seen,
+    })),
   });
 });
 
