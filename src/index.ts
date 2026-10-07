@@ -7,6 +7,7 @@ import cors from "cors";
 import helmet from "helmet";
 
 import adInquiryRoutes from "./routes/adInquiry";
+import appStatsRoutes from "./routes/appStats";
 import authRoutes from "./routes/auth";
 import healthcareProfessionalRoutes from "./routes/healthcare_professional";
 import measurementRoutes from "./routes/measurement";
@@ -128,6 +129,7 @@ app.use("/hospital-profile", hospitalProfileRoutes);
 app.use("/partner", partnerRoutes);
 app.use("/payment", paymentRoutes);
 app.use("/ad-inquiry", adInquiryRoutes);
+app.use("/app-stats", appStatsRoutes);
 app.use("/moderation", moderationAdminRouter);
 app.use("/api/mobile", moderationRoutes);
 app.use("/api/mobile", notificationRoutes);
