@@ -1307,10 +1307,11 @@ router.post("/verifications/:id/review", siteAdminRequired, async (req, res) => 
           eyelog_hospital_id: eyelogId,
           // 안경 렌즈 브랜드라 안경원에만 붙는다.
           brands: row.kind === "optical" ? (parsed.data.brands ?? []) : [],
-          // 안경원에게 승인은 곧 업체 확인이다. 프로필이 없어 따로
-          // 노출시킬 것이 없으니 여기서 끝낸다. 병원은 치료탭 노출이
-          // 별개라 상태를 건드리지 않는다.
-          ...(row.kind === "optical" ? { status: "approved" } : {}),
+          // 업체 확인이 곧 승인이다. 병원도 치료탭 노출을 따로 승인받지
+          // 않는다 - 두 번째 승인은 처음 한 번만 보고(승인 뒤 고친 내용은
+          // 그대로 나간다), 운영자는 "승인했는데 왜 대기 중이냐"를 들었다.
+          // 내용은 운영팀이 수시로 보고 이상하면 내린다(관리자 → 파트너 계정).
+          status: "approved",
           updated_at: new Date(),
         },
       });
@@ -1319,10 +1320,12 @@ router.post("/verifications/:id/review", siteAdminRequired, async (req, res) => 
       //
       // "연동 안 함"으로 고친 경우도 여기서 지워야 한다 - 계정만 비우고
       // 프로필을 그대로 두면 앱에는 체크가 계속 붙어 있다.
+      //
+      // 승인과 함께 미리 써 둔 프로필도 앱에 내보낸다(계정 승인과 같은 일).
       if (row.kind === "eye") {
         await tx.hospital_profile.updateMany({
           where: { owner_account_id: row.account_id },
-          data: { hospital_id: eyelogId, updated_at: new Date() },
+          data: { hospital_id: eyelogId, status: "published", updated_at: new Date() },
         });
       }
     });
