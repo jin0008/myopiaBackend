@@ -6,6 +6,8 @@
 #   NODEBIN=$(dirname "$(command -v npx)")      # 서버 터미널에서는 npx 가 잡힌다
 #   sed "s|@NODEBIN@|$NODEBIN|g" deploy/facilities-refresh.service | sudo tee /etc/systemd/system/facilities-refresh.service
 #   sudo cp deploy/facilities-refresh.timer /etc/systemd/system/
+#   # 저장소 폴더는 jsh010322 것이라 jinuhan0008 가 새 폴더를 못 만든다(EACCES).
+#   sudo mkdir -p data/facilities && sudo chown -R jinuhan0008 data
 #   sudo systemctl daemon-reload && sudo systemctl enable --now facilities-refresh.timer
 #
 # 지금 한 번 돌려 보기:
