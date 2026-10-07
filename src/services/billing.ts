@@ -148,6 +148,41 @@ export async function chargeSafely(args: {
   }
 }
 
+/**
+ * 대기 중인 결제를 '결제됨'으로 바꾼다. 한 번만 성공한다.
+ *
+ * 같은 결제를 확정하는 길이 여럿이다(청구 응답, 웹훅, 갱신의 재확인, 첫
+ * 결제 정리). 각자 읽고 나서 쓰면 둘이 함께 '아직 대기'를 보고 둘 다 기간을
+ * 늘린다 - 한 번 낸 돈으로 두 달. 상태가 pending 인 줄만 바꾸고, 바꾼 쪽만
+ * true 를 받아 기간을 늘린다.
+ */
+export async function markPaidOnce(
+  paymentId: string,
+  r: NiceResult,
+): Promise<boolean> {
+  const done = await prisma.payment.updateMany({
+    where: { id: paymentId, status: "pending" },
+    data: {
+      tid: typeof r.tid === "string" ? r.tid : null,
+      status: "paid",
+      paid_at: new Date(),
+      failed_reason: null,
+      raw: r as object,
+      updated_at: new Date(),
+    },
+  });
+  return done.count === 1;
+}
+
+/** 대기 중인 결제를 실패로. 바꾼 쪽만 true - 실패 처리(횟수·메일)를 한 번만 한다. */
+export async function markFailedOnce(paymentId: string, reason: string): Promise<boolean> {
+  const done = await prisma.payment.updateMany({
+    where: { id: paymentId, status: "pending" },
+    data: { status: "failed", failed_reason: reason, updated_at: new Date() },
+  });
+  return done.count === 1;
+}
+
 /** 하루. 갱신은 끝나기 하루 안쪽에 들어오면 청구한다. */
 const DAY = 24 * 3600 * 1000;
 
@@ -251,7 +286,14 @@ async function renewOne(
     outcome =
       prior.status === "failed"
         ? { outcome: "failed", message: prior.failed_reason ?? "결제에 실패했습니다." }
-        : await resolveByOrderId(orderId, prior.created_at, prior.amount, "failed");
+        : await resolveByOrderId(
+            orderId,
+            prior.created_at,
+            prior.amount,
+            // 막 만든 줄이면 다른 실행이 아직 청구 중일 수 있다. 하루가 지나도
+            // 나이스에 없을 때만 실패로 본다.
+            Date.now() - prior.created_at.getTime() > DAY ? "failed" : "unknown",
+          );
   } else {
     let row;
     try {
@@ -289,23 +331,14 @@ async function renewOne(
   }
   if (outcome.outcome === "failed") {
     console.error("[갱신] 청구 실패", s.account_id, orderId);
-    await prisma.payment.update({
-      where: { id: paymentId },
-      data: { status: "failed", failed_reason: outcome.message, updated_at: new Date() },
-    });
-    await onFailure(s, outcome.message, mail);
+    // 이미 실패로 적힌 줄(지난 실행이 실패 처리 도중 멈춘 경우)도 처리한다.
+    // 그러지 않으면 같은 주문번호에 묶여 다음 날도, 그다음 날도 넘어간다.
+    const claimed = await markFailedOnce(paymentId, outcome.message);
+    if (claimed || prior?.status === "failed") await onFailure(s, outcome.message, mail);
     return;
   }
-  await prisma.payment.update({
-    where: { id: paymentId },
-    data: {
-      tid: typeof outcome.r.tid === "string" ? outcome.r.tid : null,
-      status: "paid",
-      paid_at: new Date(),
-      raw: outcome.r as object,
-      updated_at: new Date(),
-    },
-  });
+  // 웹훅이 먼저 확정했으면 그쪽이 기간을 늘렸다. 여기서 또 늘리지 않는다.
+  if (!(await markPaidOnce(paymentId, outcome.r))) return;
 
   // 단건 결제와 같은 함수로 기간과 광고를 민다.
   await extendSubscription(s.account_id, paymentId, s.amount, 1);
@@ -358,4 +391,62 @@ async function onFailure(
          <p>내일 다시 시도합니다. 카드 한도나 상태를 확인해 주세요. ${MAX_RENEW_FAILS}번
             연속 실패하면 자동결제가 중지되고, 결제가 될 때까지 프리미엄 노출이 멈춥니다.</p>`,
   ).catch((err) => console.error("[갱신] 실패 안내 메일을 보내지 못했다", s.account.email, err));
+}
+
+/**
+ * 결과를 모르는 첫 결제(bil_)를 확정한다. 매일 한 번 부른다.
+ *
+ * 카드 등록 직후 청구 응답이 끊기면 줄은 pending 으로, 빌키는 구독에
+ * (auto_renew 를 끈 채) 남는다. 그동안 그 계정은 새로 등록하지 못하므로
+ * 여기서 풀어 줘야 한다. 막 만든 줄은 웹훅을 기다리고, 하루가 지나도
+ * 나이스에 없으면 실패로 본다.
+ */
+export async function settleFirstCharges(now: Date): Promise<void> {
+  const rows = await prisma.payment.findMany({
+    where: {
+      status: "pending",
+      order_id: { startsWith: "bil_" },
+      created_at: { lt: new Date(now.getTime() - 10 * 60 * 1000) },
+    },
+  });
+  for (const p of rows) {
+    try {
+      const outcome = await resolveByOrderId(
+        p.order_id,
+        p.created_at,
+        p.amount,
+        now.getTime() - p.created_at.getTime() > DAY ? "failed" : "unknown",
+      );
+      if (outcome.outcome === "unknown") continue;
+      const sub = await prisma.subscription.findUnique({ where: { account_id: p.account_id } });
+      if (outcome.outcome === "paid") {
+        if (await markPaidOnce(p.id, outcome.r)) {
+          await extendSubscription(p.account_id, p.id, p.amount, 1);
+        }
+        if (sub?.billing_key != null) {
+          await prisma.subscription.update({
+            where: { id: sub.id },
+            data: { auto_renew: true, failed_count: 0, updated_at: new Date() },
+          });
+        }
+        console.log("[첫 결제] 결과를 확정했다: 결제됨", p.account_id, p.order_id);
+        continue;
+      }
+      if (await markFailedOnce(p.id, outcome.message)) {
+        // 켜지지 않은 채 남은 빌키를 지운다. 켜진 것(다른 카드로 이미 등록)은 둔다.
+        if (sub?.billing_key != null && !sub.auto_renew) {
+          await expireBilling(sub.billing_key, newOrderId("exp")).catch((err) =>
+            console.error("[첫 결제] 빌키를 지우지 못했다", p.account_id, err),
+          );
+          await prisma.subscription.update({
+            where: { id: sub.id },
+            data: { billing_key: null, updated_at: new Date() },
+          });
+        }
+        console.log("[첫 결제] 결과를 확정했다: 실패", p.account_id, p.order_id);
+      }
+    } catch (err) {
+      console.error("[첫 결제] 확정 중 오류", p.account_id, p.order_id, err);
+    }
+  }
 }

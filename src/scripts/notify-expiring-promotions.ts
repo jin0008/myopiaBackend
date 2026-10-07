@@ -7,6 +7,7 @@
  *
  * 하는 일은 셋이다. 순서가 중요하다.
  *
+ *   0. 결과를 모르는 첫 자동결제 확정(settleFirstCharges)
  *   1. 자동결제 갱신 — 끝나기 하루 안쪽인 구독을 등록된 카드로 청구한다
  *      (services/billing.ts). 동을 비우기 전에 해야 이어 내는 업체의 동이
  *      잠깐이라도 풀리지 않는다.
@@ -21,7 +22,7 @@ import "dotenv/config";
 import prisma from "../lib/prisma";
 import { kstDateString } from "../lib/promotionTerm";
 import { isEmailConfigured, sendEmail } from "../services/email";
-import { renewDueSubscriptions } from "../services/billing";
+import { renewDueSubscriptions, settleFirstCharges } from "../services/billing";
 
 /** 며칠 전에 알릴지. 하루 이틀로는 결제를 올릴 시간이 모자란다. */
 const NOTICE_DAYS = 7;
@@ -57,7 +58,11 @@ async function releaseExpiredRegions(now: Date): Promise<void> {
 }
 
 async function main() {
-  // 갱신이 맨 먼저다. 메일이 없으면 결과 안내만 건너뛴다.
+  // 결과를 모르던 첫 자동결제부터 확정한다. 그래야 그 계정이 다시 등록할 수
+  // 있고, 확정된 구독이 아래 갱신에 들어간다.
+  await settleFirstCharges(new Date());
+
+  // 갱신이 그다음이다. 메일이 없으면 결과 안내만 건너뛴다.
   await renewDueSubscriptions(new Date(), async (to, subject, html) => {
     if (!isEmailConfigured()) {
       console.warn("[갱신] SMTP 가 없어 안내를 보내지 못했다", to, subject);

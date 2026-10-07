@@ -17,7 +17,13 @@ import {
   registerBilling,
 } from "../services/nicepay";
 import { billingLimiter } from "../lib/security";
-import { chargeSafely, newOrderId, whyNotSellable } from "../services/billing";
+import {
+  chargeSafely,
+  markFailedOnce,
+  markPaidOnce,
+  newOrderId,
+  whyNotSellable,
+} from "../services/billing";
 
 /** 결제가 끝나면 돌아갈 자리. */
 const PARTNER_ORIGIN = "https://myopiamanage.org";
@@ -227,12 +233,17 @@ export async function syncFromNice(tid: string): Promise<void> {
   // 수법이 있는데, 우리가 적어 둔 금액과 맞춰 보면 걸린다.
   const amountOk = Number(r.amount ?? -1) === row.amount;
 
-  await prisma.payment.update({
-    where: { id: row.id },
+  // pending 인 줄만 바꾼다. 위에서 읽은 뒤 청구 경로가 먼저 확정했을 수 있다
+  // - 읽고 나서 쓰면 둘 다 기간을 늘린다. 바꾼 쪽만 기간을 늘린다.
+  const claimed = await prisma.payment.updateMany({
+    where: { id: row.id, status: "pending" },
     data: {
       tid,
       status: paid && amountOk ? "paid" : "failed",
-      pay_method: typeof r.payMethod === "string" ? r.payMethod : null,
+      // 자동결제 건은 우리가 적어 둔 'billing' 을 지키고, 결제창 건은 나이스 값으로.
+      ...(row.pay_method === "billing"
+        ? {}
+        : { pay_method: typeof r.payMethod === "string" ? r.payMethod : null }),
       paid_at: paid && amountOk ? new Date() : null,
       failed_reason: paid
         ? amountOk
@@ -244,11 +255,20 @@ export async function syncFromNice(tid: string): Promise<void> {
     },
   });
 
-  if (!(paid && amountOk)) return;
+  if (claimed.count !== 1 || !(paid && amountOk)) return;
 
   // 결제창을 거치지 않고 웹훅만 먼저 오는 경우(가상계좌 입금 등)가 있다.
   // 그때도 같은 함수를 쓴다 - 두 벌로 두면 한쪽만 고쳐져 기간이 갈린다.
   await extendSubscription(row.account_id, row.id, row.amount, row.months);
+
+  // 결과를 모르던 첫 자동결제를 웹훅이 확정했다. 카드 등록 때 구독에 적어 둔
+  // 빌키로 자동결제를 켠다.
+  if (orderId.startsWith("bil_")) {
+    await prisma.subscription.updateMany({
+      where: { account_id: row.account_id, billing_key: { not: null } },
+      data: { auto_renew: true, failed_count: 0, updated_at: new Date() },
+    });
+  }
 }
 
 /* ---- 파트너 ----------------------------------------------------------- */
@@ -383,14 +403,10 @@ async function registerAndCharge(
     return;
   }
   // 지난 첫 결제의 결과를 아직 모르면 새로 받지 않는다. 그쪽이 실제로는
-  // 빠졌을 수 있어, 다시 등록하면 두 번 빠진다.
+  // 빠졌을 수 있어, 다시 등록하면 두 번 빠진다. 기한을 두지 않는다 - 매일
+  // 도는 작업(settleFirstCharges)이 하루 안에 결과를 확정해 풀어 준다.
   const unsettled = await prisma.payment.findFirst({
-    where: {
-      account_id: accountId,
-      status: "pending",
-      order_id: { startsWith: "bil_" },
-      created_at: { gt: new Date(Date.now() - 24 * 3600 * 1000) },
-    },
+    where: { account_id: accountId, status: "pending", order_id: { startsWith: "bil_" } },
   });
   if (unsettled != null) {
     res.status(409).json({
@@ -423,6 +439,30 @@ async function registerAndCharge(
   }
 
   const amount = MONTHLY_AMOUNT;
+
+  // 빌키는 받자마자 구독에 적는다(자동결제는 끈 채로). 결과를 모르는 채
+  // 끝나도 빌키를 잃지 않게 - 잃으면 나이스에 아무도 못 지우는 카드 연결이
+  // 남는다. payment.raw 에 두면 웹훅이 나이스 응답으로 덮어쓴다.
+  // 켜지지 않은 채 남아 있던 지난 빌키는 지운다.
+  if (existing?.billing_key != null && existing.billing_key !== bid) {
+    await expireBilling(existing.billing_key, newOrderId("exp")).catch((err) =>
+      console.error("[billing] 지난 빌키를 지우지 못했다", accountId, err),
+    );
+  }
+  await prisma.subscription.upsert({
+    where: { account_id: accountId },
+    create: {
+      account_id: accountId,
+      // 아직 돈을 받지 않았다. 기간은 첫 결제가 확정될 때 extendSubscription 이 민다.
+      status: "pending",
+      current_period_end: new Date(),
+      amount,
+      billing_key: bid,
+      auto_renew: false,
+    },
+    update: { billing_key: bid, auto_renew: false, updated_at: new Date() },
+  });
+
   // bil_ 로 시작한다 - 결과를 모르는 첫 결제를 위에서 찾는 열쇠다.
   const orderId = newOrderId("bil");
   const row = await prisma.payment.create({
@@ -446,11 +486,11 @@ async function registerAndCharge(
 
   if (outcome.outcome === "unknown") {
     // 돈이 빠졌는지 모른다. 실패로 적고 빌키를 지우면, 실제로는 빠진 돈이
-    // 남고 파트너는 다시 결제한다. 줄은 pending 으로 두고 빌키를 남겨 사람이
-    // 확정한다(나이스 가맹점 관리자에서 주문번호로 확인).
+    // 남고 파트너는 다시 결제한다. 줄은 pending 으로 두고(빌키는 위에서 구독에
+    // 적었다) 웹훅이나 매일 도는 settleFirstCharges 가 확정한다.
     await prisma.payment.update({
       where: { id: row.id },
-      data: { failed_reason: "결제 결과 확인 중", raw: { bid } as object, updated_at: new Date() },
+      data: { failed_reason: "결제 결과 확인 중", updated_at: new Date() },
     });
     console.error("[billing] 첫 결제 결과 불명 - 사람이 확인해야 한다", accountId, orderId);
     res.status(202).json({
@@ -461,32 +501,26 @@ async function registerAndCharge(
   }
   if (outcome.outcome === "failed") {
     console.error("[billing] 첫 청구 실패", accountId, orderId);
-    await prisma.payment.update({
-      where: { id: row.id },
-      data: { status: "failed", failed_reason: outcome.message, updated_at: new Date() },
-    });
+    await markFailedOnce(row.id, outcome.message);
     await expireBilling(bid, newOrderId("exp")).catch((err) =>
       console.error("[billing] 실패한 등록의 빌키를 지우지 못했다", accountId, err),
     );
+    await prisma.subscription.updateMany({
+      where: { account_id: accountId, billing_key: bid },
+      data: { billing_key: null, updated_at: new Date() },
+    });
     res.status(400).json({ code: "charge_failed", message: outcome.message });
     return;
   }
 
-  await prisma.payment.update({
-    where: { id: row.id },
-    data: {
-      tid: typeof outcome.r.tid === "string" ? outcome.r.tid : null,
-      status: "paid",
-      paid_at: new Date(),
-      raw: outcome.r as object,
-      updated_at: new Date(),
-    },
-  });
-  // 돈이 들어왔다. 기간과 광고는 단건 결제와 같은 함수로 민다.
-  await extendSubscription(accountId, row.id, amount, 1);
+  // 돈이 들어왔다. 기간과 광고는 단건 결제와 같은 함수로 민다. 웹훅이 먼저
+  // 확정했으면 그쪽이 이미 밀었으니 또 밀지 않는다.
+  if (await markPaidOnce(row.id, outcome.r)) {
+    await extendSubscription(accountId, row.id, amount, 1);
+  }
   await prisma.subscription.update({
     where: { account_id: accountId },
-    data: { billing_key: bid, auto_renew: true, failed_count: 0, updated_at: new Date() },
+    data: { auto_renew: true, failed_count: 0, updated_at: new Date() },
   });
   res.json({ ok: true });
 }
