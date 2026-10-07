@@ -354,14 +354,25 @@ async function refreshOpticalShops() {
   const file = path.join(DIR, "optical_shops.csv");
   const existing = new Map(parseCsv(fs.readFileSync(file, "utf8")).map((r) => [r.licenseNo, r]));
 
-  const raw = await fetchAllPages(OPTICAL_URL, { returnType: "json" }, pickItems, 100);
+  // 받는 사이 자료가 갱신되면 순서가 밀려 같은 곳이 두 번 오고, 그만큼 다른
+  // 곳이 빠진다. 빠진 곳은 폐업으로 잡히므로 중복을 합치고 넘어가면 안 된다.
+  // 한 번 더 받아 보고, 그래도 겹치면 이번 회차를 멈춘다.
+  let raw: Row[] = [];
+  let byNo = new Map<string, Row>();
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    raw = await fetchAllPages(OPTICAL_URL, { returnType: "json" }, pickItems, 100);
+    byNo = new Map(raw.map((r) => [r.MNG_NO, r]));
+    if (byNo.size === raw.length) break;
+    console.error(`  안경업 목록에 겹친 곳 ${raw.length - byNo.size}건 - 다시 받는다`);
+    if (attempt === 2) {
+      throw new Error(`안경업 목록이 받는 사이 바뀌었다(겹친 곳 ${raw.length - byNo.size}건)`);
+    }
+  }
   assertColumns(
     raw,
     ["MNG_NO", "BPLC_NM", "SALS_STTS_CD", "ROAD_NM_ADDR", "LOTNO_ADDR", "TELNO", "VRTX_RFRCTMTR_CNT", "EYCHRT_CNT", "LCPMT_YMD"],
     "안경업 목록",
   );
-  // 페이지가 넘어가는 사이 순서가 밀려 같은 곳이 두 번 오기도 한다.
-  const byNo = new Map(raw.map((r) => [r.MNG_NO, r]));
   const operating = [...byNo.values()].filter((r) => r.SALS_STTS_CD === OPERATING);
   console.log(`안경업 ${byNo.size}곳 중 영업 중 ${operating.length}곳`);
 
