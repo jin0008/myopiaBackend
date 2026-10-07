@@ -4,14 +4,7 @@ import zod from "zod";
 import prisma from "../lib/prisma";
 import { partnerRequired } from "../lib/partnerAuth";
 import { extendSubscription } from "../services/subscription";
-import { AD_SLOTS } from "../lib/adSlots";
 import { GOODS_NAME, MONTHLY_AMOUNT, isPriced } from "../lib/pricing";
-import {
-  RegionUnknown,
-  adsInRegion,
-  linkedFacility,
-  regionOf,
-} from "../services/promotionSlots";
 import { siteAdminRequired } from "../lib/middlewares";
 import {
   NiceError,
@@ -25,6 +18,7 @@ import {
   registerBilling,
 } from "../services/nicepay";
 import { billingLimiter } from "../lib/security";
+import { newOrderId, whyNotSellable } from "../services/billing";
 
 /** 결제가 끝나면 돌아갈 자리. */
 const PARTNER_ORIGIN = "https://myopiamanage.org";
@@ -32,65 +26,6 @@ const PARTNER_ORIGIN = "https://myopiamanage.org";
 const RETURN_URL = `${PARTNER_ORIGIN}/api/payment/nice/return`;
 
 const router = express.Router();
-
-/**
- * 이 계정에 지금 팔 수 있나. 막히면 화면에 보낼 상태와 몸통을, 아니면 null.
- *
- * 단건 결제(checkout)와 카드 등록(billing)이 같은 문을 지난다. 두 벌로
- * 두면 한쪽만 고쳐져 "결제창으로는 막히는데 자동결제로는 같은 동에 둘이
- * 걸리는" 구멍이 생긴다.
- */
-async function whyNotSellable(
-  accountId: string,
-): Promise<{ status: number; body: Record<string, string> } | null> {
-  // 업체가 묶이지 않은 계정은 광고를 걸 곳이 없다. 돈부터 받고 나서
-  // "그런데 어느 가게죠"를 물으면 안 된다.
-  const account = await prisma.hospital_account.findUnique({
-    where: { id: accountId },
-    select: { facility_key: true },
-  });
-  const me = account?.facility_key == null ? null : await linkedFacility(accountId);
-  if (me == null) {
-    return {
-      status: 403,
-      body: { code: "facility_not_linked", message: "업체 인증을 먼저 마쳐 주세요." },
-    };
-  }
-  // 같은 행정동에 이미 광고가 있으면 팔지 않는다. 동 하나에 한 곳이 이
-  // 상품의 전부고, 돈을 받고 나서 거절하면 환불을 해야 하는 데다 그 사이
-  // "독점을 샀는데 옆집도 뜬다"는 말을 듣는다. 막는 자리는 결제 전이다.
-  try {
-    const region = await regionOf(me.lat, me.lng);
-    const taken = await adsInRegion(me.kind, region.code, me.key);
-    if (taken.length >= AD_SLOTS) {
-      return {
-        status: 409,
-        body: {
-          code: "region_taken",
-          message: `${region.name}에 이미 노출 중인 곳이 있어 신청할 수 없습니다.`,
-        },
-      };
-    }
-  } catch (e) {
-    // 동을 모르면 팔지 않는다. 모르는 채로 팔면 같은 동에 둘이 걸린다.
-    if (e instanceof RegionUnknown) {
-      return {
-        status: 503,
-        body: {
-          code: "region_unknown",
-          message: "지금은 신청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.",
-        },
-      };
-    }
-    throw e;
-  }
-  return null;
-}
-
-/** 주문번호. 같은 번호로 두 번 청구되지 않는다(payment.order_id unique). */
-function newOrderId(prefix: string): string {
-  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
 
 /* ---- 결제창 ----------------------------------------------------------
  *

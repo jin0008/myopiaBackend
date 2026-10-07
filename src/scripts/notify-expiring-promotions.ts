@@ -5,19 +5,23 @@
  *
  * 하루에 한 번 돌린다(systemd timer).
  *
- * 자동 청구가 아니다. 나이스 V2 결제창에는 카드 등록(빌링키 발급)이 없고,
- * 빌링키는 카드번호를 우리가 직접 받아 암호화해 보내야만 나온다. 소아
- * 의료 자료를 들고 있는 서버에 카드번호까지 얹을 일이 아니라, 지금은
- * 알려 주고 파트너가 직접 연장하게 한다.
+ * 하는 일은 셋이다. 순서가 중요하다.
  *
- * 받는 쪽이 준비되면(인증형 빌키발급 상품) 여기에 청구를 붙이면 된다 -
- * 기간 계산과 결제 기록은 직접 결제와 같은 것을 쓰고 있다.
+ *   1. 자동결제 갱신 — 끝나기 하루 안쪽인 구독을 등록된 카드로 청구한다
+ *      (services/billing.ts). 동을 비우기 전에 해야 이어 내는 업체의 동이
+ *      잠깐이라도 풀리지 않는다.
+ *   2. 끝난 광고의 동 비우기
+ *   3. 7일 전 안내 — 자동결제면 "결제 예정", 아니면 "직접 연장" 안내
+ *
+ * 1·2 는 메일 설정과 무관하게 돈다. 메일이 안 된다고 청구를 건너뛰면
+ * 이어 내려던 업체의 광고가 끊긴다.
  */
 import "dotenv/config";
 
 import prisma from "../lib/prisma";
 import { kstDateString } from "../lib/promotionTerm";
 import { isEmailConfigured, sendEmail } from "../services/email";
+import { renewDueSubscriptions } from "../services/billing";
 
 /** 며칠 전에 알릴지. 하루 이틀로는 결제를 올릴 시간이 모자란다. */
 const NOTICE_DAYS = 7;
@@ -53,7 +57,16 @@ async function releaseExpiredRegions(now: Date): Promise<void> {
 }
 
 async function main() {
-  // 자리 비우기가 먼저다. 메일 설정이 없다고 아래에서 돌아가 버리면, 끝난
+  // 갱신이 맨 먼저다. 메일이 없으면 결과 안내만 건너뛴다.
+  await renewDueSubscriptions(new Date(), async (to, subject, html) => {
+    if (!isEmailConfigured()) {
+      console.warn("[갱신] SMTP 가 없어 안내를 보내지 못했다", to, subject);
+      return;
+    }
+    await sendEmail([to], subject, html);
+  });
+
+  // 자리 비우기가 그다음이다. 메일 설정이 없다고 아래에서 돌아가 버리면, 끝난
   // 광고가 동을 쥔 채로 남아 그 동이 영영 안 팔린다.
   await releaseExpiredRegions(new Date());
 
@@ -87,10 +100,22 @@ async function main() {
       continue;
     }
     const on = korean(s.current_period_end);
+    // 자동결제 중이면 "연장하세요"가 아니라 "빠져나갑니다"를 미리 알린다.
+    // 전자상거래법상 정기결제는 결제 전에 알려야 한다.
+    const auto = s.auto_renew && s.billing_key != null;
     try {
       await sendEmail(
         [s.account.email],
-        "[마이오닥] 프리미엄 노출 기간 안내",
+        auto ? "[마이오닥] 자동결제 예정 안내" : "[마이오닥] 프리미엄 노출 기간 안내",
+        auto
+          ? `<p>${s.account.hospital_name} 님, 안녕하세요.</p>
+         <p>이용 중인 프리미엄 노출이 <b>${on}</b>에 갱신되며, 등록하신 카드로
+            <b>${won(s.amount)}</b>이 자동 결제될 예정입니다.</p>
+         <p>더 이용하지 않으시려면 그 전에 파트너 페이지에서 자동결제를 해지해
+            주세요. 해지해도 ${on}까지는 그대로 노출됩니다.</p>
+         <p><a href="${PARTNER_URL}">${PARTNER_URL}</a></p>
+         <p>감사합니다.</p>`
+          :
         `<p>${s.account.hospital_name} 님, 안녕하세요.</p>
          <p>현재 이용 중인 프리미엄 노출 기간이 <b>${on}</b>에 종료됩니다.</p>
          <p>기간이 끝나면 찾기 탭 상단 노출이 중단되며, 계속 이용을 원하실 경우
