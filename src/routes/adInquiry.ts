@@ -3,6 +3,7 @@ import zod from "zod";
 
 import prisma from "../lib/prisma";
 import { siteAdminRequired } from "../lib/middlewares";
+import { ADMIN_URL, alertAdmin, escapeHtml } from "../services/email";
 
 const router = express.Router();
 
@@ -61,6 +62,26 @@ router.post("/", async (req, res) => {
     },
   });
   res.status(201).json({ ok: true });
+
+  // 운영자가 매일 관리자 페이지를 열어 보지 않아도 되게 메일로도 알린다.
+  // 답장은 운영자가 직접 쓴다 - 메일에서 '답장'을 누르면 문의한 사람에게 간다.
+  const kindName = { optical: "안경원", eye: "안과", company: "제약·관련회사" }[b.kind];
+  const e = escapeHtml;
+  alertAdmin(
+    `[마이오닥 광고 문의] ${b.org} (${kindName})`,
+    `<p>새 광고 문의가 들어왔습니다.</p>
+     <table cellpadding="4">
+       <tr><td>업종</td><td>${kindName}</td></tr>
+       <tr><td>업체</td><td><b>${e(b.org)}</b></td></tr>
+       <tr><td>담당자</td><td>${e(b.contactName)}</td></tr>
+       <tr><td>연락처</td><td>${e(b.phone)}</td></tr>
+       <tr><td>이메일</td><td>${e(b.email)}</td></tr>
+       <tr><td>내용</td><td>${b.memo ? e(b.memo).replace(/\n/g, "<br />") : "(없음)"}</td></tr>
+     </table>
+     <p>이 메일에 <b>답장</b>하면 ${e(b.email)} 로 바로 갑니다.</p>
+     <p><a href="${ADMIN_URL}/ad-inquiries">관리자 페이지에서 보기</a></p>`,
+    b.email,
+  );
 });
 
 /** GET /api/ad-inquiry — 운영자 목록. 처리 안 된 것부터 최근 순. */

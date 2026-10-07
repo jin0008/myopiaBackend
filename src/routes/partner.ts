@@ -29,6 +29,7 @@ import {
   verifyCode,
   VerificationError,
 } from "../services/emailVerification";
+import { ADMIN_URL, alertAdmin, escapeHtml } from "../services/email";
 
 const router = express.Router();
 
@@ -1035,7 +1036,7 @@ router.post(
 
     const account = await prisma.hospital_account.findUnique({
       where: { id: req.partner!.sub },
-      select: { business_kind: true, facility_key: true },
+      select: { business_kind: true, facility_key: true, email: true, hospital_name: true },
     });
     if (account == null) {
       discard();
@@ -1087,6 +1088,23 @@ router.post(
         },
       });
       res.status(201).json(verificationDTO(row));
+
+      // 승인할 사람이 관리자 페이지를 매일 열어 보지 않아도 되게 알린다.
+      alertAdmin(
+        `[마이오닥 업체 인증 신청] ${exists.name} (${kind === "optical" ? "안경원" : "안과"})`,
+        `<p>새 업체 인증 신청이 들어왔습니다.</p>
+         <table cellpadding="4">
+           <tr><td>업종</td><td>${kind === "optical" ? "안경원" : "안과"}</td></tr>
+           <tr><td>업체(명부)</td><td><b>${escapeHtml(exists.name)}</b></td></tr>
+           <tr><td>가입 이름</td><td>${escapeHtml(account.hospital_name)}</td></tr>
+           <tr><td>계정 이메일</td><td>${escapeHtml(account.email)}</td></tr>
+           <tr><td>첨부 서류</td><td>${files.length}개</td></tr>
+           ${parsed.data.note ? `<tr><td>메모</td><td>${escapeHtml(parsed.data.note)}</td></tr>` : ""}
+         </table>
+         <p>서류를 확인하고 승인하면 그 업체에 결제가 열립니다.</p>
+         <p><a href="${ADMIN_URL}/verifications">관리자 페이지에서 승인하기</a></p>`,
+        account.email,
+      );
     } catch (e) {
       // 대기 중 신청은 계정당 하나(부분 유니크 인덱스).
       discard();

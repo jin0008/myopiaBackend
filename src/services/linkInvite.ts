@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 
 import prisma from "../lib/prisma";
-import { sendEmail } from "./email";
+import { escapeHtml, sendEmail } from "./email";
 
 /**
  * 병원이 부모에게 건네는 일회용 연동 초대.
@@ -118,10 +118,4 @@ export async function sendInviteEmail(params: {
       </p>
     </div>`;
   await sendEmail([params.to], "[마이오닥] 아이 진료 기록 연동 안내", html);
-}
-
-function escapeHtml(v: string): string {
-  return v.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!,
-  );
 }
