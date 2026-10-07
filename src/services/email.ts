@@ -60,8 +60,11 @@ export function escapeHtml(v: string): string {
   );
 }
 
-/** 운영자 알림을 받는 주소. 관리자 페이지에 새 일이 생겼을 때 여기로 보낸다. */
-const ADMIN_ALERT_TO = process.env.ADMIN_ALERT_EMAIL || "myodoc@idx.ai.kr";
+/** 운영자 알림을 받는 주소들. 쉼표로 여러 개("a@x.kr,b@y.com"). 비우면 공용 주소. */
+const ADMIN_ALERT_TO = (process.env.ADMIN_ALERT_EMAIL || "myodoc@idx.ai.kr")
+  .split(",")
+  .map((v) => v.trim())
+  .filter((v) => v !== "");
 
 /** 관리자 페이지 주소. 알림 메일에서 바로 처리하러 가게 링크를 단다. */
 export const ADMIN_URL = (process.env.PARTNER_ORIGIN ?? "https://myopiamanage.org") + "/admin";
@@ -74,7 +77,7 @@ export const ADMIN_URL = (process.env.PARTNER_ORIGIN ?? "https://myopiamanage.or
  * 페이지에서 보인다.
  */
 export function alertAdmin(subject: string, html: string, replyTo?: string): void {
-  void sendEmail([ADMIN_ALERT_TO], subject, html, replyTo).catch((err) =>
+  void sendEmail(ADMIN_ALERT_TO, subject, html, replyTo).catch((err) =>
     console.error("[알림] 운영자 메일을 보내지 못했다", subject, err),
   );
 }
