@@ -43,9 +43,10 @@ router.get("/", siteAdminRequired, async (_req, res) => {
       FROM g`,
     // 가입이 없는 날도 0 으로 채운다. 빠진 날이 있으면 막대 사이가 벌어지지 않아
     // 하루 쉰 것이 안 보인다.
-    prisma.$queryRaw<{ day: Date; count: bigint }[]>`
+    prisma.$queryRaw<{ day: string; count: bigint }[]>`
       ${GUARDIANS}
-      SELECT d::date AS day, COALESCE(c.n, 0) AS count
+      -- 날짜는 문자열로 받는다. date 를 Date 로 바꿔 주는지는 드라이버마다 달라 기대지 않는다.
+      SELECT to_char(d, 'YYYY-MM-DD') AS day, COALESCE(c.n, 0) AS count
       FROM generate_series(
         (now() AT TIME ZONE 'Asia/Seoul')::date - 29,
         (now() AT TIME ZONE 'Asia/Seoul')::date,
@@ -91,7 +92,7 @@ router.get("/", siteAdminRequired, async (_req, res) => {
     today: n(c?.today),
     last7: n(c?.last7),
     thisMonth: n(c?.month),
-    daily: daily.map((d) => ({ day: d.day.toISOString().slice(0, 10), count: n(d.count) })),
+    daily: daily.map((d) => ({ day: d.day, count: n(d.count) })),
     methods: {
       email: byMethod.email ?? 0,
       kakao: byMethod.kakao ?? 0,
