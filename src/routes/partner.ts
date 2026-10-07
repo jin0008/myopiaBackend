@@ -835,33 +835,45 @@ async function facilitiesByName(q: string) {
   // 되찾는 조회(in: keys)에서는 감추지 않는다 - 거기서 빠지면 운영자
   // 화면에 번호만 남아 무엇이 폐업했는지 알 수 없다.
   if (q.length < 2) return [];
-  const like = { contains: q, mode: "insensitive" as const };
+  // 낱말마다 이름이나 주소 어딘가에 있어야 한다. "연세안과" 하나로는 전국
+  // 수십 곳이 걸려 15곳 안에 원하는 곳이 안 들 수 있다 - "연세안과 신정동"
+  // 처럼 동네를 붙여 좁힌다.
+  const words = q.split(/\s+/).filter((w) => w !== "");
+  const where = {
+    closed_at: null,
+    AND: words.map((w) => {
+      const like = { contains: w, mode: "insensitive" as const };
+      return { OR: [{ name: like }, { address: like }] };
+    }),
+  };
+  // 넉넉히 받아 정렬한 뒤 자른다. DB 가 주는 순서는 아무 의미가 없어, 상호가
+  // 정확히 같은 곳이 뒤로 밀려 잘린 적이 있다(양천구 연세안과의원).
   const [clinics, shops] = await Promise.all([
-    prisma.eye_clinic.findMany({
-      where: { closed_at: null, OR: [{ name: like }, { address: like }] },
-      select: { ykiho: true, name: true, address: true },
-      take: 15,
-    }),
-    prisma.optical_shop.findMany({
-      where: { closed_at: null, OR: [{ name: like }, { address: like }] },
-      select: { license_no: true, name: true, address: true },
-      take: 15,
-    }),
+    prisma.eye_clinic.findMany({ where, select: { ykiho: true, name: true, address: true }, take: 200 }),
+    prisma.optical_shop.findMany({ where, select: { license_no: true, name: true, address: true }, take: 200 }),
   ]);
   return [
-    ...clinics.map((c) => ({
-      kind: "eye" as const,
-      key: c.ykiho,
-      name: c.name,
-      address: c.address,
-    })),
-    ...shops.map((sh) => ({
-      kind: "optical" as const,
-      key: sh.license_no,
-      name: sh.name,
-      address: sh.address,
-    })),
+    ...rankByName(
+      clinics.map((c) => ({ kind: "eye" as const, key: c.ykiho, name: c.name, address: c.address })),
+      words[0],
+    ),
+    ...rankByName(
+      shops.map((sh) => ({ kind: "optical" as const, key: sh.license_no, name: sh.name, address: sh.address })),
+      words[0],
+    ),
   ];
+}
+
+/** 상호가 첫 낱말과 같은 곳 → 그것으로 시작하는 곳 → 포함하는 곳 → 주소만 맞는 곳. 15곳까지. */
+function rankByName<T extends { name: string }>(rows: T[], word: string): T[] {
+  const w = word.toLowerCase();
+  const score = (name: string) => {
+    const n = name.toLowerCase();
+    return n === w ? 0 : n.startsWith(w) ? 1 : n.includes(w) ? 2 : 3;
+  };
+  return [...rows]
+    .sort((a, b) => score(a.name) - score(b.name) || a.name.localeCompare(b.name, "ko"))
+    .slice(0, 15);
 }
 
 /** 운영자가 광고를 걸 업체를 찾는다. */
