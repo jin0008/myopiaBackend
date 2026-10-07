@@ -14,12 +14,17 @@ import {
 } from "../services/promotionSlots";
 import { siteAdminRequired } from "../lib/middlewares";
 import {
+  NiceError,
   approvePayment,
   cancelPayment,
+  chargeBilling,
   clientKey,
+  expireBilling,
   getPayment,
   isConfigured,
+  registerBilling,
 } from "../services/nicepay";
+import { billingLimiter } from "../lib/security";
 
 /** 결제가 끝나면 돌아갈 자리. */
 const PARTNER_ORIGIN = "https://myopiamanage.org";
@@ -27,6 +32,65 @@ const PARTNER_ORIGIN = "https://myopiamanage.org";
 const RETURN_URL = `${PARTNER_ORIGIN}/api/payment/nice/return`;
 
 const router = express.Router();
+
+/**
+ * 이 계정에 지금 팔 수 있나. 막히면 화면에 보낼 상태와 몸통을, 아니면 null.
+ *
+ * 단건 결제(checkout)와 카드 등록(billing)이 같은 문을 지난다. 두 벌로
+ * 두면 한쪽만 고쳐져 "결제창으로는 막히는데 자동결제로는 같은 동에 둘이
+ * 걸리는" 구멍이 생긴다.
+ */
+async function whyNotSellable(
+  accountId: string,
+): Promise<{ status: number; body: Record<string, string> } | null> {
+  // 업체가 묶이지 않은 계정은 광고를 걸 곳이 없다. 돈부터 받고 나서
+  // "그런데 어느 가게죠"를 물으면 안 된다.
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: accountId },
+    select: { facility_key: true },
+  });
+  const me = account?.facility_key == null ? null : await linkedFacility(accountId);
+  if (me == null) {
+    return {
+      status: 403,
+      body: { code: "facility_not_linked", message: "업체 인증을 먼저 마쳐 주세요." },
+    };
+  }
+  // 같은 행정동에 이미 광고가 있으면 팔지 않는다. 동 하나에 한 곳이 이
+  // 상품의 전부고, 돈을 받고 나서 거절하면 환불을 해야 하는 데다 그 사이
+  // "독점을 샀는데 옆집도 뜬다"는 말을 듣는다. 막는 자리는 결제 전이다.
+  try {
+    const region = await regionOf(me.lat, me.lng);
+    const taken = await adsInRegion(me.kind, region.code, me.key);
+    if (taken.length >= AD_SLOTS) {
+      return {
+        status: 409,
+        body: {
+          code: "region_taken",
+          message: `${region.name}에 이미 노출 중인 곳이 있어 신청할 수 없습니다.`,
+        },
+      };
+    }
+  } catch (e) {
+    // 동을 모르면 팔지 않는다. 모르는 채로 팔면 같은 동에 둘이 걸린다.
+    if (e instanceof RegionUnknown) {
+      return {
+        status: 503,
+        body: {
+          code: "region_unknown",
+          message: "지금은 신청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        },
+      };
+    }
+    throw e;
+  }
+  return null;
+}
+
+/** 주문번호. 같은 번호로 두 번 청구되지 않는다(payment.order_id unique). */
+function newOrderId(prefix: string): string {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 /* ---- 결제창 ----------------------------------------------------------
  *
@@ -64,59 +128,15 @@ router.post("/checkout", partnerRequired, async (req, res) => {
     return;
   }
   const accountId = req.partner!.sub;
-
-  // 업체가 묶이지 않은 계정은 광고를 걸 곳이 없다. 돈부터 받고 나서
-  // "그런데 어느 가게죠"를 물으면 안 된다.
-  const account = await prisma.hospital_account.findUnique({
-    where: { id: accountId },
-    select: { facility_key: true, hospital_name: true },
-  });
-  if (account?.facility_key == null) {
-    res.status(403).json({
-      code: "facility_not_linked",
-      message: "업체 인증을 먼저 마쳐 주세요.",
-    });
-    return;
-  }
-
   const months = parsed.data.months;
-
-  // 같은 행정동에 이미 광고가 있으면 팔지 않는다. 동 하나에 한 곳이 이
-  // 상품의 전부고, 돈을 받고 나서 거절하면 환불을 해야 하는 데다 그 사이
-  // "독점을 샀는데 옆집도 뜬다"는 말을 듣는다. 막는 자리는 결제 전이다.
-  const me = await linkedFacility(accountId);
-  if (me == null) {
-    res.status(403).json({
-      code: "facility_not_linked",
-      message: "업체 인증을 먼저 마쳐 주세요.",
-    });
+  const blocked = await whyNotSellable(accountId);
+  if (blocked != null) {
+    res.status(blocked.status).json(blocked.body);
     return;
-  }
-  try {
-    const region = await regionOf(me.lat, me.lng);
-    const taken = await adsInRegion(me.kind, region.code, me.key);
-    if (taken.length >= AD_SLOTS) {
-      res.status(409).json({
-        code: "region_taken",
-        message: `${region.name}에 이미 노출 중인 곳이 있어 신청할 수 없습니다.`,
-      });
-      return;
-    }
-  } catch (e) {
-    // 동을 모르면 팔지 않는다. 모르는 채로 팔면 같은 동에 둘이 걸린다.
-    if (e instanceof RegionUnknown) {
-      res.status(503).json({
-        code: "region_unknown",
-        message: "지금은 신청을 처리할 수 없습니다. 잠시 후 다시 시도해 주세요.",
-      });
-      return;
-    }
-    throw e;
   }
 
   const amount = MONTHLY_AMOUNT * months;
-  // 주문번호는 우리가 만든다. 같은 번호로 두 번 승인되지 않는다(unique).
-  const orderId = `sub_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  const orderId = newOrderId("sub");
 
   await prisma.payment.create({
     data: { account_id: accountId, order_id: orderId, amount, months, status: "pending" },
@@ -314,6 +334,7 @@ router.get("/me", partnerRequired, async (req, res) => {
     // 아무 일이 없다. 그 사실을 숨기지 않는다.
     // 값이 없으면 결제 버튼도 보이지 않는다. 눌러도 503 이 날 뿐이다.
     available: isConfigured() && isPriced(),
+    billingAvailable: billingEnabled(),
     subscription:
       sub == null
         ? null
@@ -323,6 +344,8 @@ router.get("/me", partnerRequired, async (req, res) => {
             currentPeriodEnd: sub.current_period_end.toISOString(),
             amount: sub.amount,
             canceledAt: sub.canceled_at?.toISOString() ?? null,
+            // 카드가 등록되어 매달 빠져나가는 중인가.
+            autoRenew: sub.auto_renew && sub.billing_key != null,
           },
     payments: payments.map((p) => ({
       id: p.id,
@@ -335,6 +358,155 @@ router.get("/me", partnerRequired, async (req, res) => {
       createdAt: p.created_at.toISOString(),
     })),
   });
+});
+
+/* ---- 정기결제(빌링) ----------------------------------------------------
+ *
+ *   1. 카드 등록  — 카드 정보를 암호화해 나이스로 보내 빌키(bid)를 받는다
+ *   2. 첫 달 청구 — 받은 빌키로 바로 한 달치를 청구한다
+ *   3. 매달 청구  — 기간이 끝나 가면 같은 빌키로 다시 청구한다(별도 작업)
+ *
+ * 카드 정보는 1번 한 번만 이 서버를 지난다. 저장하지 않고 로그에도 남기지
+ * 않는다. 남는 것은 빌키뿐이다.
+ *
+ * 나이스가 빌링을 열어 주기 전에는(결제 경로 심사) 운영 키로 등록이 되지
+ * 않는다. NICEPAY_BILLING_ENABLED=1 일 때만 화면에 내놓는다.
+ */
+
+/** 정기결제를 팔 수 있나. 꺼져 있으면 화면이 카드 등록을 띄우지 않는다. */
+function billingEnabled(): boolean {
+  return isConfigured() && isPriced() && process.env.NICEPAY_BILLING_ENABLED === "1";
+}
+
+const cardSchema = zod.object({
+  cardNo: zod.string().regex(/^\d{14,16}$/),
+  expYear: zod.string().regex(/^\d{2}$/),
+  expMonth: zod.string().regex(/^(0[1-9]|1[0-2])$/),
+  // 개인카드는 생년월일 6자리, 법인카드는 사업자등록번호 10자리.
+  idNo: zod.string().regex(/^(\d{6}|\d{10})$/),
+  cardPw: zod.string().regex(/^\d{2}$/),
+  // 매달 빠져나간다는 데 동의했다는 표시. 카드를 받았다고 매달 빼 가도
+  // 된다는 뜻은 아니다 - 그 허락은 따로 받는다.
+  agree: zod.literal(true),
+});
+
+/**
+ * 카드를 등록하고 첫 달을 청구한다.
+ *
+ * 카드만 등록하고 청구는 다음 달부터 하는 길을 두지 않는다. 그러면 돈을
+ * 받기 전에 광고가 걸리거나, 걸지 않으면 "등록했는데 왜 안 뜨냐"를 듣는다.
+ *
+ * 첫 청구가 실패하면 받은 빌키를 지운다. 남겨 두면 쓰지 않는 카드 연결이
+ * 나이스에 쌓이고, 나중에 누군가 그 빌키로 청구할 수도 있다.
+ */
+router.post("/billing", partnerRequired, billingLimiter, async (req, res) => {
+  if (!billingEnabled()) {
+    res.status(503).json({ message: "정기결제는 아직 준비 중입니다." });
+    return;
+  }
+  const parsed = cardSchema.safeParse(req.body);
+  // 받은 몸통을 메시지나 로그에 싣지 않는다. 카드 정보다.
+  if (!parsed.success) {
+    res.status(400).json({ message: "카드 정보를 확인해 주세요." });
+    return;
+  }
+  const accountId = req.partner!.sub;
+
+  const existing = await prisma.subscription.findUnique({ where: { account_id: accountId } });
+  if (existing?.auto_renew && existing.billing_key != null) {
+    res.status(409).json({
+      code: "already_subscribed",
+      message: "이미 자동결제가 등록되어 있습니다. 카드를 바꾸려면 해지 후 다시 등록해 주세요.",
+    });
+    return;
+  }
+  const blocked = await whyNotSellable(accountId);
+  if (blocked != null) {
+    res.status(blocked.status).json(blocked.body);
+    return;
+  }
+
+  const { agree: _agree, ...card } = parsed.data;
+  let bid: string;
+  try {
+    ({ bid } = await registerBilling({ orderId: newOrderId("reg"), card }));
+  } catch (e) {
+    // 카드사가 준 말("유효기간 오류" 등)은 사람이 고칠 수 있는 말이라 그대로
+    // 보여 준다. 코드만 로그에 남긴다 - 카드 정보는 없다.
+    const code = e instanceof NiceError ? e.code : "unknown";
+    console.error("[billing] 카드 등록 실패", accountId, code);
+    res.status(400).json({
+      code: "card_rejected",
+      message: e instanceof NiceError ? e.message : "카드를 등록하지 못했습니다.",
+    });
+    return;
+  }
+
+  const amount = MONTHLY_AMOUNT;
+  const orderId = newOrderId("sub");
+  const row = await prisma.payment.create({
+    data: { account_id: accountId, order_id: orderId, amount, months: 1, status: "pending" },
+  });
+
+  try {
+    const r = await chargeBilling({ bid, orderId, amount, goodsName: `${GOODS_NAME} 월 자동결제` });
+    await prisma.payment.update({
+      where: { id: row.id },
+      data: {
+        tid: typeof r.tid === "string" ? r.tid : null,
+        status: "paid",
+        pay_method: "billing",
+        paid_at: new Date(),
+        raw: r as object,
+        updated_at: new Date(),
+      },
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : "결제에 실패했습니다.";
+    console.error("[billing] 첫 청구 실패", accountId, orderId, e instanceof NiceError ? e.code : "");
+    await prisma.payment.update({
+      where: { id: row.id },
+      data: { status: "failed", failed_reason: msg, updated_at: new Date() },
+    });
+    await expireBilling(bid, newOrderId("exp")).catch((err) =>
+      console.error("[billing] 실패한 등록의 빌키를 지우지 못했다", accountId, err),
+    );
+    res.status(400).json({ code: "charge_failed", message: msg });
+    return;
+  }
+
+  // 돈이 들어왔다. 기간과 광고는 단건 결제와 같은 함수로 민다.
+  await extendSubscription(accountId, row.id, amount, 1);
+  await prisma.subscription.update({
+    where: { account_id: accountId },
+    data: { billing_key: bid, auto_renew: true, failed_count: 0, updated_at: new Date() },
+  });
+  res.json({ ok: true });
+});
+
+/**
+ * 자동결제를 끊는다.
+ *
+ * 광고를 바로 내리지 않는다 - 이번 주기까지는 돈을 받았다. 다음 청구만
+ * 막고, 나이스에 맡긴 카드 연결(빌키)을 지운다.
+ */
+router.post("/billing/cancel", partnerRequired, async (req, res) => {
+  const accountId = req.partner!.sub;
+  const sub = await prisma.subscription.findUnique({ where: { account_id: accountId } });
+  if (sub?.billing_key == null) {
+    res.status(404).json({ message: "등록된 자동결제가 없습니다." });
+    return;
+  }
+  // 나이스에서 지우지 못해도 우리 쪽은 끊는다. 우리가 청구하지 않으면
+  // 돈은 빠지지 않는다. 지우지 못한 것은 로그로 남겨 사람이 정리한다.
+  await expireBilling(sub.billing_key, newOrderId("exp")).catch((err) =>
+    console.error("[billing] 해지 중 빌키를 지우지 못했다", accountId, err),
+  );
+  await prisma.subscription.update({
+    where: { id: sub.id },
+    data: { auto_renew: false, billing_key: null, canceled_at: new Date(), updated_at: new Date() },
+  });
+  res.json({ ok: true, currentPeriodEnd: sub.current_period_end.toISOString() });
 });
 
 /* ---- 운영자 ----------------------------------------------------------- */

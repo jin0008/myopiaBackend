@@ -130,12 +130,80 @@ export async function approvePayment(tid: string, amount: number): Promise<NiceR
   );
 }
 
+/** 빌키 발급에 보내는 카드 정보. 받는 즉시 암호화하고 어디에도 남기지 않는다. */
+export type CardInput = {
+  /** 숫자만. */
+  cardNo: string;
+  /** YY */
+  expYear: string;
+  /** MM */
+  expMonth: string;
+  /** 개인카드는 생년월일 6자리(YYMMDD), 법인카드는 사업자등록번호 10자리. */
+  idNo: string;
+  /** 비밀번호 앞 2자리. */
+  cardPw: string;
+};
+
+/** 나이스가 정한 평문 모양. 순서와 이름이 문서 그대로여야 한다. */
+export function cardPlain(c: CardInput): string {
+  return (
+    `cardNo=${c.cardNo}&expYear=${c.expYear}&expMonth=${c.expMonth}` +
+    `&idNo=${c.idNo}&cardPw=${c.cardPw}`
+  );
+}
+
+/**
+ * encData. encMode A2 = AES-256-CBC, 키는 SecretKey 32바이트, IV 는 그
+ * 앞 16자리, 결과는 hex. 문서 예시로 맞춰 본다(scripts/check-billing-enc.ts).
+ *
+ * 기본(AES-128-ECB) 대신 A2 를 쓴다. ECB 는 같은 평문이 같은 암호문이
+ * 되어, 같은 카드를 두 번 보내면 밖에서도 같은 카드임을 알 수 있다.
+ */
+export function encryptCard(plain: string, secret = process.env.NICEPAY_SECRET_KEY ?? ""): string {
+  if (secret.length !== 32) {
+    throw new NiceError("bad_secret", "결제 키 길이가 32자가 아닙니다.");
+  }
+  const cipher = crypto.createCipheriv(
+    "aes-256-cbc",
+    Buffer.from(secret, "utf8"),
+    Buffer.from(secret.slice(0, 16), "utf8"),
+  );
+  return Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]).toString("hex");
+}
+
+/**
+ * 카드를 등록하고 빌링키(bid)를 받는다.
+ *
+ * 카드 정보가 우리 서버를 거쳐 가는 유일한 자리다. 받은 값은 여기서
+ * 암호화해 보내고 끝이다 - 저장하지 않고, 로그에도, 예외 메시지에도
+ * 싣지 않는다. 남는 것은 나이스가 준 bid 뿐이다.
+ *
+ * 문서의 응답 예시는 키가 대문자(ResultCode, BID)이고 표는 소문자다. 둘 다
+ * 받는다.
+ */
+export async function registerBilling(args: {
+  orderId: string;
+  card: CardInput;
+  buyerName?: string;
+}): Promise<{ bid: string; cardName: string | null; raw: NiceResult }> {
+  const r = await call("/v1/subscribe/regist", {
+    encData: encryptCard(cardPlain(args.card)),
+    encMode: "A2",
+    orderId: args.orderId,
+    ...(args.buyerName ? { buyerName: args.buyerName } : {}),
+  });
+  const code = String(r.resultCode ?? r.ResultCode ?? "");
+  const msg = String(r.resultMsg ?? r.ResultMsg ?? "");
+  const bid = String(r.bid ?? r.BID ?? "");
+  if (code !== "0000" || bid === "") {
+    throw new NiceError(code || "regist_failed", msg || "카드를 등록하지 못했습니다.");
+  }
+  const cardName = r.cardName ?? r.CardName;
+  return { bid, cardName: typeof cardName === "string" ? cardName : null, raw: r };
+}
+
 /**
  * 빌링키로 청구한다.
- *
- * 아직 부르는 곳이 없다. 빌링키를 받을 길이 막혀 있어서다 - V2 결제창에는
- * 카드 등록이 없고, API 는 카드번호를 직접 받아야 한다. 받는 길이 열리면
- * 이것만 매달 부르면 된다.
  *
  * orderId 는 우리가 만든다. 같은 번호로 두 번 부르면 나이스가 거절하므로,
  * 재시도가 두 번 청구로 번지지 않는다.
