@@ -99,6 +99,8 @@ app.use("/api/mobile/link-invites", lookupLimiter);
 // nginx 가 /api 접두사를 떼고 넘긴다(/api/mobile 만 예외). 다른 관리
 // 라우트들과 같이 루트에 둬야 브라우저의 /api/ad-inquiry 가 여기 닿는다.
 app.post("/ad-inquiry", inquiryLimiter);
+// 가입한 파트너의 광고 문의도 같은 한도. 로그인했어도 계정 하나로 메일을 쏟을 수 있다.
+app.post("/partner/inquiry", inquiryLimiter);
 app.use("/partner/login", authLimiter);
 // 인증번호 발송은 남의 주소로도 호출할 수 있어 제한이 필요하다.
 app.use("/partner/password", authLimiter);

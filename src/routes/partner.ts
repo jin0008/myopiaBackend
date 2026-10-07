@@ -1345,6 +1345,73 @@ router.post("/verifications/:id/review", siteAdminRequired, async (req, res) => 
 });
 
 
+/* ---- 광고 문의 (가입한 파트너) -------------------------------------------
+ *
+ * 로그인 없는 광고 문의(/ad-inquiry, 안내 페이지)와 같은 표에 쌓는다. 운영자는
+ * 관리자 → 광고 문의 한 곳에서 본다. 업체명·담당자·이메일은 계정에서 채워,
+ * 파트너는 무엇을 원하는지와 연락처만 적는다.
+ */
+const INQUIRY_PRODUCTS = {
+  banner: "앱 배너 광고",
+  premium: "치료 탭·찾기 상단 노출",
+  other: "기타",
+} as const;
+
+const partnerInquirySchema = zod.object({
+  product: zod.enum(["banner", "premium", "other"]),
+  phone: zod.string().trim().min(9).max(30),
+  memo: zod.string().trim().min(1).max(1000),
+});
+
+router.post("/inquiry", partnerRequired, async (req, res) => {
+  const parsed = partnerInquirySchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "연락처와 문의 내용을 확인해 주세요." });
+    return;
+  }
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: req.partner!.sub },
+    select: { email: true, hospital_name: true, contact_name: true, business_kind: true },
+  });
+  if (account == null) {
+    res.sendStatus(404);
+    return;
+  }
+  const product = INQUIRY_PRODUCTS[parsed.data.product];
+  const kind = account.business_kind === "optical" ? "optical" : "eye";
+  await prisma.ad_inquiry.create({
+    data: {
+      kind,
+      org: account.hospital_name,
+      contact_name: account.contact_name,
+      phone: parsed.data.phone,
+      email: account.email,
+      // 문의 종류를 앞에 붙여 둔다. 표에 칸을 늘리지 않고 관리자 목록에서 바로 읽힌다.
+      memo: `[파트너 · ${product}] ${parsed.data.memo}`,
+      // 가입할 때 이용약관과 개인정보 수집에 동의한 파트너다.
+      agreed_at: new Date(),
+    },
+  });
+  res.status(201).json({ ok: true });
+
+  const e = escapeHtml;
+  void alertAdmin(
+    `[마이오닥 광고 문의] ${account.hospital_name} (파트너 · ${product})`,
+    `<p>가입한 파트너가 광고를 문의했습니다.</p>
+     <table cellpadding="4">
+       <tr><td>문의 종류</td><td><b>${product}</b></td></tr>
+       <tr><td>업체</td><td><b>${e(account.hospital_name)}</b> (${kind === "optical" ? "안경원" : "안과"})</td></tr>
+       <tr><td>담당자</td><td>${e(account.contact_name)}</td></tr>
+       <tr><td>연락처</td><td>${e(parsed.data.phone)}</td></tr>
+       <tr><td>이메일</td><td>${e(account.email)}</td></tr>
+       <tr><td>내용</td><td>${e(parsed.data.memo).replace(/\n/g, "<br />")}</td></tr>
+     </table>
+     <p>이 메일에 <b>답장</b>하면 ${e(account.email)} 로 바로 갑니다.</p>
+     <p><a href="${ADMIN_URL}/ad-inquiries">관리자 페이지에서 보기</a></p>`,
+    account.email,
+  );
+});
+
 /* ---- 프리미엄 신청 ------------------------------------------------------
  *
  * 파트너가 신청하고 운영자가 허락하면 광고가 걸린다. 결제는 아직 없다 -
