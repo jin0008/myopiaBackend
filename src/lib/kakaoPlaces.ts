@@ -62,6 +62,28 @@ export async function searchPlaces(
 }
 
 /**
+ * 주소를 좌표로. 못 찾으면 null.
+ *
+ * 안경원 명부를 갱신할 때 새로 생긴 곳(또는 주소가 바뀐 곳)에만 쓴다.
+ * 공공자료의 좌표는 비어 있는 곳이 많고(신규 804곳 중 682곳), 있어도
+ * 위경도가 아니라 TM 좌표라 변환이 따로 든다. 주소로 묻는 편이 하나로 끝난다.
+ */
+export async function geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
+  const params = new URLSearchParams({ query: address, size: "1" });
+  const resp = await fetch(
+    `https://dapi.kakao.com/v2/local/search/address.json?${params.toString()}`,
+    { headers: { Authorization: `KakaoAK ${KAKAO_REST_KEY}` } },
+  );
+  if (!resp.ok) throw new KakaoLookupError(resp.status);
+  const data = (await resp.json()) as { documents?: { x: string; y: string }[] };
+  const d = data.documents?.[0];
+  if (d == null) return null;
+  const lat = Number(d.y);
+  const lng = Number(d.x);
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+}
+
+/**
  * "서울 강남구 대치동 889-11" → "서울 강남구 대치동".
  *
  * Lists show where a clinic is, not how to get there; the lot number is noise

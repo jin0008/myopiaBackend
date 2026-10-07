@@ -21,9 +21,15 @@ import fs from "fs";
 import path from "path";
 
 import { parseCsv } from "../src/lib/csv";
+import { geocodeAddress, hasKakaoKey } from "../src/lib/kakaoPlaces";
 
 const KEY = process.env.DATA_GO_KR_KEY ?? "";
-const DIR = path.join(__dirname, "../src/assets/facilities");
+/** 주소에 넣을 키. 포털은 같은 키를 인코딩·디코딩 두 벌로 준다. 디코딩 키(+, /, =)를
+ *  그대로 붙이면 403 이 나므로, 아직 인코딩되지 않았으면 인코딩한다. */
+const KEY_Q = KEY.includes("%") ? KEY : encodeURIComponent(KEY);
+/** 명부 CSV 를 읽고 쓰는 곳. 서버의 주간 자동 갱신은 저장소 밖(FACILITIES_DIR)에 쓴다 -
+ *  저장소 파일을 고치면 다음 git pull 이 충돌한다. */
+const DIR = process.env.FACILITIES_DIR || path.join(__dirname, "../src/assets/facilities");
 
 /** 안과 진료과목 코드. 목록을 이걸로 좁혀야 전국 병원 10만 곳을 안 받는다. */
 const DGSBJT_EYE = "12";
@@ -71,24 +77,53 @@ function assertColumns(rows: Row[], required: string[], where: string) {
   }
 }
 
+/**
+ * 한 페이지를 받는다. 몇 번 다시 해 본다.
+ *
+ * 공공 API 는 수백 번 부르는 동안 한두 번 끊긴다(안경업 190페이지 중 1페이지).
+ * 한 번 끊겼다고 갱신 전체를 버리면 매주 실패한다. 끝내 안 되면 던진다 -
+ * 빠진 페이지를 두고 넘어가면 그 100곳이 폐업으로 잡힌다.
+ */
+async function fetchJsonRetry(url: string, what: string): Promise<any> {
+  let last: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(60_000) });
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return await resp.json();
+    } catch (e) {
+      last = e;
+      await new Promise((r) => setTimeout(r, attempt * 2000));
+    }
+  }
+  throw new Error(`${what}: ${last instanceof Error ? last.message : last}`);
+}
+
 /** 페이지를 끝까지 읽고, totalCount 와 실제 건수가 맞는지 확인한다.
  *  중간에 끊긴 목록을 그대로 쓰면 폐업 판정이 전국을 쓸어버린다. */
 async function fetchAllPages(
   url: string,
   params: Record<string, string>,
   pick: (body: any) => { items: Row[]; total: number },
+  // 안경업(행안부)은 한 번에 100건까지만 준다. 더 달라고 해도 100건이 온다.
+  pageSize = 1000,
 ): Promise<Row[]> {
-  const rows: Row[] = [];
-  let total = -1;
-  for (let page = 1; ; page++) {
-    const qs = new URLSearchParams({ ...params, pageNo: String(page), numOfRows: "1000", _type: "json" });
-    const resp = await fetch(`${url}?serviceKey=${KEY}&${qs}`);
-    if (!resp.ok) throw new Error(`${url} page ${page}: HTTP ${resp.status}`);
-    const body = await resp.json();
-    const { items, total: t } = pick(body);
-    if (total < 0) total = t;
-    rows.push(...items);
-    if (items.length === 0 || rows.length >= total) break;
+  const get = async (page: number) => {
+    const qs = new URLSearchParams({ ...params, pageNo: String(page), numOfRows: String(pageSize) });
+    return pick(await fetchJsonRetry(`${url}?serviceKey=${KEY_Q}&${qs}`, `${url} page ${page}`));
+  };
+  // 첫 장에서 전체 건수를 알고, 나머지는 열 장씩 함께 받는다. 한 장씩 차례로
+  // 받으면 안경업 190장에 15분 넘게 걸린다(장마다 몇 초).
+  const first = await get(1);
+  const total = first.total;
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const rows: Row[] = [...first.items];
+  for (let p = 2; p <= pages; p += 10) {
+    const batch = await Promise.all(
+      Array.from({ length: Math.min(10, pages - p + 1) }, (_, i) => get(p + i)),
+    );
+    for (const b of batch) rows.push(...b.items);
+    console.log(`  ${url.split("/").pop()} ${Math.min(p + 9, pages)}/${pages}장`);
   }
   if (rows.length !== total) {
     throw new Error(`받은 건수(${rows.length})가 totalCount(${total})와 다르다 — 목록이 잘렸다`);
@@ -156,7 +191,7 @@ function stringifyHours(hours: Record<string, [string, string]>): string {
  *  dgsbjtCd 가 "01" 처럼 문자열로도, 12 처럼 정수로도 온다. */
 export async function fetchEyeDoctors(ykiho: string): Promise<string> {
   const qs = new URLSearchParams({ ykiho, _type: "json", numOfRows: "50", pageNo: "1" });
-  const resp = await fetch(`${DETAIL}/getSpcSbjtSdrInfo2.8?serviceKey=${KEY}&${qs}`);
+  const resp = await fetch(`${DETAIL}/getSpcSbjtSdrInfo2.8?serviceKey=${KEY_Q}&${qs}`);
   if (!resp.ok) throw new Error(`전문의수 ${ykiho}: HTTP ${resp.status}`);
   const body = await resp.json();
   const items = body?.response?.body?.items;
@@ -170,7 +205,7 @@ export async function fetchEyeDoctors(ykiho: string): Promise<string> {
 /** 한 기관의 상세정보를 CSV 칸으로 바꾼다. 없으면 빈 칸을 돌려준다. */
 export async function fetchDetail(ykiho: string): Promise<Partial<Row>> {
   const qs = new URLSearchParams({ ykiho, _type: "json", numOfRows: "10", pageNo: "1" });
-  const resp = await fetch(`${DETAIL}/getDtlInfo2.8?serviceKey=${KEY}&${qs}`);
+  const resp = await fetch(`${DETAIL}/getDtlInfo2.8?serviceKey=${KEY_Q}&${qs}`);
   if (!resp.ok) throw new Error(`상세정보 ${ykiho}: HTTP ${resp.status}`);
   const body = await resp.json();
   const items = body?.response?.body?.items;
@@ -196,14 +231,14 @@ export async function fetchDetail(ykiho: string): Promise<Partial<Row>> {
   };
 }
 
-async function main() {
+export async function fetchFacilities() {
   const existing = new Map(
     parseCsv(fs.readFileSync(path.join(DIR, "eye_clinics.csv"), "utf8")).map((r) => [r.ykiho, r]),
   );
 
   const raw = await fetchAllPages(
     "https://apis.data.go.kr/B551182/hospInfoServicev2/getHospBasisList",
-    { dgsbjtCd: DGSBJT_EYE },
+    { dgsbjtCd: DGSBJT_EYE, _type: "json" },
     pickItems,
   );
   assertColumns(raw, ["ykiho", "yadmNm", "clCd", "sidoCdNm", "sgguCdNm", "addr", "XPos", "YPos"], "안과 목록");
@@ -272,11 +307,132 @@ async function main() {
     ["ykiho","name","kind","sido","sigungu","address","phone","homepage","lat","lng","doctors","openedOn","eyeDoctors","hours","lunch","recv","place"],
     clinics,
   );
+
+  await refreshOpticalShops();
+}
+
+/* ---- 안경원 (행정안전부 건강_안경업) -----------------------------------
+ *
+ * 지자체 인허가 자료다. 기존 명부(optical_shops.csv)도 여기서 나왔다 -
+ * 관리번호(MNG_NO)가 licenseNo 와 같고, 맞춰 본 10,153곳의 굴절검사기·시력표·
+ * 인허가일이 그대로 일치했다(2026-10-07).
+ *
+ * 좌표는 공공자료 것을 쓰지 않는다. 비어 있는 곳이 많고(신규 804곳 중 682곳),
+ * 있어도 TM 좌표라 변환이 따로 든다. 기존 줄은 지금 좌표를 지키고, 새로 생겼거나
+ * 주소가 바뀐 곳만 카카오 주소 검색으로 받는다. 못 받은 곳은 지도에 둘 수
+ * 없으니 이번 회차에서 빼고 다음 회차에 다시 해 본다(신규로 다시 잡힌다).
+ */
+const OPTICAL_URL = "https://apis.data.go.kr/1741000/optical_shops/info";
+/** 영업상태코드. 01 영업/정상, 02 휴업, 03 폐업, 04 취소·말소, 05 제외·삭제·전출. */
+const OPERATING = "01";
+/** 한 회차에 주소 검색을 몇 곳까지. 카카오는 하루 10만 콜이라 넉넉하지만,
+ *  공공자료가 통째로 이상해져 전부 '신규'로 잡히는 날 1만 콜을 태우지 않게. */
+const GEOCODE_BUDGET = 2000;
+
+const OPTICAL_HEADER = [
+  "licenseNo", "name", "address", "phone", "lat", "lng", "refractometer", "eyeChart", "licensedOn",
+];
+
+/** 공공자료 한 줄을 명부 한 줄로. 좌표는 따로 채운다. */
+export function opticalRow(r: Row): Row {
+  return {
+    licenseNo: r.MNG_NO,
+    name: r.BPLC_NM,
+    // 도로명이 없으면 지번. 기존 명부가 그렇게 만들어졌다(일치 확인).
+    address: r.ROAD_NM_ADDR || r.LOTNO_ADDR || "",
+    phone: r.TELNO ?? "",
+    lat: "",
+    lng: "",
+    // 정점굴절계 대수. 기존 refractometer 칸이 이 값이다.
+    refractometer: r.VRTX_RFRCTMTR_CNT || "0",
+    eyeChart: r.EYCHRT_CNT || "0",
+    licensedOn: r.LCPMT_YMD ?? "",
+  };
+}
+
+async function refreshOpticalShops() {
+  const file = path.join(DIR, "optical_shops.csv");
+  const existing = new Map(parseCsv(fs.readFileSync(file, "utf8")).map((r) => [r.licenseNo, r]));
+
+  const raw = await fetchAllPages(OPTICAL_URL, { returnType: "json" }, pickItems, 100);
+  assertColumns(
+    raw,
+    ["MNG_NO", "BPLC_NM", "SALS_STTS_CD", "ROAD_NM_ADDR", "LOTNO_ADDR", "TELNO", "VRTX_RFRCTMTR_CNT", "EYCHRT_CNT", "LCPMT_YMD"],
+    "안경업 목록",
+  );
+  // 페이지가 넘어가는 사이 순서가 밀려 같은 곳이 두 번 오기도 한다.
+  const byNo = new Map(raw.map((r) => [r.MNG_NO, r]));
+  const operating = [...byNo.values()].filter((r) => r.SALS_STTS_CD === OPERATING);
+  console.log(`안경업 ${byNo.size}곳 중 영업 중 ${operating.length}곳`);
+
+  const shops: Row[] = [];
+  const needCoords: Row[] = [];
+  for (const r of operating) {
+    const row = opticalRow(r);
+    const old = existing.get(row.licenseNo);
+    if (old != null && old.address === row.address && old.lat !== "") {
+      row.lat = old.lat;
+      row.lng = old.lng;
+      shops.push(row);
+    } else {
+      needCoords.push(row);
+    }
+  }
+
+  const budgeted = hasKakaoKey() ? needCoords.slice(0, GEOCODE_BUDGET) : [];
+  // 이번에 주소 검색을 못 하는 곳 중 기존 줄은 옛 좌표로 남긴다(위와 같은 이유).
+  for (const row of needCoords.slice(budgeted.length)) {
+    const old = existing.get(row.licenseNo);
+    if (old != null && old.lat !== "") {
+      row.lat = old.lat;
+      row.lng = old.lng;
+      shops.push(row);
+    }
+  }
+  if (!hasKakaoKey() && needCoords.length > 0) {
+    console.log(`  KAKAO_REST_API_KEY 가 없어 좌표가 필요한 ${needCoords.length}곳을 이번에 넣지 못한다`);
+  }
+  let missed = 0;
+  for (const row of budgeted) {
+    // 주소만 바뀐 기존 안경원은 좌표를 못 받아도 빼지 않는다. 빼면 이번
+    // 명부에 없으니 폐업으로 잡힌다 - 이사한 가게가 지도에서 사라진다.
+    const old = existing.get(row.licenseNo);
+    const keepOld = () => {
+      if (old == null || old.lat === "") return false;
+      row.lat = old.lat;
+      row.lng = old.lng;
+      shops.push(row);
+      return true;
+    };
+    try {
+      const at = await geocodeAddress(row.address);
+      if (at == null) {
+        if (!keepOld()) missed++;
+        continue;
+      }
+      // 기존 명부와 같은 자릿수(소수 7자리, 약 1cm).
+      row.lat = at.lat.toFixed(7);
+      row.lng = at.lng.toFixed(7);
+      shops.push(row);
+    } catch (e) {
+      if (!keepOld()) missed++;
+      console.error(`  주소 검색 실패 ${row.name}: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  console.log(
+    `안경원 ${shops.length}곳 (영업 중 ${operating.length}곳 중 좌표가 없어 이번에 뺀 곳 ` +
+      `${operating.length - shops.length})`,
+  );
+
+  // 관리번호순으로 고정한다. 안과와 같은 이유 - 회차마다 순서가 달라지면
+  // 바뀐 것이 없어도 전 줄이 바뀐 diff 가 나와 개·폐업을 찾을 수 없다.
+  shops.sort((x, y) => (x.licenseNo < y.licenseNo ? -1 : x.licenseNo > y.licenseNo ? 1 : 0));
+  writeCsv(file, OPTICAL_HEADER, shops);
 }
 
 // 다른 스크립트가 fetchDetail 만 가져다 쓸 수 있게, 직접 실행일 때만 돈다.
 if (require.main === module) {
-  main().catch((e) => {
+  fetchFacilities().catch((e) => {
     console.error(String(e instanceof Error ? e.message : e));
     process.exit(1);
   });

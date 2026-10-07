@@ -1,0 +1,18 @@
+# 안과·안경원 명부 주간 자동 갱신 (scripts/refresh-facilities-auto.ts)
+#
+# 설치:
+#   sudo cp deploy/facilities-refresh.service deploy/facilities-refresh.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now facilities-refresh.timer
+# 지금 한 번 돌려 보기:
+#   sudo systemctl start facilities-refresh.service && journalctl -u facilities-refresh -n 50
+[Unit]
+Description=마이오닥 안과·안경원 명부 주간 갱신
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=jinuhan0008
+WorkingDirectory=/home/jsh010322/eyeBackend
+# 로그인 셸로 띄운다 - node/npx 가 nvm 등으로 깔려 있으면 PATH 가 셸 설정에만 있다.
+ExecStart=/bin/bash -lc 'npx tsx scripts/refresh-facilities-auto.ts'

@@ -22,7 +22,11 @@ import { parseCsv } from "../src/lib/csv";
 import { areaCodeFor, normalizePhone } from "../src/lib/phone";
 import { decideClosures } from "../src/lib/facilityClosure";
 
-const DIR = path.join(__dirname, "../src/assets/facilities");
+/** fetch-facilities 와 같은 곳을 읽는다. 서버 자동 갱신은 FACILITIES_DIR. */
+const DIR = process.env.FACILITIES_DIR || path.join(__dirname, "../src/assets/facilities");
+
+/** 한 업종의 반영 결과. 자동 갱신이 요약 메일에 쓴다. */
+export type ClosureResult = { closed: string[]; reopened: string[]; skipped: string | null };
 
 
 /** "서울특별시 강남구 ..." 에서 지역번호를 고른다. */
@@ -52,7 +56,7 @@ async function applyClosures(
   incoming: string[],
   readKnown: () => Promise<{ key: string; closed: boolean }[]>,
   write: (keys: string[], closedAt: Date | null) => Promise<unknown>,
-) {
+): Promise<ClosureResult> {
   const known = await readKnown();
   const verdict = decideClosures(
     known.filter((k) => !k.closed).map((k) => k.key),
@@ -69,15 +73,20 @@ async function applyClosures(
         `        자료를 확인한 뒤 다시 돌려라. 새로 생긴 곳은 이미 들어갔다.`,
     );
     process.exitCode = 1;
-    return;
+    return {
+      closed: [],
+      reopened: [],
+      skipped: `${verdict.reason} (${verdict.disappeared}/${verdict.known}곳)`,
+    };
   }
 
   if (verdict.toClose.length > 0) await write(verdict.toClose, new Date());
   if (verdict.toReopen.length > 0) await write(verdict.toReopen, null);
   console.log(`  ${label}: 폐업 ${verdict.toClose.length}곳, 재개업 ${verdict.toReopen.length}곳`);
+  return { closed: verdict.toClose, reopened: verdict.toReopen, skipped: null };
 }
 
-async function main() {
+export async function importFacilities(): Promise<{ eye: ClosureResult; optical: ClosureResult }> {
   const clinics = parseCsv(fs.readFileSync(path.join(DIR, "eye_clinics.csv"), "utf8"));
   console.log(`안과 ${clinics.length}곳`);
   let n = 0;
@@ -111,7 +120,7 @@ async function main() {
     if (++n % 500 === 0) console.log(`  ${n}`);
   }
 
-  await applyClosures(
+  const eye = await applyClosures(
     "안과",
     clinics.map((c) => c.ykiho),
     () => prisma.eye_clinic.findMany({ select: { ykiho: true, closed_at: true } }).then((rows) => rows.map((r) => ({ key: r.ykiho, closed: r.closed_at != null }))),
@@ -142,7 +151,7 @@ async function main() {
     if (++n % 1000 === 0) console.log(`  ${n}`);
   }
 
-  await applyClosures(
+  const optical = await applyClosures(
     "안경점",
     shops.map((s) => s.licenseNo),
     () => prisma.optical_shop.findMany({ select: { license_no: true, closed_at: true } }).then((rows) => rows.map((r) => ({ key: r.license_no, closed: r.closed_at != null }))),
@@ -154,11 +163,15 @@ async function main() {
     prisma.optical_shop.count(),
   ]);
   console.log(`\n완료 — 안과 ${a}곳, 안경점 ${b}곳`);
+  return { eye, optical };
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exitCode = 1;
-  })
-  .finally(() => prisma.$disconnect());
+// 자동 갱신(refresh-facilities-auto.ts)이 가져다 쓸 수 있게, 직접 실행일 때만 돈다.
+if (require.main === module) {
+  importFacilities()
+    .catch((e) => {
+      console.error(e);
+      process.exitCode = 1;
+    })
+    .finally(() => prisma.$disconnect());
+}

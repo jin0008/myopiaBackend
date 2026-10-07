@@ -76,8 +76,10 @@ export const ADMIN_URL = (process.env.PARTNER_ORIGIN ?? "https://myopiamanage.or
  * 광고 문의가 실패하면 안 된다 - 접수는 이미 DB 에 들어갔고, 관리자
  * 페이지에서 보인다.
  */
-export function alertAdmin(subject: string, html: string, replyTo?: string): void {
-  void sendEmail(ADMIN_ALERT_TO, subject, html, replyTo).catch((err) =>
+export function alertAdmin(subject: string, html: string, replyTo?: string): Promise<void> {
+  // 실패를 삼킨 약속을 돌려준다. 라우트는 기다리지 않고, 끝나면 내리는
+  // 스크립트(명부 갱신)는 기다린다 - 안 기다리면 보내기 전에 프로세스가 끝난다.
+  return sendEmail(ADMIN_ALERT_TO, subject, html, replyTo).catch((err) =>
     console.error("[알림] 운영자 메일을 보내지 못했다", subject, err),
   );
 }
