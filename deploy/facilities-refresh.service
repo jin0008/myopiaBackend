@@ -1,11 +1,15 @@
 # 안과·안경원 명부 주간 자동 갱신 (scripts/refresh-facilities-auto.ts)
 #
-# 설치:
-#   sudo cp deploy/facilities-refresh.service deploy/facilities-refresh.timer /etc/systemd/system/
-#   sudo systemctl daemon-reload
-#   sudo systemctl enable --now facilities-refresh.timer
+# systemd 는 로그인 셸 설정(nvm 등)을 읽지 않아 npx 를 못 찾는다(2026-10-07 status 127).
+# 설치할 때 node 가 있는 곳을 찾아 PATH 와 ExecStart 에 직접 넣는다:
+#
+#   NODEBIN=$(dirname "$(command -v npx)")      # 서버 터미널에서는 npx 가 잡힌다
+#   sed "s|@NODEBIN@|$NODEBIN|g" deploy/facilities-refresh.service | sudo tee /etc/systemd/system/facilities-refresh.service
+#   sudo cp deploy/facilities-refresh.timer /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now facilities-refresh.timer
+#
 # 지금 한 번 돌려 보기:
-#   sudo systemctl start facilities-refresh.service && journalctl -u facilities-refresh -n 50
+#   sudo systemctl start facilities-refresh.service; journalctl -u facilities-refresh -n 60 --no-pager
 [Unit]
 Description=마이오닥 안과·안경원 명부 주간 갱신
 After=network-online.target
@@ -14,5 +18,6 @@ After=network-online.target
 Type=oneshot
 User=jinuhan0008
 WorkingDirectory=/home/jsh010322/eyeBackend
-# 로그인 셸로 띄운다 - node/npx 가 nvm 등으로 깔려 있으면 PATH 가 셸 설정에만 있다.
-ExecStart=/bin/bash -lc 'npx tsx scripts/refresh-facilities-auto.ts'
+Environment=PATH=@NODEBIN@:/usr/local/bin:/usr/bin:/bin
+# --yes: tsx 가 프로젝트에 없어 npx 가 설치를 묻는다. 물을 사람이 없으니 미리 답한다.
+ExecStart=@NODEBIN@/npx --yes tsx scripts/refresh-facilities-auto.ts
