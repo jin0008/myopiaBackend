@@ -1,3 +1,4 @@
+import { suspensionMessage } from "../services/appAccount";
 import crypto from "node:crypto";
 import jwt, { SignOptions } from "jsonwebtoken";
 import { RequestHandler } from "express";
@@ -125,19 +126,29 @@ declare global {
 }
 
 /** Express middleware that requires a valid mobile access token. */
-export const requireMobileAuth: RequestHandler = (req, res, next) => {
+export const requireMobileAuth: RequestHandler = async (req, res, next) => {
   const header = req.get("Authorization");
   if (!header || !header.startsWith("Bearer ")) {
     res.status(401).json({ error: "missing bearer", code: "unauthorized" });
     return;
   }
+  let payload: MobileJWTPayload;
   try {
-    const payload = verifyAccessToken(header.slice("Bearer ".length).trim());
-    req.mobileUser = payload;
-    next();
+    payload = verifyAccessToken(header.slice("Bearer ".length).trim());
   } catch {
     res.status(401).json({ error: "invalid token", code: "unauthorized" });
+    return;
   }
+  // 정지된 계정은 지금 들고 있는 토큰(최대 1시간)도 바로 막는다. 토큰만 끊으면
+  // 정지해도 한 시간 동안 글을 쓸 수 있다. 회원 행 하나를 기본키로 읽는다.
+  // 401 로 답해 앱이 로그아웃시키고, 다시 로그인하면 사유를 본다.
+  const suspended = await suspensionMessage(payload.sub);
+  if (suspended != null) {
+    res.status(401).json({ error: suspended, code: "suspended" });
+    return;
+  }
+  req.mobileUser = payload;
+  next();
 };
 
 /**

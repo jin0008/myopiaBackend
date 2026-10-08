@@ -3,7 +3,11 @@ import { Prisma } from "@prisma/client";
 
 import prisma from "../lib/prisma";
 import { siteAdminRequired } from "../lib/middlewares";
+import zod from "zod";
+
 import { auditContextFromRequest, writeAuditLog } from "../services/audit";
+import { deleteAppAccount } from "../services/appAccount";
+import { revokeAllRefreshTokens } from "../lib/mobileAuth";
 
 const router = express.Router();
 
@@ -138,6 +142,8 @@ router.get("/guardians", siteAdminRequired, async (req, res) => {
       children: bigint;
       linked: bigint;
       last_seen: string | null;
+      suspended_on: string | null;
+      suspended_reason: string | null;
       total: bigint;
     }[]
   >`
@@ -156,6 +162,8 @@ router.get("/guardians", siteAdminRequired, async (req, res) => {
         WHERE pc.user_id = g.id AND chl.status = 'active') AS linked,
       (SELECT to_char(max(t.created_at) AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD')
          FROM mobile_refresh_token t WHERE t.user_id = g.id) AS last_seen,
+      to_char(u.suspended_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD') AS suspended_on,
+      u.suspended_reason,
       count(*) OVER () AS total
     FROM g
     JOIN "user" u ON u.id = g.id
@@ -185,8 +193,108 @@ router.get("/guardians", siteAdminRequired, async (req, res) => {
       children: n(r.children),
       linkedChildren: n(r.linked),
       lastSeen: r.last_seen,
+      suspendedOn: r.suspended_on,
+      suspendedReason: r.suspended_reason,
     })),
   });
+});
+
+/** 앱 보호자인가. 같은 user 표의 의료진·관리자 계정은 여기서 손대지 않는다. */
+async function isGuardian(id: string): Promise<boolean> {
+  const u = await prisma.user.findUnique({
+    where: { id },
+    select: {
+      is_site_admin: true,
+      normal_user: { select: { user_id: true } },
+      healthcare_professional: { select: { user_id: true } },
+    },
+  });
+  return u != null && u.normal_user != null && u.healthcare_professional == null && !u.is_site_admin;
+}
+
+const suspendSchema = zod.object({ reason: zod.string().trim().min(1).max(200) });
+
+/**
+ * POST /app-stats/guardians/:id/suspend — 앱 이용을 막는다.
+ *
+ * 로그인·토큰 갱신·앱 요청이 모두 막히고(services/appAccount), 들고 있던
+ * 토큰도 지워 기기마다 로그아웃된다. 기록은 지우지 않는다 - 풀면 그대로 쓴다.
+ * 사유는 본인이 다시 로그인할 때 보인다.
+ */
+router.post("/guardians/:id/suspend", siteAdminRequired, async (req, res) => {
+  const parsed = suspendSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ message: "정지 사유를 적어 주세요(200자 이내)." });
+    return;
+  }
+  const id = String(req.params.id);
+  if (!(await isGuardian(id))) {
+    res.status(404).json({ message: "앱 보호자 계정이 아닙니다." });
+    return;
+  }
+  await prisma.user.update({
+    where: { id },
+    data: { suspended_at: new Date(), suspended_reason: parsed.data.reason },
+  });
+  await revokeAllRefreshTokens(id);
+  await writeAuditLog({
+    ...auditContextFromRequest(req),
+    tableName: "user",
+    recordId: id,
+    action: "UPDATE",
+    changedFields: ["suspended_at", "suspended_reason"],
+    newValue: { suspended: true, reason: parsed.data.reason },
+  });
+  res.json({ ok: true });
+});
+
+/** POST /app-stats/guardians/:id/unsuspend — 정지를 푼다. */
+router.post("/guardians/:id/unsuspend", siteAdminRequired, async (req, res) => {
+  const id = String(req.params.id);
+  if (!(await isGuardian(id))) {
+    res.status(404).json({ message: "앱 보호자 계정이 아닙니다." });
+    return;
+  }
+  await prisma.user.update({
+    where: { id },
+    data: { suspended_at: null, suspended_reason: null },
+  });
+  await writeAuditLog({
+    ...auditContextFromRequest(req),
+    tableName: "user",
+    recordId: id,
+    action: "UPDATE",
+    changedFields: ["suspended_at", "suspended_reason"],
+    newValue: { suspended: false },
+  });
+  res.json({ ok: true });
+});
+
+/**
+ * DELETE /app-stats/guardians/:id — 계정을 지운다. 앱의 회원 탈퇴와 같은
+ * 함수다(자녀 기록·글·후기가 지워지고, 병원 진료 기록은 남는다). 되돌릴 수 없다.
+ */
+router.delete("/guardians/:id", siteAdminRequired, async (req, res) => {
+  const id = String(req.params.id);
+  if (!(await isGuardian(id))) {
+    res.status(404).json({ message: "앱 보호자 계정이 아닙니다." });
+    return;
+  }
+  const before = await prisma.user.findUnique({ where: { id }, select: { email: true } });
+  const r = await deleteAppAccount(id);
+  if (r !== "ok") {
+    res.status(r === "not_found" ? 404 : 409).json({ message: "지울 수 없는 계정입니다." });
+    return;
+  }
+  // user 행이 지워져 FK 를 걸 수 없으니 recordId 와 이메일을 값으로 남긴다.
+  await writeAuditLog({
+    ...auditContextFromRequest(req),
+    tableName: "user",
+    recordId: id,
+    action: "DELETE",
+    oldValue: { email: before?.email ?? null, by: "admin" },
+  });
+  res.json({ ok: true });
 });
 
 export default router;
