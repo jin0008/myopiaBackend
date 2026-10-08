@@ -45,9 +45,13 @@ export function signAccessToken(payload: MobileJWTPayload): {
 }
 
 export function verifyAccessToken(token: string): MobileJWTPayload {
-  return jwt.verify(token, assertSecret(), {
+  const payload = jwt.verify(token, assertSecret(), {
     issuer: JWT_ISSUER,
-  }) as MobileJWTPayload;
+  }) as MobileJWTPayload & { kind?: string };
+  // 파트너 토큰도 같은 키로 서명된다(partnerAuth.ts). 막지 않으면 병원
+  // 계정 토큰이 보호자 API 를 통과한다.
+  if (payload.kind === "partner") throw new Error("partner token");
+  return payload;
 }
 
 export function hashRefreshToken(raw: string): string {
