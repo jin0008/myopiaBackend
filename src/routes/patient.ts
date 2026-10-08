@@ -443,8 +443,12 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         OR: [
           {
             hospital: {
+              // 승인된 의료진만. 병원을 골라 가입 신청만 해 둔 사람도 그
+              // 병원 소속으로 잡혀, 이 조건이 없으면 승인 전에 등록번호·
+              // 생년월일까지 풀린 차트를 열 수 있다.
               healthcare_professional: {
                 some: {
+                  approved: true,
                   user: {
                     id: req.authSession!.user_id,
                   },

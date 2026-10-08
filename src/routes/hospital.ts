@@ -152,6 +152,15 @@ router.get(
 );
 
 router.get("/:hospital_id/measurement", siteAdminRequired, async (req, res) => {
+  // 한 병원 환자 전체의 등록번호·생년월일을 풀어 내보낸다(관리자 엑셀).
+  // 환자 한 명 열람도 남기는데 이것이 빠져 있었다.
+  writeAuditLog({
+    ...auditContextFromRequest(req),
+    tableName: "patient",
+    recordId: null,
+    action: "EXPORT",
+    hospitalId: String(req.params.hospital_id),
+  }).catch(console.error);
   await prisma.patient
     .findMany({
       where: {
