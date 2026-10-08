@@ -221,6 +221,10 @@ model user {
   id                      String                   @id(map: "user_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   created_at              DateTime                 @default(now()) @db.Timestamp(6)
   is_site_admin           Boolean                  @default(false)
+  /// 운영자가 앱 이용을 막은 때. 비어 있으면 정상. 로그인·토큰 갱신·앱 요청이 모두 막힌다.
+  suspended_at            DateTime?                @db.Timestamptz(6)
+  /// 정지 사유. 운영자 기록용이고 본인에게도 보여 준다.
+  suspended_reason        String?
   /// 계정 하나에 주소 하나. 인증 메일과 비밀번호 재설정이 이 주소로 가는데,
   /// 같은 주소에 계정이 여럿이면 어느 쪽 이야기인지 정할 수 없다.
   /// 소셜 로그인이 이메일을 안 주는 경우가 있어 NULL 은 허용한다

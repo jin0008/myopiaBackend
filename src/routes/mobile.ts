@@ -40,6 +40,7 @@ import { toDistrictAddress } from "../lib/kakaoPlaces";
 import { APP_CONSENT_VERSION, CONSENT_VERSION, consentRows } from "../lib/consent";
 import { isCommunityImageUrl } from "./communityUpload";
 import { compareHospitalNames, hospitalDisplayName } from "../lib/hospitalName";
+import { deleteAppAccount, suspensionMessage } from "../services/appAccount";
 
 /**
  * Mobile API — mounted at /api/mobile in src/index.ts.
@@ -417,6 +418,11 @@ router.post("/auth/login", validateRequestBody(loginSchema), async (req, res) =>
     res.status(401).json({ error: "invalid credentials", code: "unauthorized" });
     return;
   }
+  const suspendedLogin = await suspensionMessage(auth.user.id);
+  if (suspendedLogin != null) {
+    res.status(403).json({ error: suspendedLogin, code: "suspended" });
+    return;
+  }
   await ensureNormalUser(auth.user.id);
   res.json(await issueAuthResponse(auth.user.id));
 });
@@ -654,6 +660,11 @@ router.post(
       }
     }
     await ensureNormalUser(userId);
+    const suspendedSocial = await suspensionMessage(userId);
+    if (suspendedSocial != null) {
+      res.status(403).json({ error: suspendedSocial, code: "suspended" });
+      return;
+    }
     res.json(await issueAuthResponse(userId));
   },
 );
@@ -667,6 +678,12 @@ router.post(
     const { refreshToken } = req.body as zod.infer<typeof refreshSchema>;
     try {
       const { userId, newRefreshToken } = await rotateRefreshToken(refreshToken);
+      // 정지는 토큰을 모두 지우므로 보통 여기까지 오지 않지만, 정지와 갱신이
+      // 엇갈리는 순간을 막는다.
+      if ((await suspensionMessage(userId)) != null) {
+        res.status(401).json({ error: "suspended", code: "suspended" });
+        return;
+      }
       const { token, expiresIn } = signAccessToken({
         sub: userId,
         role: REGULAR_ROLE,
@@ -759,76 +776,18 @@ router.post(
  */
 router.delete("/auth/me", requireMobileAuth, async (req, res) => {
   const user = requireAppUser(req);
-
-  // 같은 user 테이블을 의료진 플랫폼(myopiamanage)도 쓴다. 의료진이나
-  // 사이트 관리자 계정이 앱에서 지워지면 그쪽 서비스가 함께 날아간다.
-  const owner = await prisma.user.findUnique({
-    where: { id: user.sub },
-    select: {
-      is_site_admin: true,
-      healthcare_professional: { select: { user_id: true } },
-    },
-  });
-  if (owner == null) {
+  const r = await deleteAppAccount(user.sub);
+  if (r === "not_found") {
     res.status(404).json({ error: "user not found", code: "not_found" });
     return;
   }
-  if (owner.is_site_admin || owner.healthcare_professional != null) {
+  if (r === "not_app_account") {
     res.status(409).json({
       error: "이 계정은 앱에서 탈퇴할 수 없습니다. 관리자에게 문의해 주세요.",
       code: "not_app_account",
     });
     return;
   }
-
-  await prisma.$transaction(async (tx) => {
-    const uid = user.sub;
-
-    // 1) user 로의 FK 가 없어 CASCADE 가 닿지 않는 것들.
-    await tx.poll_comment_like.deleteMany({ where: { user_id: uid } });
-    await tx.poll_comment.deleteMany({ where: { user_id: uid } });
-    await tx.poll_vote.deleteMany({ where: { user_id: uid } });
-    // poll 을 지우면 그 안의 선택지·투표·댓글은 poll FK 를 타고 함께 지워진다.
-    await tx.poll.deleteMany({ where: { user_id: uid } });
-    await tx.hospital_review.deleteMany({ where: { user_id: uid } });
-    await tx.user_block.deleteMany({
-      where: { OR: [{ blocker_user_id: uid }, { blocked_user_id: uid }] },
-    });
-    await tx.notification.deleteMany({ where: { user_id: uid } });
-
-    // 내가 신고한 건은 지운다. 나를 신고한 건은 다른 이용자를 보호하기 위한
-    // 기록이라 남기되, 누구를 가리키는지는 지운다.
-    await tx.content_report.deleteMany({ where: { reporter_user_id: uid } });
-    await tx.content_report.updateMany({
-      where: { target_user_id: uid },
-      data: { target_user_id: null },
-    });
-    await tx.notification.updateMany({
-      where: { actor_user_id: uid },
-      data: { actor_user_id: null },
-    });
-
-    // 칼럼·배너·병원 프로필의 created_by 도 FK 가 없다. 이 셋은 웹 세션에서만
-    // 채워지고 위에서 의료진·관리자 계정을 막았으니 실제로는 걸릴 일이 없지만,
-    // "걸릴 일이 없다"에 기대면 나중에 경로가 하나 늘 때 조용히 깨진다.
-    await tx.expert_column.updateMany({
-      where: { created_by: uid },
-      data: { created_by: null },
-    });
-    await tx.ad_banner.updateMany({
-      where: { created_by: uid },
-      data: { created_by: null },
-    });
-    await tx.hospital_profile.updateMany({
-      where: { created_by: uid },
-      data: { created_by: null },
-    });
-
-    // 2) 나머지는 user 행을 지우면 CASCADE 로 따라 지워진다.
-    //    자녀·소셜 연결·동의 이력·게시글·댓글·좋아요·토큰 등.
-    await tx.user.delete({ where: { id: uid } });
-  });
-
   res.json({ ok: true });
 });
 
