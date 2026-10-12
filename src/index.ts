@@ -85,6 +85,10 @@ app.use(
 // Mounted before the routers so they run first for these specific paths.
 app.use("/auth/passwordLogin", authLimiter);
 app.use("/auth/googleLogin", authLimiter);
+// 로그인 2단계(6자리)·비밀번호 찾기. 코드는 대입할 수 있는 크기라 막아야 한다.
+app.use("/auth/login", authLimiter);
+app.use("/auth/2fa", authLimiter);
+app.use("/auth/password", authLimiter);
 app.use("/api/mobile/auth/login", authLimiter);
 // 인증번호는 남의 주소로도 보낼 수 있다. 제한이 없으면 이 엔드포인트가
 // 메일 폭탄 도구가 되고, 발신 도메인 평판이 깎여 정상 메일까지 스팸함으로 간다.

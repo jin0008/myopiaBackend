@@ -231,6 +231,15 @@ model user {
   /// 소셜 로그인이 이메일을 안 주는 경우가 있어 NULL 은 허용한다
   /// (Postgres 는 NULL 끼리는 중복으로 보지 않는다).
   email                   String?                  @unique(map: "user_email_key")
+  /// 웹(myopiamanage) 2단계 인증. 비밀키는 KMS 로 암호화해 둔다.
+  /// 등록을 마치기 전의 키는 pending 에, 확인 코드가 맞으면 secret 으로 옮긴다.
+  totp_secret             Bytes?
+  totp_pending_secret     Bytes?
+  totp_enabled_at         DateTime?                @db.Timestamptz(6)
+  /// 마지막으로 받은 TOTP 시간 칸. 같은 코드를 다시 넣지 못하게 한다.
+  totp_last_step          Int?
+  /// 백업 코드의 sha256. 한 번 쓰면 빠진다.
+  totp_backup_hashes      String[]                 @default([])
   receive_email_updates   Boolean                  @default(false)
   google_auth             google_auth?
   healthcare_professional healthcare_professional?

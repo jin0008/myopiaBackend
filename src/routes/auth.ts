@@ -2,7 +2,23 @@ import express from "express";
 import bcrypt from "bcrypt";
 import prisma from "../lib/prisma";
 
-import { generateSession, getAuthSession } from "../lib/session";
+import { clearSession, generateSession, getAuthSession } from "../lib/session";
+import jwt from "jsonwebtoken";
+import {
+  hashBackupCode,
+  newBackupCodes,
+  newTotpSecret,
+  otpauthUrl,
+  passwordPolicyError,
+  verifyTotp,
+} from "../lib/totp";
+import { decryptSymmetric, encryptSymmetric } from "../services/encrpytion";
+import {
+  issueCode,
+  verifyCode,
+  assertTicket,
+  VerificationError,
+} from "../services/emailVerification";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { loginRequired, validateRequestBody } from "../lib/middlewares";
 import { CONSENT_VERSION, consentRows } from "../lib/consent";
@@ -44,13 +60,14 @@ router.post("/passwordLogin", async (req, res) => {
     return;
   }
 
-  bcrypt.compare(password, auth.hash).then((match) => {
-    if (match)
-      generateSession(auth.user.id)
-        .then((session) => res.json(session))
-        .catch(() => res.sendStatus(500));
-    else res.status(401).json({ message: "Invalid username or password" });
-  });
+  const match = await bcrypt.compare(password, auth.hash);
+  if (!match) {
+    res.status(401).json({ message: "Invalid username or password" });
+    return;
+  }
+  // 첫 단계만 통과했다. 세션은 2단계까지 마친 뒤에 준다. 지금 비밀번호가
+  // 규칙에 안 맞으면 먼저 바꾸게 한다 - 평문을 아는 건 이 순간뿐이다.
+  res.json(await nextLoginStep(auth.user.id, passwordPolicyError(password) != null));
 });
 
 router.post("/googleLogin", async (req, res) => {
@@ -85,9 +102,341 @@ router.post("/googleLogin", async (req, res) => {
     return;
   }
 
-  generateSession(googleAuth.user.id)
-    .then((session) => res.json(session))
-    .catch(() => res.sendStatus(500));
+  res.json(await nextLoginStep(googleAuth.user.id, false));
+});
+
+/* ------------------------------------------------------------------ *
+ * 로그인 2단계                                                         *
+ *                                                                    *
+ * 아이디·비밀번호(또는 Google)가 맞으면 세션 대신 10분짜리 티켓을 준다.     *
+ * 티켓으로 할 수 있는 건 남은 단계(비밀번호 변경, 2단계 등록, 코드 입력)뿐  *
+ * 이고, 세션은 2단계 코드가 맞은 뒤에만 나간다.                          *
+ * ------------------------------------------------------------------ */
+
+const LOGIN_TICKET_AUD = "web-login";
+const LOGIN_TICKET_TTL = "10m";
+
+function loginTicketSecret(): string {
+  const s = process.env.MOBILE_JWT_SECRET;
+  if (!s) throw new Error("MOBILE_JWT_SECRET is not set");
+  return s;
+}
+
+type LoginTicket = { sub: string; pwWeak: boolean };
+
+function signLoginTicket(userId: string, pwWeak: boolean): string {
+  return jwt.sign({ pwWeak }, loginTicketSecret(), {
+    subject: userId,
+    audience: LOGIN_TICKET_AUD,
+    expiresIn: LOGIN_TICKET_TTL,
+  });
+}
+
+function readLoginTicket(ticket: unknown): LoginTicket | null {
+  if (typeof ticket !== "string") return null;
+  try {
+    const p = jwt.verify(ticket, loginTicketSecret(), {
+      audience: LOGIN_TICKET_AUD,
+    }) as jwt.JwtPayload;
+    if (typeof p.sub !== "string") return null;
+    return { sub: p.sub, pwWeak: p.pwWeak === true };
+  } catch {
+    return null;
+  }
+}
+
+async function nextLoginStep(userId: string, pwWeak: boolean) {
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: { totp_enabled_at: true },
+  });
+  const next = pwWeak
+    ? "change_password"
+    : user.totp_enabled_at == null
+      ? "setup_2fa"
+      : "verify_2fa";
+  return { next, ticket: signLoginTicket(userId, pwWeak) };
+}
+
+const TICKET_EXPIRED = {
+  message: "Your sign-in has expired. Please sign in again.",
+};
+
+/** POST /auth/login/password — 규칙에 안 맞는 비밀번호를 로그인 중에 바꾼다. */
+router.post("/login/password", async (req, res) => {
+  const t = readLoginTicket(req.body?.ticket);
+  if (t == null || !t.pwWeak) {
+    res.status(401).json(TICKET_EXPIRED);
+    return;
+  }
+  const newPassword = req.body?.newPassword;
+  if (typeof newPassword !== "string") {
+    res.sendStatus(400);
+    return;
+  }
+  const policy = passwordPolicyError(newPassword);
+  if (policy) {
+    res.status(400).json({ message: policy });
+    return;
+  }
+  await prisma.password_auth.update({
+    where: { user_id: t.sub },
+    data: { hash: await bcrypt.hash(newPassword, 12) },
+  });
+  res.json(await nextLoginStep(t.sub, false));
+});
+
+/**
+ * POST /auth/2fa/setup — 인증 앱에 넣을 키를 만든다.
+ *
+ * 이미 등록한 계정은 여기서 다시 등록할 수 없다. 이 길이 열려 있으면
+ * 비밀번호만 아는 사람이 자기 폰으로 2단계를 갈아 끼운다. 다시 등록하려면
+ * 사이트 관리자가 초기화해야 한다.
+ */
+router.post("/2fa/setup", async (req, res) => {
+  const t = readLoginTicket(req.body?.ticket);
+  if (t == null || t.pwWeak) {
+    res.status(401).json(TICKET_EXPIRED);
+    return;
+  }
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: t.sub },
+    select: { totp_enabled_at: true, email: true, password_auth: { select: { username: true } } },
+  });
+  if (user.totp_enabled_at != null) {
+    res.status(409).json({ message: "Two-factor authentication is already set up." });
+    return;
+  }
+  const secret = newTotpSecret();
+  await prisma.user.update({
+    where: { id: t.sub },
+    data: { totp_pending_secret: Buffer.from(await encryptSymmetric(secret)) },
+  });
+  const account = user.password_auth?.username ?? user.email ?? "account";
+  res.json({ secret, otpauthUrl: otpauthUrl(secret, account) });
+});
+
+/** POST /auth/2fa/setup/confirm — 인증 앱의 첫 코드가 맞으면 등록을 마치고 로그인시킨다. */
+router.post("/2fa/setup/confirm", async (req, res) => {
+  const t = readLoginTicket(req.body?.ticket);
+  const code = String(req.body?.code ?? "").replace(/\s/g, "");
+  if (t == null || t.pwWeak) {
+    res.status(401).json(TICKET_EXPIRED);
+    return;
+  }
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: t.sub },
+    select: { totp_enabled_at: true, totp_pending_secret: true },
+  });
+  if (user.totp_enabled_at != null || user.totp_pending_secret == null) {
+    res.status(409).json({ message: "Start the setup again." });
+    return;
+  }
+  const secret = await decryptSymmetric(user.totp_pending_secret);
+  const step = verifyTotp(secret, code, null);
+  if (step == null) {
+    res.status(401).json({ message: "The code is not correct. Check the time on your phone and try again." });
+    return;
+  }
+  const backupCodes = newBackupCodes();
+  // 아직 등록 전일 때만 바꾼다. 두 창에서 동시에 등록을 마치는 경우를 막는다.
+  const { count } = await prisma.user.updateMany({
+    where: { id: t.sub, totp_enabled_at: null },
+    data: {
+      totp_secret: user.totp_pending_secret,
+      totp_pending_secret: null,
+      totp_enabled_at: new Date(),
+      totp_last_step: step,
+      totp_backup_hashes: backupCodes.map(hashBackupCode),
+    },
+  });
+  if (count === 0) {
+    res.status(409).json({ message: "Two-factor authentication is already set up." });
+    return;
+  }
+  const session = await generateSession(t.sub);
+  res.json({ ...session, backupCodes });
+});
+
+/**
+ * POST /auth/2fa/verify — 인증 앱 코드(6자리) 또는 백업 코드로 로그인을 마친다.
+ *
+ * 둘 다 "조건이 맞을 때만 고친다"는 한 줄의 UPDATE 로 처리한다. 읽고 나서
+ * 따로 쓰면, 같은 코드를 동시에 두 번 보냈을 때 둘 다 통과한다.
+ */
+router.post("/2fa/verify", async (req, res) => {
+  const t = readLoginTicket(req.body?.ticket);
+  const code = String(req.body?.code ?? "").trim();
+  if (t == null || t.pwWeak) {
+    res.status(401).json(TICKET_EXPIRED);
+    return;
+  }
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: t.sub },
+    select: { totp_secret: true, totp_last_step: true },
+  });
+  if (user.totp_secret == null) {
+    res.status(409).json({ message: "Two-factor authentication is not set up." });
+    return;
+  }
+
+  let ok = false;
+  let backupCodesLeft: number | null = null;
+  if (/^\d{6}$/.test(code.replace(/\s/g, ""))) {
+    const secret = await decryptSymmetric(user.totp_secret);
+    const step = verifyTotp(secret, code.replace(/\s/g, ""), user.totp_last_step);
+    if (step != null) {
+      const n = await prisma.$executeRaw`
+        UPDATE "user" SET totp_last_step = ${step}
+        WHERE id = ${t.sub}::uuid AND (totp_last_step IS NULL OR totp_last_step < ${step})`;
+      ok = n === 1;
+    }
+  } else {
+    const h = hashBackupCode(code);
+    const rows = await prisma.$queryRaw<{ left: number }[]>`
+      UPDATE "user" SET totp_backup_hashes = array_remove(totp_backup_hashes, ${h})
+      WHERE id = ${t.sub}::uuid AND ${h} = ANY(totp_backup_hashes)
+      RETURNING cardinality(totp_backup_hashes) AS "left"`;
+    if (rows.length === 1) {
+      ok = true;
+      backupCodesLeft = Number(rows[0].left);
+    }
+  }
+  if (!ok) {
+    res.status(401).json({ message: "The code is not correct." });
+    return;
+  }
+  const session = await generateSession(t.sub);
+  res.json({ ...session, backupCodesLeft });
+});
+
+/**
+ * POST /auth/admin/users/:userId/2fa/reset — 폰과 백업 코드를 모두 잃은 사람.
+ * 사이트 관리자만. 그 사람의 세션도 모두 끊고, 다음 로그인 때 다시 등록한다.
+ */
+router.post("/admin/users/:userId/2fa/reset", loginRequired, async (req, res) => {
+  const me = await prisma.user.findUnique({
+    where: { id: req.authSession!.user_id },
+    select: { is_site_admin: true },
+  });
+  if (!me?.is_site_admin) {
+    res.sendStatus(403);
+    return;
+  }
+  const userId = String(req.params.userId);
+  const { count } = await prisma.user.updateMany({
+    where: { id: userId },
+    data: {
+      totp_secret: null,
+      totp_pending_secret: null,
+      totp_enabled_at: null,
+      totp_last_step: null,
+      totp_backup_hashes: [],
+    },
+  });
+  if (count === 0) {
+    res.sendStatus(404);
+    return;
+  }
+  await clearSession(userId);
+  console.log(`2fa reset: user ${userId} by admin ${req.authSession!.user_id}`);
+  res.sendStatus(200);
+});
+
+/* ------------------------------------------------------------------ *
+ * 비밀번호 찾기(이메일 인증번호)                                         *
+ *                                                                    *
+ * 앱(myodoc)과 같은 인증번호 장치를 쓰되 쓰임(web_reset)을 나눈다.        *
+ * 계정이 있는지는 알려주지 않는다 - 병원 계정 목록을 캐는 데 쓰일 수 있다.  *
+ * 재설정해도 2단계 인증은 그대로라, 메일만 털려서는 들어올 수 없다.         *
+ * ------------------------------------------------------------------ */
+
+const emailSchema = zod.string().email();
+
+router.post("/password/send-code", async (req, res) => {
+  const parsed = emailSchema.safeParse(req.body?.email);
+  if (!parsed.success) {
+    res.status(400).json({ message: "Enter a valid email address." });
+    return;
+  }
+  const email = parsed.data.toLowerCase();
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { password_auth: { select: { user_id: true } } },
+  });
+  if (user?.password_auth != null) {
+    try {
+      await issueCode(email, "web_reset");
+    } catch (e) {
+      if (e instanceof VerificationError && e.code === "cooldown") {
+        res.status(429).json({ message: e.message });
+        return;
+      }
+      if (e instanceof VerificationError && e.code === "unavailable") {
+        res.status(503).json({ message: "Email is not available right now. Please try again later." });
+        return;
+      }
+      throw e;
+    }
+  }
+  res.status(202).json({ ok: true });
+});
+
+router.post("/password/verify-code", async (req, res) => {
+  const email = emailSchema.safeParse(req.body?.email);
+  const code = req.body?.code;
+  if (!email.success || typeof code !== "string") {
+    res.sendStatus(400);
+    return;
+  }
+  try {
+    const ticket = await verifyCode(email.data, code.trim(), "web_reset");
+    res.json({ ticket });
+  } catch (e) {
+    if (e instanceof VerificationError) {
+      res.status(400).json({ message: e.message });
+      return;
+    }
+    throw e;
+  }
+});
+
+router.post("/password/reset", async (req, res) => {
+  const email = emailSchema.safeParse(req.body?.email);
+  const { ticket, password } = req.body ?? {};
+  if (!email.success || typeof ticket !== "string" || typeof password !== "string") {
+    res.sendStatus(400);
+    return;
+  }
+  try {
+    assertTicket(ticket, email.data, "web_reset");
+  } catch (e) {
+    if (e instanceof VerificationError) {
+      res.status(400).json({ message: e.message });
+      return;
+    }
+    throw e;
+  }
+  const policy = passwordPolicyError(password);
+  if (policy) {
+    res.status(400).json({ message: policy });
+    return;
+  }
+  const user = await prisma.user.findUnique({
+    where: { email: email.data.toLowerCase() },
+    select: { id: true, password_auth: { select: { user_id: true } } },
+  });
+  if (user?.password_auth == null) {
+    res.status(400).json({ message: "This account cannot reset a password." });
+    return;
+  }
+  await prisma.password_auth.update({
+    where: { user_id: user.id },
+    data: { hash: await bcrypt.hash(password, 12) },
+  });
+  // 비밀번호를 찾는 이유의 절반은 남이 들어와 있을지 모른다는 걱정이다.
+  await clearSession(user.id);
+  res.json({ ok: true });
 });
 
 router.get("/logout", loginRequired, async (req, res) => {
@@ -245,6 +594,11 @@ router.post(
     const data = req.body as zod.infer<typeof signupPasswordAuthType>;
 
     const { username, password, email, agree_marketing } = data;
+    const policy = passwordPolicyError(password);
+    if (policy) {
+      res.status(400).json({ message: policy });
+      return;
+    }
     const receive_email_updates = agree_marketing ?? false;
 
     const hash = await bcrypt.hash(password, 12);
@@ -287,6 +641,11 @@ router.post(
     const data = req.body as zod.infer<typeof passwordAuthType>;
 
     const { username, password } = data;
+    const policy = passwordPolicyError(password);
+    if (policy) {
+      res.status(400).json({ message: policy });
+      return;
+    }
     const hash = await bcrypt.hash(password, 12);
 
     const passwordAuthExists = await prisma.password_auth
@@ -366,6 +725,11 @@ router.patch("/user/passwordAuth", loginRequired, async (req, res) => {
     return;
   }
 
+  const policy = passwordPolicyError(data.newPassword);
+  if (policy) {
+    res.status(400).json({ message: policy });
+    return;
+  }
   const hash = await bcrypt.hash(data.newPassword, 12);
 
   prisma.password_auth
