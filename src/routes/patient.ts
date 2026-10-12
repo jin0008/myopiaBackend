@@ -519,6 +519,30 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         },
       });
 
+      // 보호자가 앱에 적은 안경 처방전과 안경 종류. 병원에서 낸 처방이
+      // 아니어도, 어떤 안경(마이오스마트·스텔리스트 등)을 썼는지는 진행을
+      // 읽는 데 필요하다. 의사가 고치지 않는 값이라 그대로 넘긴다.
+      const parentPrescriptions = await prisma.child_prescription.findMany({
+        where: {
+          parent_child_link: {
+            child_hospital_link: { some: { patient_id: data.id, status: "active" } },
+          },
+        },
+        orderBy: { prescribed_on: "desc" },
+        select: {
+          id: true,
+          prescribed_on: true,
+          sph_od: true,
+          sph_os: true,
+          cyl_od: true,
+          cyl_os: true,
+          axis_od: true,
+          axis_os: true,
+          lens_type: true,
+          memo: true,
+        },
+      });
+
       // High-risk read: full patient record with decrypted PII (reg. number,
       // DOB) plus all clinical measurements.
       writeAuditLog({
@@ -559,6 +583,7 @@ router.get("/:patientId", loginRequired, async (req, res) => {
             os_cyl: r.cyl_os,
             memo: r.memo,
           })),
+        parent_prescription: parentPrescriptions,
         date_of_birth: await decryptSymmetric(data.encrypted_date_of_birth),
         registration_number: await decryptSymmetric(
           data.encrypted_registration_number,
