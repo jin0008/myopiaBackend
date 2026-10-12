@@ -1461,6 +1461,162 @@ router.delete(
 );
 
 /**
+ * GET /api/mobile/treatment-options
+ *
+ * 보호자가 고를 수 있는 치료. 병원 차트와 같은 목록(treatment)을 쓴다.
+ * "None" 은 뺀다 - 보호자에게는 기록하지 않으면 그만인 항목이다.
+ */
+router.get("/treatment-options", requireMobileAuth, async (_req, res) => {
+  const rows = await prisma.treatment.findMany({
+    where: { name: { not: "None" } },
+    orderBy: { name: "asc" },
+    select: { id: true, name: true },
+  });
+  res.json({ options: rows });
+});
+
+const ymdField = zod.string().regex(/^\d{4}-\d{2}-\d{2}$/, { message: "날짜를 확인해 주세요." });
+const childTreatmentSchema = zod
+  .object({
+    treatmentId: zod.string().uuid({ message: "치료를 골라 주세요." }),
+    startDate: ymdField,
+    endDate: ymdField.nullable().optional(),
+  })
+  .refine((d) => d.endDate == null || d.endDate >= d.startDate, {
+    message: "끝난 날이 시작한 날보다 앞설 수 없습니다.",
+    path: ["endDate"],
+  });
+const validateChildTreatment = validateWith(childTreatmentSchema);
+type ChildTreatmentBody = zod.infer<typeof childTreatmentSchema>;
+
+const childTreatmentData = (d: ChildTreatmentBody) => ({
+  treatment_id: d.treatmentId,
+  start_date: new Date(d.startDate),
+  end_date: d.endDate ? new Date(d.endDate) : null,
+});
+
+const childTreatmentDTO = (r: {
+  id: string;
+  treatment_id: string;
+  start_date: Date;
+  end_date: Date | null;
+  treatment: { name: string };
+}) => ({
+  id: r.id,
+  treatmentId: r.treatment_id,
+  name: r.treatment.name,
+  startDate: serializeDateOnly(r.start_date),
+  endDate: r.end_date ? serializeDateOnly(r.end_date) : null,
+});
+
+/** 목록에 없는 치료 id 면 FK 에서 500 이 나기 전에 400 으로 돌려보낸다. */
+async function treatmentExists(id: string): Promise<boolean> {
+  return (await prisma.treatment.count({ where: { id } })) > 0;
+}
+
+/**
+ * GET /api/mobile/children/:childId/treatment-records
+ *
+ * 보호자가 적은 치료. 병원이 넣은 치료는 /children/:childId/treatments 에
+ * 따로 있다 - 그쪽 응답 모양을 바꾸지 않으려고 경로를 나눈다.
+ */
+router.get("/children/:childId/treatment-records", requireMobileAuth, async (req, res) => {
+  const user = requireAppUser(req);
+  const child = await loadOwnedChild(user.sub, String(req.params.childId));
+  if (child == null) {
+    res.status(404).json({ error: "child not found", code: "not_found" });
+    return;
+  }
+  const rows = await prisma.child_treatment.findMany({
+    where: { parent_child_link_id: child.id },
+    include: { treatment: { select: { name: true } } },
+    orderBy: { start_date: "desc" },
+  });
+  res.json({ treatments: rows.map(childTreatmentDTO) });
+});
+
+/** POST /api/mobile/children/:childId/treatment-records */
+router.post(
+  "/children/:childId/treatment-records",
+  requireMobileAuth,
+  validateChildTreatment,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const d = req.body as ChildTreatmentBody;
+    if (!(await treatmentExists(d.treatmentId))) {
+      res.status(400).json({ error: "치료를 골라 주세요.", code: "validation_error" });
+      return;
+    }
+    const row = await prisma.child_treatment.create({
+      data: { parent_child_link_id: child.id, ...childTreatmentData(d) },
+      include: { treatment: { select: { name: true } } },
+    });
+    res.status(201).json(childTreatmentDTO(row));
+  },
+);
+
+/** PUT /api/mobile/children/:childId/treatment-records/:treatmentRecordId */
+router.put(
+  "/children/:childId/treatment-records/:treatmentRecordId",
+  requireMobileAuth,
+  validateChildTreatment,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const d = req.body as ChildTreatmentBody;
+    if (!(await treatmentExists(d.treatmentId))) {
+      res.status(400).json({ error: "치료를 골라 주세요.", code: "validation_error" });
+      return;
+    }
+    // 아이까지 조건에 넣는다. id 만으로 고치면 남의 기록을 고칠 수 있다.
+    const { count } = await prisma.child_treatment.updateMany({
+      where: { id: String(req.params.treatmentRecordId), parent_child_link_id: child.id },
+      data: childTreatmentData(d),
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "treatment not found", code: "not_found" });
+      return;
+    }
+    const row = await prisma.child_treatment.findUniqueOrThrow({
+      where: { id: String(req.params.treatmentRecordId) },
+      include: { treatment: { select: { name: true } } },
+    });
+    res.json(childTreatmentDTO(row));
+  },
+);
+
+/** DELETE /api/mobile/children/:childId/treatment-records/:treatmentRecordId */
+router.delete(
+  "/children/:childId/treatment-records/:treatmentRecordId",
+  requireMobileAuth,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const { count } = await prisma.child_treatment.deleteMany({
+      where: { id: String(req.params.treatmentRecordId), parent_child_link_id: child.id },
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "treatment not found", code: "not_found" });
+      return;
+    }
+    res.json({ ok: true });
+  },
+);
+
+/**
  * GET /api/mobile/children/:childId/progress
  *
  * 안축장이 또래 기준을 넘었는지 한 문장으로 답한다.

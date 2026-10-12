@@ -543,6 +543,19 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         },
       });
 
+      // 보호자가 앱에 적은 치료. 병원 치료(patient_treatment)와 같은 목록을
+      // 쓰지만 배열은 나눈다 - 다른 병원에서 받은 치료일 수 있고, 섞으면
+      // 의사가 직접 넣은 것과 구분되지 않는다.
+      const parentTreatments = await prisma.child_treatment.findMany({
+        where: {
+          parent_child_link: {
+            child_hospital_link: { some: { patient_id: data.id, status: "active" } },
+          },
+        },
+        orderBy: { start_date: "asc" },
+        select: { id: true, treatment_id: true, start_date: true, end_date: true },
+      });
+
       // High-risk read: full patient record with decrypted PII (reg. number,
       // DOB) plus all clinical measurements.
       writeAuditLog({
@@ -584,6 +597,7 @@ router.get("/:patientId", loginRequired, async (req, res) => {
             memo: r.memo,
           })),
         parent_prescription: parentPrescriptions,
+        parent_treatment: parentTreatments,
         date_of_birth: await decryptSymmetric(data.encrypted_date_of_birth),
         registration_number: await decryptSymmetric(
           data.encrypted_registration_number,

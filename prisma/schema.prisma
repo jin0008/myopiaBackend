@@ -165,6 +165,7 @@ model treatment {
   name              String              @unique(map: "treatment_unique") @db.VarChar(30)
   description       String?
   patient_treatment patient_treatment[]
+  child_treatment   child_treatment[]
 }
 
 /// 폰으로 알림을 보낼 기기. 한 사람이 폰과 태블릿을 함께 쓸 수 있다.
@@ -498,6 +499,7 @@ model parent_child_link {
   child_parental_myopia child_parental_myopia[]
   child_record          child_record[]
   child_prescription    child_prescription[]
+  child_treatment       child_treatment[]
   child_care_log        child_care_log[]
   child_reminder        child_reminder[]
 
@@ -1509,6 +1511,23 @@ model child_prescription {
   parent_child_link parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade)
 
   @@index([parent_child_link_id, prescribed_on])
+}
+
+/// 보호자가 앱에 적은 치료 이력. 병원의 patient_treatment 와 같은 치료 목록을
+/// 쓴다 - 목록이 둘이면 의사 화면에서 같은 치료를 두 이름으로 보게 된다.
+model child_treatment {
+  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parent_child_link_id String    @db.Uuid
+  treatment_id         String    @db.Uuid
+  start_date           DateTime  @db.Date
+  /// 비어 있으면 지금도 하는 중.
+  end_date             DateTime? @db.Date
+  created_at           DateTime  @default(now()) @db.Timestamptz(6)
+
+  parent_child_link parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade)
+  treatment         treatment         @relation(fields: [treatment_id], references: [id], onDelete: Cascade)
+
+  @@index([parent_child_link_id, start_date])
 }
 
 model child_record {
