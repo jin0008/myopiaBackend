@@ -1,6 +1,7 @@
 import express from "express";
 import { AD_RADIUS_KM, AD_SLOTS } from "../lib/adSlots";
 import fs from "fs";
+import multer from "multer";
 import path from "path";
 import bcrypt from "bcrypt";
 import zod from "zod";
@@ -1306,6 +1307,132 @@ router.delete(
       return;
     }
     res.json({ ok: true });
+  },
+);
+
+/**
+ * 처방전 사진 읽기. 사진은 메모리에서만 다루고 저장하지 않는다 - 아이
+ * 이름·병원·주민번호 앞자리가 찍혀 있기 쉬운 사진이다.
+ */
+const ocrUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => cb(null, /^image\/(jpeg|png|webp|heic)$/.test(file.mimetype)),
+});
+
+const OCR_MODEL = process.env.OCR_MODEL || "gemini-3.1-flash-lite";
+const OCR_PROMPT = `이 사진은 한국 안과·안경원의 안경 처방전입니다. 아래 값을 읽어 JSON 으로만 답하세요.
+- prescribedOn: 처방일(YYYY-MM-DD). 없으면 null
+- sphOd/cylOd/axisOd: 오른쪽 눈(R, OD, 우) 구면(SPH, S)·원주(CYL, C)·축(AXIS, AX, A)
+- sphOs/cylOs/axisOs: 왼쪽 눈(L, OS, 좌) 같은 값
+도수는 부호를 포함한 숫자(예: -2.25). 축은 0~180 정수. 읽을 수 없거나 칸이 비어 있으면 null.
+처방전이 아니면 모든 값을 null 로 두세요. 추측하지 마세요.`;
+
+const num = { type: "NUMBER", nullable: true };
+const OCR_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    prescribedOn: { type: "STRING", nullable: true },
+    sphOd: num, cylOd: num, axisOd: { type: "INTEGER", nullable: true },
+    sphOs: num, cylOs: num, axisOs: { type: "INTEGER", nullable: true },
+  },
+};
+
+/** 모델이 낸 값을 저장 규칙과 같은 범위로 거른다. 범위 밖이면 버린다 -
+ *  잘못 읽은 값을 칸에 채워 두면 보호자가 그대로 저장하기 쉽다. */
+function cleanOcr(raw: Record<string, unknown>) {
+  const dio = (v: unknown) =>
+    typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= 30 ? Math.round(v * 4) / 4 : null;
+  const axis = (v: unknown) =>
+    typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= 180 ? v : null;
+  const date = (v: unknown) =>
+    typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
+  return {
+    prescribedOn: date(raw.prescribedOn),
+    sphOd: dio(raw.sphOd),
+    sphOs: dio(raw.sphOs),
+    cylOd: dio(raw.cylOd),
+    cylOs: dio(raw.cylOs),
+    axisOd: axis(raw.axisOd),
+    axisOs: axis(raw.axisOs),
+  };
+}
+
+/**
+ * POST /api/mobile/children/:childId/prescriptions/ocr  (multipart, field "image")
+ *
+ * 처방전 사진에서 도수를 읽어 돌려준다. 저장하지 않는다 - 화면이 칸을 미리
+ * 채우고, 보호자가 확인한 뒤 평소처럼 저장한다. 의료 수치라 읽은 값을 확인
+ * 없이 쌓지 않는다.
+ *
+ * 하루 사용량은 챗봇과 같은 장부를 쓰되 키를 나눈다. 전체 한도를 함께
+ * 쓰는 것이 비용 상한으로는 맞다.
+ */
+router.post(
+  "/children/:childId/prescriptions/ocr",
+  requireMobileAuth,
+  (req, res, next) =>
+    ocrUpload.single("image")(req, res, (err: unknown) => {
+      if (err) {
+        res.status(400).json({
+          error:
+            err instanceof multer.MulterError && err.code === "LIMIT_FILE_SIZE"
+              ? "사진이 너무 커요. 10MB 이하로 올려 주세요."
+              : "사진을 읽지 못했어요.",
+          code: "validation_error",
+        });
+        return;
+      }
+      next();
+    }),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    if (!req.file) {
+      res.status(400).json({ error: "사진을 골라 주세요.", code: "validation_error" });
+      return;
+    }
+    if (!GEMINI_API_KEY) {
+      res.status(503).json({ error: "지금은 사진 읽기를 쓸 수 없어요.", code: "unavailable" });
+      return;
+    }
+    const usage = checkAndCountUsage(kstToday(), `ocr:${user.sub}`, "user");
+    if (usage !== "ok") {
+      res.status(429).json({ error: "오늘은 더 읽을 수 없어요. 직접 입력해 주세요.", code: "rate_limited" });
+      return;
+    }
+    const { data, httpCode } = await geminiHttp(OCR_MODEL, "generateContent", {
+      contents: [
+        {
+          parts: [
+            { text: OCR_PROMPT },
+            { inline_data: { mime_type: req.file.mimetype, data: req.file.buffer.toString("base64") } },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+        responseSchema: OCR_SCHEMA,
+      },
+    });
+    const text: unknown = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      parsed = typeof text === "string" ? JSON.parse(text) : null;
+    } catch {
+      parsed = null;
+    }
+    if (httpCode !== 200 || parsed == null || typeof parsed !== "object") {
+      console.error("prescription ocr failed", httpCode, JSON.stringify(data)?.slice(0, 300));
+      res.status(502).json({ error: "사진을 읽지 못했어요. 직접 입력해 주세요.", code: "ocr_failed" });
+      return;
+    }
+    res.json(cleanOcr(parsed));
   },
 );
 
@@ -6534,4 +6661,4 @@ export default router;
 
 /** 검사용. 하루 한도는 눈으로 확인할 수 없어(청구서에서만 드러난다)
  *  scripts/check-chat-quota.ts 가 이 두 함수를 직접 부른다. */
-export const __chatTestHooks = { checkAndCountUsage, kstToday };
+export const __chatTestHooks = { checkAndCountUsage, kstToday, cleanOcr };
