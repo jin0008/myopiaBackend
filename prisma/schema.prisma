@@ -497,6 +497,7 @@ model parent_child_link {
   child_activity_log    child_activity_log[]
   child_parental_myopia child_parental_myopia[]
   child_record          child_record[]
+  child_prescription    child_prescription[]
   child_care_log        child_care_log[]
   child_reminder        child_reminder[]
 
@@ -1481,6 +1482,33 @@ model child_link_invite {
   user     user?    @relation("invite_user", fields: [used_by], references: [id], onDelete: SetNull)
 
   @@index([patient_id, created_at(sort: Desc)])
+}
+
+/// 안경 처방전. 굴절값(child_record)과 따로 둔다 - 처방 도수는 검사값과
+/// 다를 수 있고, 어떤 안경(렌즈)을 썼는지가 함께 쌓여야 진행과 견줄 수 있다.
+model child_prescription {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parent_child_link_id String   @db.Uuid
+  /// 처방받은 날.
+  prescribed_on        DateTime @db.Date
+
+  sph_od  Float? @db.Real
+  sph_os  Float? @db.Real
+  cyl_od  Float? @db.Real
+  cyl_os  Float? @db.Real
+  axis_od Int?   @db.SmallInt
+  axis_os Int?   @db.SmallInt
+
+  /// miyosmart | stellest | myovision | single_vision | other
+  lens_type  String
+  /// 누가 넣었나. 지금은 parent 뿐 - 안경점·렌즈사 연동이 붙으면 늘어난다.
+  source     String   @default("parent")
+  memo       String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  parent_child_link parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade)
+
+  @@index([parent_child_link_id, prescribed_on])
 }
 
 model child_record {

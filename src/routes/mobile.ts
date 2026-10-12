@@ -1128,12 +1128,12 @@ const childRecordSchema = zod.object({
  * 때문이다. 여기는 사람이 손으로 옮겨 적는 칸이라, 틀렸다는 말보다
  * 어떻게 틀렸는지가 훨씬 쓸모 있다.
  */
-function validateChildRecord(
+const validateWith = (schema: zod.ZodTypeAny) => (
   req: express.Request,
   res: express.Response,
   next: express.NextFunction,
-): void {
-  const parsed = childRecordSchema.safeParse(req.body);
+): void => {
+  const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
     const first = parsed.error.issues[0];
     res.status(400).json({
@@ -1145,7 +1145,8 @@ function validateChildRecord(
   }
   req.body = parsed.data;
   next();
-}
+};
+const validateChildRecord = validateWith(childRecordSchema);
 
 
 const recordDTO = (r: {
@@ -1302,6 +1303,157 @@ router.delete(
     });
     if (count === 0) {
       res.status(404).json({ error: "record not found", code: "not_found" });
+      return;
+    }
+    res.json({ ok: true });
+  },
+);
+
+/** 안경(렌즈) 종류. 호야·에실로 연동이 붙으면 그쪽 코드와 맞춘다. */
+const LENS_TYPES = ["miyosmart", "stellest", "myovision", "single_vision", "other"] as const;
+const axisField = zod
+  .number()
+  .int({ message: "축은 0~180 사이 정수여야 합니다." })
+  .min(0, { message: "축은 0~180 사이 정수여야 합니다." })
+  .max(180, { message: "축은 0~180 사이 정수여야 합니다." })
+  .nullable()
+  .optional();
+const prescriptionSchema = zod.object({
+  prescribedOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  sphOd: dioptreField,
+  sphOs: dioptreField,
+  cylOd: dioptreField,
+  cylOs: dioptreField,
+  axisOd: axisField,
+  axisOs: axisField,
+  lensType: zod.enum(LENS_TYPES, { message: "안경 종류를 골라 주세요." }),
+  memo: zod.string().max(500).nullable().optional(),
+});
+const validatePrescription = validateWith(prescriptionSchema);
+type PrescriptionBody = zod.infer<typeof prescriptionSchema>;
+
+const prescriptionData = (d: PrescriptionBody) => ({
+  prescribed_on: new Date(d.prescribedOn),
+  sph_od: d.sphOd ?? null,
+  sph_os: d.sphOs ?? null,
+  cyl_od: d.cylOd ?? null,
+  cyl_os: d.cylOs ?? null,
+  axis_od: d.axisOd ?? null,
+  axis_os: d.axisOs ?? null,
+  lens_type: d.lensType,
+  memo: d.memo ?? null,
+});
+
+const prescriptionDTO = (r: {
+  id: string;
+  prescribed_on: Date;
+  sph_od: number | null;
+  sph_os: number | null;
+  cyl_od: number | null;
+  cyl_os: number | null;
+  axis_od: number | null;
+  axis_os: number | null;
+  lens_type: string;
+  source: string;
+  memo: string | null;
+}) => ({
+  id: r.id,
+  prescribedOn: serializeDateOnly(r.prescribed_on),
+  sphOd: r.sph_od,
+  sphOs: r.sph_os,
+  cylOd: r.cyl_od,
+  cylOs: r.cyl_os,
+  axisOd: r.axis_od,
+  axisOs: r.axis_os,
+  lensType: r.lens_type,
+  source: r.source,
+  memo: r.memo,
+});
+
+/** GET /api/mobile/children/:childId/prescriptions */
+router.get("/children/:childId/prescriptions", requireMobileAuth, async (req, res) => {
+  const user = requireAppUser(req);
+  const child = await loadOwnedChild(user.sub, String(req.params.childId));
+  if (child == null) {
+    res.status(404).json({ error: "child not found", code: "not_found" });
+    return;
+  }
+  const rows = await prisma.child_prescription.findMany({
+    where: { parent_child_link_id: child.id },
+    orderBy: { prescribed_on: "desc" },
+    take: 200,
+  });
+  res.json({ prescriptions: rows.map(prescriptionDTO) });
+});
+
+/**
+ * POST /api/mobile/children/:childId/prescriptions
+ *
+ * 도수 칸은 비워도 된다 - 처방전이 없어도 "스텔리스트를 쓰기 시작했다"는
+ * 것만으로 쌓을 가치가 있다. 안경 종류는 꼭 받는다.
+ */
+router.post(
+  "/children/:childId/prescriptions",
+  requireMobileAuth,
+  validatePrescription,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const row = await prisma.child_prescription.create({
+      data: { parent_child_link_id: child.id, ...prescriptionData(req.body as PrescriptionBody) },
+    });
+    res.status(201).json(prescriptionDTO(row));
+  },
+);
+
+/** PUT /api/mobile/children/:childId/prescriptions/:prescriptionId */
+router.put(
+  "/children/:childId/prescriptions/:prescriptionId",
+  requireMobileAuth,
+  validatePrescription,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    // 아이까지 조건에 넣는다. id 만으로 고치면 남의 기록을 고칠 수 있다.
+    const { count } = await prisma.child_prescription.updateMany({
+      where: { id: String(req.params.prescriptionId), parent_child_link_id: child.id },
+      data: prescriptionData(req.body as PrescriptionBody),
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "prescription not found", code: "not_found" });
+      return;
+    }
+    const row = await prisma.child_prescription.findUniqueOrThrow({
+      where: { id: String(req.params.prescriptionId) },
+    });
+    res.json(prescriptionDTO(row));
+  },
+);
+
+/** DELETE /api/mobile/children/:childId/prescriptions/:prescriptionId */
+router.delete(
+  "/children/:childId/prescriptions/:prescriptionId",
+  requireMobileAuth,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const { count } = await prisma.child_prescription.deleteMany({
+      where: { id: String(req.params.prescriptionId), parent_child_link_id: child.id },
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "prescription not found", code: "not_found" });
       return;
     }
     res.json({ ok: true });
