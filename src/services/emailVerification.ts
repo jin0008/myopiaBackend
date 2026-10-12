@@ -27,7 +27,7 @@ const TICKET_TTL_SECONDS = 15 * 60;
  * 남의 주소로 가입 코드를 받아 그 계정을 가져갈 수 있다.
  * partner_reset 은 앱 사용자가 아니라 병원 계정용이라 또 따로 둔다.
  */
-export type VerificationPurpose = "signup" | "reset" | "partner_reset";
+export type VerificationPurpose = "signup" | "reset" | "partner_reset" | "web_reset";
 
 export class VerificationError extends Error {
   constructor(
@@ -98,7 +98,9 @@ export async function issueCode(
   const code = newCode();
   // 메일부터 보낸다. 코드 행을 먼저 만들면 발송이 실패했을 때 쓸 수 없는
   // 코드가 남고, 쿨다운까지 걸려 사용자가 60초 동안 다시 시도하지 못한다.
-  await sendEmail([email], "마이오닥 인증번호", codeEmailHtml(code));
+  // 웹(myopiamanage) 계정은 마이오닥 이름으로 받으면 피싱으로 오해한다.
+  const brand = purpose === "web_reset" ? "myopiamanage" : "마이오닥";
+  await sendEmail([email], `${brand} 인증번호`, codeEmailHtml(code, brand));
 
   // 이 주소로 아직 살아 있는 코드는 모두 무효로 한다. 코드가 여러 개
   // 유효하면 시도 횟수 제한이 사실상 배수로 늘어난다.
@@ -189,12 +191,12 @@ export async function purgeExpiredCodes(): Promise<number> {
   return count;
 }
 
-function codeEmailHtml(code: string): string {
+function codeEmailHtml(code: string, brand = "마이오닥"): string {
   return `
 <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:480px;margin:0 auto;padding:32px 24px;color:#151A21">
-  <p style="margin:0 0 24px;font-size:18px;font-weight:700">마이오닥 인증번호</p>
+  <p style="margin:0 0 24px;font-size:18px;font-weight:700">${brand} 인증번호</p>
   <p style="margin:0 0 20px;font-size:15px;line-height:1.6;color:#5B6472">
-    아래 번호를 앱에 입력해 주세요.
+    아래 번호를 입력해 주세요.
   </p>
   <p style="margin:0 0 20px;font-size:32px;font-weight:800;letter-spacing:8px;color:#1A73E8">
     ${code}
