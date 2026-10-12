@@ -67,7 +67,13 @@ router.post("/passwordLogin", async (req, res) => {
   }
   // 첫 단계만 통과했다. 세션은 2단계까지 마친 뒤에 준다. 지금 비밀번호가
   // 규칙에 안 맞으면 먼저 바꾸게 한다 - 평문을 아는 건 이 순간뿐이다.
-  res.json(await nextLoginStep(auth.user.id, passwordPolicyError(password) != null));
+  res.json(
+    await nextLoginStep(
+      auth.user.id,
+      passwordPolicyError(password) != null,
+      req.body.deviceTokens,
+    ),
+  );
 });
 
 router.post("/googleLogin", async (req, res) => {
@@ -102,7 +108,7 @@ router.post("/googleLogin", async (req, res) => {
     return;
   }
 
-  res.json(await nextLoginStep(googleAuth.user.id, false));
+  res.json(await nextLoginStep(googleAuth.user.id, false, req.body.deviceTokens));
 });
 
 /* ------------------------------------------------------------------ *
@@ -145,11 +151,46 @@ function readLoginTicket(ticket: unknown): LoginTicket | null {
   }
 }
 
-async function nextLoginStep(userId: string, pwWeak: boolean) {
+/* "이 브라우저 30일 기억하기".
+ *
+ * 2단계를 마친 브라우저에 30일짜리 서명 토큰을 준다. 그 브라우저에서는
+ * 비밀번호(또는 Google)만 맞으면 코드를 묻지 않는다. 토큰에는 2단계를
+ * 등록한 시각을 넣어 둔다 - 관리자가 초기화하면 그 시각이 바뀌어, 기억해 둔
+ * 브라우저가 한꺼번에 무효가 된다. 비밀번호가 약해 바꿔야 하는 단계는
+ * 기억과 상관없이 거친다. */
+const DEVICE_AUD = "web-trusted-device";
+const DEVICE_TTL = "30d";
+
+function signDeviceToken(userId: string, enabledAt: Date): string {
+  return jwt.sign({ ver: enabledAt.getTime() }, loginTicketSecret(), {
+    subject: userId,
+    audience: DEVICE_AUD,
+    expiresIn: DEVICE_TTL,
+  });
+}
+
+function trustedDevice(tokens: unknown, userId: string, enabledAt: Date): boolean {
+  if (!Array.isArray(tokens)) return false;
+  // 한 브라우저를 여러 사람이 쓰면 토큰이 여럿일 수 있다. 몇 개만 본다.
+  return tokens.slice(0, 5).some((t) => {
+    if (typeof t !== "string") return false;
+    try {
+      const p = jwt.verify(t, loginTicketSecret(), { audience: DEVICE_AUD }) as jwt.JwtPayload;
+      return p.sub === userId && p.ver === enabledAt.getTime();
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function nextLoginStep(userId: string, pwWeak: boolean, deviceTokens?: unknown) {
   const user = await prisma.user.findUniqueOrThrow({
     where: { id: userId },
     select: { totp_enabled_at: true },
   });
+  if (!pwWeak && user.totp_enabled_at != null && trustedDevice(deviceTokens, userId, user.totp_enabled_at)) {
+    return { next: "signed_in" as const, ...(await generateSession(userId)) };
+  }
   const next = pwWeak
     ? "change_password"
     : user.totp_enabled_at == null
@@ -255,7 +296,18 @@ router.post("/2fa/setup/confirm", async (req, res) => {
     return;
   }
   const session = await generateSession(t.sub);
-  res.json({ ...session, backupCodes });
+  const enabled = await prisma.user.findUniqueOrThrow({
+    where: { id: t.sub },
+    select: { totp_enabled_at: true },
+  });
+  res.json({
+    ...session,
+    backupCodes,
+    deviceToken:
+      req.body?.rememberDevice === true
+        ? signDeviceToken(t.sub, enabled.totp_enabled_at!)
+        : null,
+  });
 });
 
 /**
@@ -273,9 +325,9 @@ router.post("/2fa/verify", async (req, res) => {
   }
   const user = await prisma.user.findUniqueOrThrow({
     where: { id: t.sub },
-    select: { totp_secret: true, totp_last_step: true },
+    select: { totp_secret: true, totp_last_step: true, totp_enabled_at: true },
   });
-  if (user.totp_secret == null) {
+  if (user.totp_secret == null || user.totp_enabled_at == null) {
     res.status(409).json({ message: "Two-factor authentication is not set up." });
     return;
   }
@@ -307,7 +359,12 @@ router.post("/2fa/verify", async (req, res) => {
     return;
   }
   const session = await generateSession(t.sub);
-  res.json({ ...session, backupCodesLeft });
+  res.json({
+    ...session,
+    backupCodesLeft,
+    deviceToken:
+      req.body?.rememberDevice === true ? signDeviceToken(t.sub, user.totp_enabled_at) : null,
+  });
 });
 
 /**
