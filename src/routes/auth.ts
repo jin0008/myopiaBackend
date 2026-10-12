@@ -448,7 +448,13 @@ router.post("/password/verify-code", async (req, res) => {
   }
   try {
     const ticket = await verifyCode(email.data, code.trim(), "web_reset");
-    res.json({ ticket });
+    // 아이디 찾기를 따로 두지 않는다. 이 주소의 주인임을 방금 증명했으니
+    // 아이디를 알려 줘도 되고, 비밀번호를 잊은 사람은 아이디도 같이 잊는다.
+    const user = await prisma.user.findUnique({
+      where: { email: email.data.toLowerCase() },
+      select: { password_auth: { select: { username: true } } },
+    });
+    res.json({ ticket, username: user?.password_auth?.username ?? null });
   } catch (e) {
     if (e instanceof VerificationError) {
       res.status(400).json({ message: e.message });
