@@ -309,4 +309,105 @@ moderationAdminRouter.patch("/reports/:id", siteAdminRequired, async (req, res) 
   res.json({ id: updated.id, status: updated.status });
 });
 
+/* ---- 커뮤니티 글 관리 (운영자) -----------------------------------------
+ *
+ * 신고가 들어온 것만이 아니라 전체 글을 훑고 지울 수 있어야 한다 - 테스트 글,
+ * 광고처럼 아무도 신고하지 않는 것도 있다. 지우기는 앱의 삭제와 같이 숨김
+ * (deleted_at)이라, 잘못 지웠으면 되살린다.
+ * ----------------------------------------------------------------------- */
+
+const ADMIN_PAGE_SIZE = 50;
+
+/** GET /moderation/posts?q=&show=live|deleted|all&cursor= */
+moderationAdminRouter.get("/posts", siteAdminRequired, async (req, res) => {
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  const show = req.query.show === "deleted" || req.query.show === "all" ? req.query.show : "live";
+  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+  const rows = await prisma.community_post.findMany({
+    where: {
+      ...(show === "live" ? { deleted_at: null } : show === "deleted" ? { deleted_at: { not: null } } : {}),
+      ...(q !== ""
+        ? {
+            OR: [
+              { title: { contains: q, mode: "insensitive" } },
+              { body: { contains: q, mode: "insensitive" } },
+              { user: { nickname: { contains: q, mode: "insensitive" } } },
+              { user: { email: { contains: q, mode: "insensitive" } } },
+            ],
+          }
+        : {}),
+    },
+    orderBy: [{ created_at: "desc" }, { id: "desc" }],
+    take: ADMIN_PAGE_SIZE + 1,
+    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    include: {
+      user: { select: { nickname: true, email: true } },
+      _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
+    },
+  });
+  const page = rows.slice(0, ADMIN_PAGE_SIZE);
+  res.json({
+    posts: page.map((p) => ({
+      id: p.id,
+      title: p.title,
+      bodyPreview: p.body.replace(/\s+/g, " ").slice(0, 200),
+      category: p.category,
+      imageCount: p.image_urls.length,
+      authorId: p.user_id,
+      authorNickname: p.user.nickname,
+      authorEmail: p.user.email,
+      createdAt: p.created_at.toISOString(),
+      deleted: p.deleted_at != null,
+      commentCount: p._count.comments,
+      likeCount: p._count.likes,
+      viewCount: p.view_count,
+      url: `${APP_WEB_ORIGIN}/community/${p.id}`,
+    })),
+    nextCursor: rows.length > ADMIN_PAGE_SIZE ? page[page.length - 1].id : null,
+  });
+});
+
+/** GET /moderation/posts/:id/comments — 지운 것까지 모두. */
+moderationAdminRouter.get("/posts/:id/comments", siteAdminRequired, async (req, res) => {
+  const rows = await prisma.community_comment.findMany({
+    where: { post_id: String(req.params.id) },
+    orderBy: { created_at: "asc" },
+    include: { user: { select: { nickname: true } } },
+  });
+  res.json(
+    rows.map((c) => ({
+      id: c.id,
+      parentCommentId: c.parent_comment_id,
+      body: c.body,
+      authorNickname: c.user.nickname,
+      createdAt: c.created_at.toISOString(),
+      deleted: c.deleted_at != null,
+    })),
+  );
+});
+
+/** 숨기거나(deleted=true) 되살린다. 없는 id 면 404. */
+async function setDeleted(
+  model: "post" | "comment",
+  id: string,
+  deleted: boolean,
+): Promise<boolean> {
+  const data = { deleted_at: deleted ? new Date() : null };
+  const r =
+    model === "post"
+      ? await prisma.community_post.updateMany({ where: { id }, data })
+      : await prisma.community_comment.updateMany({ where: { id }, data });
+  return r.count > 0;
+}
+
+for (const model of ["post", "comment"] as const) {
+  const base = model === "post" ? "/posts/:id" : "/comments/:id";
+  moderationAdminRouter.delete(base, siteAdminRequired, async (req, res) => {
+    res.sendStatus((await setDeleted(model, String(req.params.id), true)) ? 204 : 404);
+  });
+  moderationAdminRouter.post(`${base}/restore`, siteAdminRequired, async (req, res) => {
+    res.sendStatus((await setDeleted(model, String(req.params.id), false)) ? 204 : 404);
+  });
+}
+
 export default router;
