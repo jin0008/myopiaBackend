@@ -78,6 +78,8 @@ async function ensureNormalUser(userId: string): Promise<void> {
 type UserDTO = {
   id: string;
   username: string | null;
+  /** 앱 안에서 보이는 이름. */
+  nickname: string | null;
   email: string | null;
   role: "regular_user";
   createdAt: string;
@@ -111,12 +113,33 @@ async function userDTO(userId: string): Promise<UserDTO | null> {
   return {
     id: u.id,
     username: u.password_auth?.username ?? null,
+    nickname: u.nickname,
     email: u.email,
     role: REGULAR_ROLE,
     createdAt: u.created_at.toISOString(),
     authMethods,
     receiveEmailUpdates: u.receive_email_updates,
   };
+}
+
+/** 한글·영문·숫자 2~12자. 기존 계정에서 옮겨 온 이름은 이 규칙 밖일 수 있다. */
+const NICKNAME_RE = /^[가-힣a-zA-Z0-9]{2,12}$/;
+
+async function nicknameTaken(nickname: string): Promise<boolean> {
+  return (await prisma.user.findUnique({ where: { nickname } })) != null;
+}
+
+/**
+ * 소셜 가입자의 첫 닉네임. 이메일 앞부분을 쓰고, 겹치면 숫자를 붙인다
+ * (마이그레이션 20261013120000 과 같은 규칙).
+ */
+async function freeNickname(email: string | null): Promise<string> {
+  const base = (email?.split("@")[0] ?? "") || "회원";
+  // ponytail: 동시에 같은 이름으로 가입하면 유니크에 걸려 한쪽이 실패한다. 드물어서 재시도는 두지 않았다.
+  for (let n = 1; ; n++) {
+    const cand = n === 1 ? base : `${base}${n}`;
+    if (!(await nicknameTaken(cand))) return cand;
+  }
 }
 
 async function issueAuthResponse(userId: string) {
@@ -260,10 +283,9 @@ async function linkedPatientIds(childOrId: OwnedChild | string): Promise<
  * ------------------------------------------------------------------ */
 
 const signupSchema = zod.object({
-  username: zod
-    .string()
-    .nonempty()
-    .regex(/^[a-zA-Z0-9]+$/),
+  nickname: zod.string().trim().regex(NICKNAME_RE).optional(),
+  /** 닉네임 이전의 앱(웹 배포 전 잠깐)이 보내는 값. 닉네임으로 받는다. */
+  username: zod.string().trim().regex(/^[a-zA-Z0-9]+$/).optional(),
   password: zod.string().min(8),
   email: zod.string().email(),
   /** /auth/email/verify-code 가 준 티켓. 이게 없으면 가입이 끝나지 않는다. */
@@ -281,6 +303,16 @@ const signupSchema = zod.object({
  * 다만 가입 시도로도 같은 사실이 드러나고, 아이디만으로는 로그인할 수 없다.
  * 감춰서 얻는 것보다 입력 중에 알려주는 편이 낫다고 봤다.
  */
+/** GET /api/mobile/auth/nickname-available?nickname=... */
+router.get("/auth/nickname-available", async (req, res) => {
+  const nickname = String(req.query.nickname ?? "").trim();
+  if (!NICKNAME_RE.test(nickname)) {
+    res.status(400).json({ error: "invalid nickname", code: "validation_error" });
+    return;
+  }
+  res.json({ available: !(await nicknameTaken(nickname)) });
+});
+
 router.get("/auth/username-available", async (req, res) => {
   const username = String(req.query.username ?? "").trim();
   if (!/^[a-zA-Z0-9]{1,}$/.test(username)) {
@@ -361,16 +393,25 @@ router.post(
       }
       throw e;
     }
+    const nickname = data.nickname ?? data.username;
+    if (nickname == null) {
+      res.status(400).json({ error: "닉네임을 입력해 주세요.", code: "validation_error" });
+      return;
+    }
     const hash = await bcrypt.hash(data.password, 12);
+    const email = normalizeEmail(data.email);
 
     try {
       const user = await prisma.user.create({
         data: {
-          email: normalizeEmail(data.email),
+          email,
+          nickname,
           receive_email_updates: data.receive_email_updates ?? false,
+          // 로그인은 이메일로 한다. password_auth.username 은 비울 수 없고 겹치면
+          // 안 되는 칸이라 이메일을 넣어 둔다 - 이메일도 이미 겹치지 않는다.
           password_auth: {
             create: {
-              username: data.username,
+              username: email,
               hash,
             },
           },
@@ -381,15 +422,15 @@ router.post(
       res.status(201).json(body);
     } catch (e) {
       if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
-        // 아이디와 이메일 둘 다 유니크다. 어느 쪽이 걸렸는지 알려주지 않으면
+        // 닉네임과 이메일 둘 다 유니크다. 어느 쪽이 걸렸는지 알려주지 않으면
         // 사용자는 멀쩡한 값을 계속 고쳐 보게 된다.
-        const onEmail = (e.meta?.target as string[] | undefined)?.some((t) =>
-          t.includes("email"),
+        const onNickname = (e.meta?.target as string[] | undefined)?.some((t) =>
+          t.includes("nickname"),
         );
         res.status(400).json({
-          error: onEmail
-            ? "이미 가입된 이메일입니다."
-            : "이미 사용 중인 아이디입니다.",
+          error: onNickname
+            ? "이미 사용 중인 닉네임입니다."
+            : "이미 가입된 이메일입니다.",
           code: "validation_error",
         });
         return;
@@ -400,16 +441,28 @@ router.post(
 );
 
 const loginSchema = zod.object({
-  username: zod.string().nonempty(),
+  email: zod.string().trim().nonempty().optional(),
+  /** 이메일 로그인 이전 앱이 보내는 값. 예전 아이디로도 계속 들어올 수 있다. */
+  username: zod.string().trim().nonempty().optional(),
   password: zod.string().nonempty(),
 });
 
 router.post("/auth/login", validateRequestBody(loginSchema), async (req, res) => {
-  const { username, password } = req.body as zod.infer<typeof loginSchema>;
-  const auth = await prisma.password_auth.findUnique({
-    where: { username },
-    include: { user: true },
-  });
+  const { email, username, password } = req.body as zod.infer<typeof loginSchema>;
+  const id = email ?? username ?? "";
+  // 이메일로 로그인한다. '@' 가 없으면 예전 아이디로 본다 - 이메일 없이 아이디만
+  // 있는 오래된 계정과, 습관대로 아이디를 넣는 사람이 막히지 않게.
+  const auth = id.includes("@")
+    ? (
+        await prisma.user.findUnique({
+          where: { email: normalizeEmail(id) },
+          include: { password_auth: { include: { user: true } } },
+        })
+      )?.password_auth ?? null
+    : await prisma.password_auth.findUnique({
+        where: { username: id },
+        include: { user: true },
+      });
   if (auth == null) {
     res.status(401).json({ error: "invalid credentials", code: "unauthorized" });
     return;
@@ -647,6 +700,7 @@ router.post(
         const created = await prisma.user.create({
           data: {
             email,
+            nickname: await freeNickname(email),
             receive_email_updates: body.receive_email_updates ?? false,
             normal_user: { create: {} },
             oauth_identity: {
@@ -697,6 +751,29 @@ router.post(
     } catch {
       res.status(401).json({ error: "invalid refresh", code: "unauthorized" });
     }
+  },
+);
+
+const nicknameSchema = zod.object({ nickname: zod.string().trim().regex(NICKNAME_RE) });
+
+/** PATCH /api/mobile/auth/me/nickname — 닉네임 바꾸기. */
+router.patch(
+  "/auth/me/nickname",
+  requireMobileAuth,
+  validateRequestBody(nicknameSchema),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const { nickname } = req.body as zod.infer<typeof nicknameSchema>;
+    try {
+      await prisma.user.update({ where: { id: user.sub }, data: { nickname } });
+    } catch (e) {
+      if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
+        res.status(409).json({ error: "이미 사용 중인 닉네임입니다.", code: "conflict" });
+        return;
+      }
+      throw e;
+    }
+    res.json(await userDTO(user.sub));
   },
 );
 
@@ -3407,13 +3484,10 @@ type CommunityAuthorDTO = {
 };
 
 async function authorDTO(userId: string, viewerId: string): Promise<CommunityAuthorDTO> {
-  const u = await prisma.user.findUnique({
-    where: { id: userId },
-    include: { password_auth: true },
-  });
+  const u = await prisma.user.findUnique({ where: { id: userId } });
   return {
     id: userId,
-    username: u?.password_auth?.username ?? null,
+    username: u?.nickname ?? null,
     isMe: userId === viewerId,
   };
 }
@@ -3472,7 +3546,7 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
     include: {
       _count: { select: { comments: true, likes: true } },
       likes: { where: { user_id: viewerId }, take: 1 },
-      user: { include: { password_auth: true } },
+      user: true,
     },
   });
 
@@ -3490,7 +3564,7 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
       imageUrls: p.image_urls,
       author: {
         id: p.user_id,
-        username: p.user.password_auth?.username ?? null,
+        username: p.user.nickname,
         isMe: p.user_id === viewerId,
       },
       createdAt: p.created_at.toISOString(),
@@ -3601,11 +3675,11 @@ router.post(
 async function usernameMapFor(userIds: string[]): Promise<Map<string, string | null>> {
   const unique = [...new Set(userIds)];
   if (unique.length === 0) return new Map();
-  const rows = await prisma.password_auth.findMany({
-    where: { user_id: { in: unique } },
-    select: { user_id: true, username: true },
+  const rows = await prisma.user.findMany({
+    where: { id: { in: unique } },
+    select: { id: true, nickname: true },
   });
-  return new Map(rows.map((r) => [r.user_id, r.username]));
+  return new Map(rows.map((r) => [r.id, r.nickname]));
 }
 
 
@@ -3618,7 +3692,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
     where: { deleted_at: null, created_at: { gte: since }, ...notBlocked },
     include: {
       _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
-      user: { include: { password_auth: true } },
+      user: true,
     },
     // Bounded so the scoring below stays cheap; a week of posts is small today.
     // The ordering matters even so: without it the 200 rows we keep are an
@@ -3649,7 +3723,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
       bodyPreview: p.body.replace(/\s+/g, " ").trim().slice(0, 120),
       author: {
         id: p.user_id,
-        username: p.user.password_auth?.username ?? null,
+        username: p.user.nickname,
         isMe: p.user_id === viewerId,
       },
       // 홈 인기글 썸네일. 커뮤니티 목록과 같은 모양으로 보낸다.
@@ -3698,7 +3772,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
       where: { deleted_at: null, created_at: { lt: since }, ...notBlocked },
       include: {
         _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
-        user: { include: { password_auth: true } },
+        user: true,
       },
       orderBy: { created_at: "desc" },
       take: limit,
@@ -3721,7 +3795,7 @@ router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
     include: {
       _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
       likes: { where: { user_id: viewerId }, take: 1 },
-      user: { include: { password_auth: true } },
+      user: true,
     },
   });
   if (post == null || post.deleted_at != null) {
@@ -3747,7 +3821,7 @@ router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
     viewCount: post.view_count,
     author: {
       id: post.user_id,
-      username: post.user.password_auth?.username ?? null,
+      username: post.user.nickname,
       isMe: post.user_id === viewerId,
     },
     createdAt: post.created_at.toISOString(),
@@ -3863,7 +3937,7 @@ router.get(
       include: {
         _count: { select: { likes: true } },
         likes: { where: { user_id: viewerId }, take: 1 },
-        user: { include: { password_auth: true } },
+        user: true,
       },
     });
 
@@ -3876,7 +3950,7 @@ router.get(
         deleted: c.deleted_at != null,
         author: {
           id: c.user_id,
-          username: c.user.password_auth?.username ?? null,
+          username: c.user.nickname,
           isMe: c.user_id === viewerId,
         },
         createdAt: c.created_at.toISOString(),
@@ -6544,10 +6618,9 @@ router.get("/hospital-profile/:kakaoPlaceId/reviews", optionalMobileAuth, async 
   // 진료 기록과 붙어 있는 글이라 전체 이름은 노출할 것이 아니다.
   const authors = await prisma.user.findMany({
     where: { id: { in: [...new Set(reviews.map((r) => r.user_id))] } },
-    include: { password_auth: true },
   });
   const nameById = new Map(
-    authors.map((u) => [u.id, maskName(u.password_auth?.username ?? null)]),
+    authors.map((u) => [u.id, maskName(u.nickname)]),
   );
   res.json({
     reviews: reviews.map((r) => ({

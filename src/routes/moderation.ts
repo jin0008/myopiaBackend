@@ -184,11 +184,11 @@ router.get("/blocks", requireMobileAuth, async (req, res) => {
   });
   const names = new Map(
     (
-      await prisma.password_auth.findMany({
-        where: { user_id: { in: rows.map((r) => r.blocked_user_id) } },
-        select: { user_id: true, username: true },
+      await prisma.user.findMany({
+        where: { id: { in: rows.map((r) => r.blocked_user_id) } },
+        select: { id: true, nickname: true },
       })
-    ).map((r) => [r.user_id, r.username]),
+    ).map((r) => [r.id, r.nickname]),
   );
   res.json({
     blocked: rows.map((r) => ({

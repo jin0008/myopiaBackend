@@ -20,11 +20,11 @@ router.get("/notifications", requireMobileAuth, async (req, res) => {
   const actorIds = [...new Set(rows.map((r) => r.actor_user_id).filter((x): x is string => x != null))];
   const names = new Map(
     (
-      await prisma.password_auth.findMany({
-        where: { user_id: { in: actorIds } },
-        select: { user_id: true, username: true },
+      await prisma.user.findMany({
+        where: { id: { in: actorIds } },
+        select: { id: true, nickname: true },
       })
-    ).map((r) => [r.user_id, r.username]),
+    ).map((r) => [r.id, r.nickname]),
   );
 
   res.json({
