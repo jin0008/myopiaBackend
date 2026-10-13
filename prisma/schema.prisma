@@ -231,6 +231,9 @@ model user {
   /// 소셜 로그인이 이메일을 안 주는 경우가 있어 NULL 은 허용한다
   /// (Postgres 는 NULL 끼리는 중복으로 보지 않는다).
   email                   String?                  @unique(map: "user_email_key")
+  /// 앱 안에서 보이는 이름(커뮤니티·후기·알림). 로그인은 이메일로 하고, 이 이름으로
+  /// 활동한다. 사칭을 막으려고 겹치지 않게 한다. 의사 웹 계정은 비어 있을 수 있다.
+  nickname                String?                  @unique(map: "user_nickname_key") @db.VarChar
   /// 웹(myopiamanage) 2단계 인증. 비밀키는 KMS 로 암호화해 둔다.
   /// 등록을 마치기 전의 키는 pending 에, 확인 코드가 맞으면 secret 으로 옮긴다.
   totp_secret             Bytes?

@@ -16,11 +16,11 @@ const COMMENT_PAGE_SIZE = 200;
 async function usernameMap(userIds: string[]): Promise<Map<string, string | null>> {
   const unique = [...new Set(userIds)];
   if (unique.length === 0) return new Map();
-  const rows = await prisma.password_auth.findMany({
-    where: { user_id: { in: unique } },
-    select: { user_id: true, username: true },
+  const rows = await prisma.user.findMany({
+    where: { id: { in: unique } },
+    select: { id: true, nickname: true },
   });
-  return new Map(rows.map((r) => [r.user_id, r.username]));
+  return new Map(rows.map((r) => [r.id, r.nickname]));
 }
 
 /* ---- polls ------------------------------------------------------------- */
