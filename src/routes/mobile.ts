@@ -134,7 +134,9 @@ async function nicknameTaken(nickname: string): Promise<boolean> {
  * (마이그레이션 20261013120000 과 같은 규칙).
  */
 async function freeNickname(email: string | null): Promise<string> {
-  const base = (email?.split("@")[0] ?? "") || "회원";
+  // 애플 '이메일 가리기' 주소는 앞부분이 무작위 글자라 이름이 될 수 없다.
+  const usable = email != null && !email.endsWith("@privaterelay.appleid.com");
+  const base = (usable ? email.split("@")[0] : "") || "회원";
   // ponytail: 동시에 같은 이름으로 가입하면 유니크에 걸려 한쪽이 실패한다. 드물어서 재시도는 두지 않았다.
   for (let n = 1; ; n++) {
     const cand = n === 1 ? base : `${base}${n}`;
@@ -663,9 +665,16 @@ router.post(
             where: { email: providerEmail },
           });
           if (taken == null) {
+            // 이메일이 없어 '회원'+숫자로 지어 둔 닉네임이면, 이메일이 생긴 김에 그 앞부분으로
+            // 바꾼다. 사람이 이미 확인한 닉네임이면 그대로 둔다.
+            const placeholderName =
+              me.profile_confirmed_at == null && /^회원[0-9]*$/.test(me.nickname ?? "");
             await prisma.user.update({
               where: { id: userId },
-              data: { email: providerEmail },
+              data: {
+                email: providerEmail,
+                ...(placeholderName ? { nickname: await freeNickname(providerEmail) } : {}),
+              },
             });
           }
         }
