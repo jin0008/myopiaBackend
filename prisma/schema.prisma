@@ -234,6 +234,9 @@ model user {
   /// 앱 안에서 보이는 이름(커뮤니티·후기·알림). 로그인은 이메일로 하고, 이 이름으로
   /// 활동한다. 사칭을 막으려고 겹치지 않게 한다. 의사 웹 계정은 비어 있을 수 있다.
   nickname                String?                  @unique(map: "user_nickname_key") @db.VarChar
+  /// 앱에서 닉네임·이메일을 직접 확인한 때. 소셜로 처음 들어오면 서버가 닉네임을 지어 주므로
+  /// 비어 있고, 앱이 확인 창을 띄운다. 이메일 가입은 가입 화면에서 정하므로 가입 때 채운다.
+  profile_confirmed_at    DateTime?                @db.Timestamptz(6)
   /// 웹(myopiamanage) 2단계 인증. 비밀키는 KMS 로 암호화해 둔다.
   /// 등록을 마치기 전의 키는 pending 에, 확인 코드가 맞으면 secret 으로 옮긴다.
   totp_secret             Bytes?

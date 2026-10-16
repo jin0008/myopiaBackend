@@ -406,6 +406,8 @@ router.post(
         data: {
           email,
           nickname,
+          // 가입 화면에서 닉네임과 이메일(인증)을 직접 정했다. 확인 창을 띄울 필요가 없다.
+          profile_confirmed_at: new Date(),
           receive_email_updates: data.receive_email_updates ?? false,
           // 로그인은 이메일로 한다. password_auth.username 은 비울 수 없고 겹치면
           // 안 되는 칸이라 이메일을 넣어 둔다 - 이메일도 이미 겹치지 않는다.
@@ -777,6 +779,72 @@ router.patch(
   },
 );
 
+const profileSchema = zod.object({
+  nickname: zod.string().trim().regex(NICKNAME_RE),
+  /** 소셜이 이메일을 주지 않았거나 다른 주소를 쓰려 할 때만. 인증 티켓이 함께 와야 한다. */
+  email: zod.string().email().optional(),
+  verificationTicket: zod.string().nonempty().optional(),
+});
+
+/**
+ * PATCH /api/mobile/auth/me/profile — 소셜 첫 가입 뒤 닉네임·이메일 확인.
+ *
+ * 소셜로 들어오면 서버가 이메일 앞부분으로 닉네임을 지어 그대로 가입시켰다. 사람이 고른
+ * 적 없는 이름(회원13 같은)으로 커뮤니티에 글이 올라가고, 이메일도 본 적이 없어 비밀번호
+ * 찾기 안내가 어디로 가는지 몰랐다. 앱이 한 번 보여 주고 여기서 확정한다.
+ *
+ * 이메일을 새로 넣거나 바꿀 때는 가입과 같은 인증(send-code/verify-code)을 거친 티켓이
+ * 있어야 한다 - 남의 주소를 적어 넣으면 그 사람이 우리 메일을 받는다.
+ */
+router.patch(
+  "/auth/me/profile",
+  requireMobileAuth,
+  validateRequestBody(profileSchema),
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const d = req.body as zod.infer<typeof profileSchema>;
+    const current = await prisma.user.findUnique({ where: { id: user.sub }, select: { email: true } });
+    const newEmail = d.email != null ? normalizeEmail(d.email) : null;
+    if (newEmail != null && newEmail !== current?.email) {
+      try {
+        assertTicket(d.verificationTicket ?? "", newEmail, "signup");
+      } catch (e) {
+        if (e instanceof VerificationError) {
+          res.status(400).json({ error: e.message, code: "validation_error" });
+          return;
+        }
+        throw e;
+      }
+    }
+    if (newEmail == null && current?.email == null) {
+      // 이메일이 하나도 없으면 비밀번호·계정 찾기 안내를 보낼 곳이 없다.
+      res.status(400).json({ error: "이메일을 등록해 주세요.", code: "validation_error" });
+      return;
+    }
+    try {
+      await prisma.user.update({
+        where: { id: user.sub },
+        data: {
+          nickname: d.nickname,
+          ...(newEmail != null ? { email: newEmail } : {}),
+          profile_confirmed_at: new Date(),
+        },
+      });
+    } catch (e) {
+      if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
+        const onEmail = (e.meta?.target as string[] | undefined)?.some((t) => t.includes("email"));
+        res.status(409).json({
+          error: onEmail ? "이미 가입된 이메일입니다." : "이미 사용 중인 닉네임입니다.",
+          code: "conflict",
+        });
+        return;
+      }
+      throw e;
+    }
+    res.json(await userDTO(user.sub));
+  },
+);
+
 router.post("/auth/logout", requireMobileAuth, async (req, res) => {
   const user = requireAppUser(req);
   await revokeAllRefreshTokens(user.sub);
@@ -801,7 +869,12 @@ router.get("/auth/me", requireMobileAuth, async (req, res) => {
       consent_type: { in: ["terms_of_service", "privacy_policy"] },
     },
   });
-  res.json({ ...dto, needsConsent: agreed < 2 });
+  // 소셜로 처음 들어와 서버가 지어 준 닉네임을 아직 확인하지 않았다. 앱이 확인 창을 띄운다.
+  const me = await prisma.user.findUnique({
+    where: { id: user.sub },
+    select: { profile_confirmed_at: true },
+  });
+  res.json({ ...dto, needsConsent: agreed < 2, needsProfile: me?.profile_confirmed_at == null });
 });
 
 const consentSchema = zod.object({
