@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 
 import prisma from "../lib/prisma";
 import { isEmailConfigured, sendEmail } from "./email";
+import { isSmsConfigured, sendSms } from "./sms";
 
 /**
  * 이메일 인증 코드.
@@ -72,10 +73,12 @@ function ticketSecret(): string {
 export async function issueCode(
   emailRaw: string,
   purpose: VerificationPurpose,
+  /** 기본은 메일. 휴대폰 가입은 smsDelivery 를 넘긴다. 받는 곳은 emailRaw 자리에 번호를 준다. */
+  deliver: (to: string, code: string, purpose: VerificationPurpose) => Promise<void> = emailDelivery,
 ): Promise<void> {
   const email = emailRaw.toLowerCase();
   const recent = await prisma.email_verification.findFirst({
-    where: { email, purpose, consumed_at: null },
+    where: { target: email, purpose, consumed_at: null },
     orderBy: { created_at: "desc" },
   });
   if (
@@ -85,37 +88,51 @@ export async function issueCode(
     throw new VerificationError("cooldown", "잠시 후 다시 시도해 주세요.");
   }
 
-  // 발송이 꺼져 있으면 성공이라고 하지 않는다. sendEmail 은 SMTP 설정이
-  // 없을 때 경고만 찍고 조용히 돌아오는데, 그대로 두면 화면에는 "보냈다"고
-  // 뜨고 사용자는 오지 않는 메일을 기다린다.
-  if (!isEmailConfigured()) {
-    throw new VerificationError(
-      "unavailable",
-      "인증번호를 보낼 수 없습니다. 잠시 후 다시 시도해 주세요.",
-    );
-  }
-
   const code = newCode();
   // 메일부터 보낸다. 코드 행을 먼저 만들면 발송이 실패했을 때 쓸 수 없는
   // 코드가 남고, 쿨다운까지 걸려 사용자가 60초 동안 다시 시도하지 못한다.
-  // 웹(myopiamanage) 계정은 마이오닥 이름으로 받으면 피싱으로 오해한다.
-  const brand = purpose === "web_reset" ? "myopiamanage" : "마이오닥";
-  await sendEmail([email], `${brand} 인증번호`, codeEmailHtml(code, brand));
+  await deliver(email, code, purpose);
 
   // 이 주소로 아직 살아 있는 코드는 모두 무효로 한다. 코드가 여러 개
   // 유효하면 시도 횟수 제한이 사실상 배수로 늘어난다.
   await prisma.email_verification.updateMany({
-    where: { email, purpose, consumed_at: null },
+    where: { target: email, purpose, consumed_at: null },
     data: { consumed_at: new Date() },
   });
   await prisma.email_verification.create({
     data: {
-      email,
+      target: email,
       purpose,
       code_hash: hashCode(email, code),
       expires_at: new Date(Date.now() + CODE_TTL_MS),
     },
   });
+}
+
+const unavailable = () =>
+  new VerificationError(
+    "unavailable",
+    "인증번호를 보낼 수 없습니다. 잠시 후 다시 시도해 주세요.",
+  );
+
+async function emailDelivery(
+  email: string,
+  code: string,
+  purpose: VerificationPurpose,
+): Promise<void> {
+  // 발송이 꺼져 있으면 성공이라고 하지 않는다. sendEmail 은 SMTP 설정이
+  // 없을 때 경고만 찍고 조용히 돌아오는데, 그대로 두면 화면에는 "보냈다"고
+  // 뜨고 사용자는 오지 않는 메일을 기다린다.
+  if (!isEmailConfigured()) throw unavailable();
+  // 웹(myopiamanage) 계정은 마이오닥 이름으로 받으면 피싱으로 오해한다.
+  const brand = purpose === "web_reset" ? "myopiamanage" : "마이오닥";
+  await sendEmail([email], `${brand} 인증번호`, codeEmailHtml(code, brand));
+}
+
+export async function smsDelivery(phone: string, code: string): Promise<void> {
+  if (!isSmsConfigured()) throw unavailable();
+  // 90바이트(한글 45자) 안이면 단문(SMS)으로 나간다. 넘기면 장문 요금이다.
+  await sendSms(phone, `[마이오닥] 인증번호 ${code} (5분 안에 입력)`);
 }
 
 /**
@@ -130,7 +147,7 @@ export async function verifyCode(
 ): Promise<string> {
   const email = emailRaw.toLowerCase();
   const row = await prisma.email_verification.findFirst({
-    where: { email, purpose, consumed_at: null },
+    where: { target: email, purpose, consumed_at: null },
     orderBy: { created_at: "desc" },
   });
   if (row == null) {
