@@ -2,6 +2,7 @@ import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
 import { loginRequired, validateRequestBody } from "../lib/middlewares";
+import { linkAttemptLimiter } from "../lib/security";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { hashRegistrationNumber } from "../lib/hash";
 import { decryptSymmetric } from "../services/encrpytion";
@@ -45,6 +46,7 @@ const postPatientSchema = zod.object({
 });
 router.post(
   "/patient",
+  linkAttemptLimiter,
   validateRequestBody(postPatientSchema),
   async (req, res) => {
     const data = req.body;
@@ -88,7 +90,7 @@ router.post(
           res.sendStatus(500);
         }
       });
-    res.sendStatus(201);
+    if (!res.headersSent) res.sendStatus(201);
   },
 );
 

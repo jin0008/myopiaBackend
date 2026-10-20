@@ -69,3 +69,31 @@ export const billingLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: "카드 등록 시도가 너무 잦습니다. 한 시간 뒤에 다시 시도해 주세요." },
 });
+
+/**
+ * 병원 환자 기록에 연결하는 자리용 - 웹 보호자 연결(/user/patient)과 앱 병원
+ * 연동(/children/:childId/hospital-links).
+ *
+ * 등록번호와 생년월일만 맞으면 그 아이 차트가 열린다. 아이 생년월일은 몇천 가지라
+ * 사람 단위로 세지 않으면 계정 하나로 다 대 볼 수 있다. IP 로 세면 공유기 하나
+ * 뒤의 여러 집이 같이 막히고, 공격자는 IP 를 바꾸면 그만이다. 그래서 로그인한
+ * 계정으로 센다 - 그래서 로그인 확인 뒤에 둬야 한다.
+ *
+ * 실패만 센다. 병원에서 받은 번호를 오타로 몇 번 틀리는 것은 넉넉히 남긴다.
+ *
+ * ponytail: 횟수는 메모리에 둔다 - 서버를 다시 띄우면(배포) 0 으로 돌아간다.
+ * 서버가 둘이 되거나 배포가 잦아져 구멍이 되면 DB 나 Redis 저장소로.
+ */
+export const linkAttemptLimiter = rateLimit({
+  windowMs: 24 * 60 * 60 * 1000,
+  max: 10,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => req.mobileUser?.sub ?? req.authSession?.user_id ?? "anonymous",
+  message: {
+    error: "too many failed link attempts",
+    code: "rate_limited",
+    message: "연동 시도가 너무 많습니다. 내일 다시 시도하거나 병원에 초대 링크를 요청해 주세요.",
+  },
+});

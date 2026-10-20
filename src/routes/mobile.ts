@@ -12,6 +12,7 @@ import prisma from "../lib/prisma";
 import { resolveInvite } from "../services/linkInvite";
 import { axialPercentile } from "../services/percentile";
 import { validateRequestBody } from "../lib/middlewares";
+import { linkAttemptLimiter } from "../lib/security";
 import {
   issueRefreshToken,
   rotateRefreshToken,
@@ -2398,6 +2399,7 @@ const hospitalLinkSchema = zod.object({
 router.post(
   "/children/:childId/hospital-links",
   requireMobileAuth,
+  linkAttemptLimiter,
   validateRequestBody(hospitalLinkSchema),
   async (req, res) => {
     const user = requireAppUser(req);
