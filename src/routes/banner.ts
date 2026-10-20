@@ -21,18 +21,23 @@ fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 // per-environment PUBLIC_ORIGIN config yet.
 const PUBLIC_ORIGIN = "https://myopiamanage.org";
 
+// 확장자는 파일 이름이 아니라 허용한 형식에서 정한다. 이름도 mimetype 도
+// 보내는 쪽이 정하는 값이라, "x.svg"·"x.html" 을 image/png 로 올리면 우리
+// 도메인에서 스크립트가 도는 문서가 된다 (communityUpload.ts 와 같은 이유).
+const EXT_BY_TYPE: Record<string, string> = {
+  "image/jpeg": ".jpg",
+  "image/png": ".png",
+  "image/webp": ".webp",
+  "image/gif": ".gif",
+};
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: UPLOAD_DIR,
-    filename: (_req, file, cb) => {
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `${crypto.randomUUID()}${ext}`);
-    },
+    filename: (_req, file, cb) => cb(null, `${crypto.randomUUID()}${EXT_BY_TYPE[file.mimetype]}`),
   }),
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-  fileFilter: (_req, file, cb) => {
-    cb(null, /^image\//.test(file.mimetype));
-  },
+  fileFilter: (_req, file, cb) => cb(null, file.mimetype in EXT_BY_TYPE),
 });
 
 /**
