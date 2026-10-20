@@ -1,5 +1,8 @@
+import crypto from "crypto";
+import fs from "fs";
 import path from "path";
 import express from "express";
+import multer from "multer";
 import zod from "zod";
 import prisma from "../lib/prisma";
 import { siteAdminRequired } from "../lib/middlewares";
@@ -19,10 +22,37 @@ const createSchema = zod.object({
 });
 const patchSchema = createSchema.partial();
 
-// 칼럼 본문 속 이미지. 네이버 카페 글을 옮기며 받아 둔 것이다 - 카페 이미지는
-// 우리 도메인에서 걸면 403 이라 그대로 링크할 수 없다.
-// scripts/import-naver-cafe.ts 가 여기에 쓴다.
+// 칼럼 본문 속 이미지. 어드민 편집기가 올린 것과, 네이버 카페 글을 옮기며
+// 받아 둔 것(scripts/import-naver-cafe.ts) - 카페 이미지는 우리 도메인에서
+// 걸면 403 이라 그대로 링크할 수 없다.
 const UPLOAD_DIR = path.join(__dirname, "../../uploads/columns");
+fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: UPLOAD_DIR,
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname).toLowerCase();
+      cb(null, `${crypto.randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB - 큰 사진은 어드민이 줄여서 보낸다
+  fileFilter: (_req, file, cb) => {
+    cb(null, /^image\//.test(file.mimetype));
+  },
+});
+
+// POST /column/upload — admin, multipart/form-data field "image".
+// 본문에 ![](url) 로 넣을 주소를 돌려준다.
+router.post("/upload", siteAdminRequired, upload.single("image"), (req, res) => {
+  if (!req.file) {
+    res.status(400).json({ message: "no image file (or not an image)" });
+    return;
+  }
+  res.status(201).json({
+    url: `https://myopiamanage.org/api/column/uploads/${req.file.filename}`,
+  });
+});
 
 // GET /column/uploads/:filename — public.
 router.get("/uploads/:filename", (req, res) => {
