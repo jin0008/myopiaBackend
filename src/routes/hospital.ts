@@ -55,15 +55,27 @@ router.get("/", async (req, res) => {
       },
     }),
   ]);
+  // 관리자 화면이 승인 기다리는 병원을 찾게. 공개 목록에는 싣지 않는다.
+  const pendingCounts = siteAdmin
+    ? await prisma.healthcare_professional.groupBy({
+        by: ["hospital_id"],
+        where: { approved: false },
+        _count: { _all: true },
+      })
+    : [];
 
   const patientCountMap = new Map(
     patientCounts.map((entry) => [entry.hospital_id, entry._count._all]),
+  );
+  const pendingCountMap = new Map(
+    pendingCounts.map((entry) => [entry.hospital_id, entry._count._all]),
   );
 
   hospitals.sort(compareHospitalNames);
   const payload = hospitals.map((hospital) => ({
     ...hospital,
     patientCount: patientCountMap.get(hospital.id) ?? 0,
+    ...(siteAdmin ? { pendingCount: pendingCountMap.get(hospital.id) ?? 0 } : {}),
   }));
 
   res.json(payload);
