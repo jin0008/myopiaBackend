@@ -13,6 +13,7 @@ import { resolveInvite } from "../services/linkInvite";
 import { axialPercentile } from "../services/percentile";
 import { validateRequestBody } from "../lib/middlewares";
 import { linkAttemptLimiter } from "../lib/security";
+import { expiredChatFiles } from "../lib/chatRetention";
 import {
   issueRefreshToken,
   rotateRefreshToken,
@@ -4785,6 +4786,20 @@ function checkAndCountUsage(
   }
 }
 
+let chatPrunedOn = "";
+/** 하루 한 번, 1년 지난 상담 기록을 지운다(lib/chatRetention). 실패해도 기록은 남긴다. */
+function pruneChatFiles(today: string): void {
+  if (chatPrunedOn === today) return;
+  chatPrunedOn = today;
+  try {
+    for (const n of expiredChatFiles(fs.readdirSync(CHAT_CONFIG.dataDir), today)) {
+      fs.unlinkSync(path.join(CHAT_CONFIG.dataDir, n));
+    }
+  } catch (e) {
+    console.error("[chat] 1년 지난 상담 기록을 지우지 못했다:", e);
+  }
+}
+
 /** Append a jsonl conversation log line (best-effort). */
 function chatLogLine(entry: Record<string, unknown>): void {
   try {
@@ -4792,6 +4807,7 @@ function chatLogLine(entry: Record<string, unknown>): void {
       fs.mkdirSync(CHAT_CONFIG.dataDir, { recursive: true });
     }
     const today = kstToday();
+    pruneChatFiles(today);
     const file = path.join(CHAT_CONFIG.dataDir, `chat-${today}.jsonl`);
     fs.appendFileSync(file, JSON.stringify(entry) + "\n");
   } catch {
