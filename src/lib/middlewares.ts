@@ -68,6 +68,9 @@ hospitalAdminRequired.use(async (req, res, next) => {
       where: {
         user_id: req.authSession!.user_id,
         is_admin: true,
+        // 승인 전의 병원 관리자(새 병원을 막 만든 사람)가 자기 병원에 다른
+        // 계정을 넣어 승인해 버리면 사이트 관리자 승인을 건너뛴다.
+        approved: true,
       },
     });
 
