@@ -161,7 +161,12 @@ const globalErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
 app.use(prismaErrorHandler);
 app.use(globalErrorHandler);
 
-app.listen(3000, () => console.log("Listening on port 3000"));
+// 운영에서는 같은 서버의 nginx 만 부른다(proxy_pass http://127.0.0.1:3000).
+// 모든 주소에서 받으면 GCP 방화벽 한 겹만 남아, 규칙이 실수로 열리면 nginx 를
+// 건너 바로 닿는다. 로컬 개발은 vite 가 localhost 로 부르는데 그게 ::1 로 풀리기도
+// 해서 제한하지 않는다.
+const host = process.env.NODE_ENV === "production" ? "127.0.0.1" : "::";
+app.listen(3000, host, () => console.log(`Listening on ${host}:3000`));
 
 /**
  * 정해진 시각에 보내는 알림(치료 체크·일정).
