@@ -2387,13 +2387,10 @@ router.get("/hospitals/search", async (req, res) => {
 const hospitalLinkSchema = zod.object({
   hospitalCode: zod.string().nonempty(),
   registrationNumber: zod.string().nonempty(),
-  // Legal-guardian (법정대리인) consent to collect/use the child's sensitive
-  // data (민감정보: 등록번호·생년월일·안축장 등), captured at the moment the
-  // hospital record becomes visible to the parent.
-  // NOTE: kept optional for now so existing iOS clients aren't broken. Once the
-  // iOS app ships the consent checkbox and always sends `guardianConsent: true`,
-  // change this to `zod.literal(true)` to make consent mandatory at the API.
-  guardianConsent: zod.boolean().optional(),
+  // 법정대리인 동의 - 아이의 민감정보(등록번호·생년월일·안축장 등)가 보호자에게
+  // 열리는 바로 그 순간에 받는다. 앱의 연동·자녀 추가·초대 수락 화면이 모두
+  // 동의를 받고 true 를 보낸다. 없으면 연동하지 않는다.
+  guardianConsent: zod.literal(true),
 });
 
 router.post(
@@ -2477,19 +2474,15 @@ router.post(
           create: { user_id: user.sub, patient_id: patient.id },
           update: {},
         });
-        // 3) patient_consent — record the parent's legal-guardian consent to
-        //    process the child's sensitive data. Recorded only when the client
-        //    sends guardianConsent (see schema note about making it mandatory).
-        if (body.guardianConsent) {
-          await tx.patient_consent.create({
-            data: {
-              patient_id: patient.id,
-              given_by: user.sub,
-              role: "legal_guardian",
-              version: CONSENT_VERSION,
-            },
-          });
-        }
+        // 3) patient_consent — 법정대리인 동의 기록. 동의는 스키마가 필수로 받는다.
+        await tx.patient_consent.create({
+          data: {
+            patient_id: patient.id,
+            given_by: user.sub,
+            role: "legal_guardian",
+            version: CONSENT_VERSION,
+          },
+        });
         // 4) 연동 전에 부모가 적어 둔 것을 이 병원 쪽으로 옮긴다.
         //
         //    연동 없이도 기록할 수 있게 되면서, 가입해서 몇 달 적다가
@@ -2556,7 +2549,7 @@ router.get("/link-invites/:token", requireMobileAuth, async (req, res) => {
 
 const acceptInviteSchema = zod.object({
   token: zod.string().min(10).max(200),
-  guardianConsent: zod.boolean().optional(),
+  guardianConsent: zod.literal(true), // hospitalLinkSchema 와 같은 이유
 });
 
 /** POST /api/mobile/children/:childId/hospital-links/by-invite */
@@ -2625,16 +2618,14 @@ router.post(
           create: { user_id: user.sub, patient_id: invite.patient_id },
           update: {},
         });
-        if (body.guardianConsent) {
-          await tx.patient_consent.create({
-            data: {
-              patient_id: invite.patient_id,
-              given_by: user.sub,
-              role: "legal_guardian",
-              version: CONSENT_VERSION,
-            },
-          });
-        }
+        await tx.patient_consent.create({
+          data: {
+            patient_id: invite.patient_id,
+            given_by: user.sub,
+            role: "legal_guardian",
+            version: CONSENT_VERSION,
+          },
+        });
         await backfillToPatient(tx, child.id, invite.patient_id);
       });
     } catch (e) {
