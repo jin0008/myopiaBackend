@@ -32,6 +32,7 @@ import {
   assertTicket,
   issueCode,
   smsDelivery,
+  SMS_CODE_TTL_MS,
   verifyCode,
   VerificationError,
 } from "../services/emailVerification";
@@ -395,7 +396,7 @@ router.post(
       return;
     }
     try {
-      await issueCode(phone, "signup", smsDelivery);
+      await issueCode(phone, "signup", smsDelivery, SMS_CODE_TTL_MS);
       res.status(202).json({ ok: true });
     } catch (e) {
       if (e instanceof VerificationError) {
@@ -675,7 +676,9 @@ const socialSchema = zod.object({
   token: zod.string().nonempty(),
   // 웹 카카오만: 있으면 token 은 인가 코드이고, 서버가 토큰으로 바꾼다.
   redirect_uri: zod.string().url().optional(),
-  email: zod.string().email().optional(),
+  // 이메일은 받지 않는다. 받던 때는 그 주소로 기존 계정을 찾아 이 로그인을 붙였다 -
+  // 남의 주소를 적어 보내면 남의 계정으로 들어갔다. 이메일은 제공자가 확인해 준
+  // identity.email 만 쓴다. (zod 는 모르는 키를 버리므로 보내도 무시된다.)
   receive_email_updates: zod.boolean().optional(),
 });
 
@@ -745,12 +748,7 @@ router.post(
         }
       }
     } else {
-      const email =
-        identity.email != null
-          ? normalizeEmail(identity.email)
-          : body.email != null
-            ? normalizeEmail(body.email)
-            : null;
+      const email = identity.email != null ? normalizeEmail(identity.email) : null;
 
       // 같은 주소로 이미 만든 계정이 있으면 그 계정에 이 로그인 방법을
       // 덧붙인다. 새로 만들면 email 유니크에 걸려 로그인 자체가 실패하고,
@@ -762,6 +760,17 @@ router.post(
         email != null
           ? await prisma.user.findUnique({ where: { email } })
           : null;
+
+      // 휴대폰으로 가입한 계정은 이메일을 인증하지 않았다. 남의 주소로 먼저 가입해
+      // 두고 주인이 소셜로 들어오길 기다리면, 주인의 로그인이 그 계정에 붙어
+      // 주인이 쌓은 아이 기록을 가입한 쪽이 본다. 그런 계정에는 붙이지 않는다.
+      if (sameEmail != null && sameEmail.phone != null) {
+        res.status(409).json({
+          error: "이미 이 이메일로 가입된 계정이 있습니다. 이메일과 비밀번호로 로그인해 주세요.",
+          code: "email_account_exists",
+        });
+        return;
+      }
 
       if (sameEmail != null) {
         await prisma.oauth_identity.create({
