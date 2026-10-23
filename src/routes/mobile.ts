@@ -12,6 +12,8 @@ import prisma from "../lib/prisma";
 import { resolveInvite } from "../services/linkInvite";
 import { axialPercentile } from "../services/percentile";
 import { validateRequestBody } from "../lib/middlewares";
+import { linkAttemptLimiter } from "../lib/security";
+import { expiredChatFiles } from "../lib/chatRetention";
 import {
   issueRefreshToken,
   rotateRefreshToken,
@@ -2449,18 +2451,16 @@ router.get("/hospitals/search", async (req, res) => {
 const hospitalLinkSchema = zod.object({
   hospitalCode: zod.string().nonempty(),
   registrationNumber: zod.string().nonempty(),
-  // Legal-guardian (법정대리인) consent to collect/use the child's sensitive
-  // data (민감정보: 등록번호·생년월일·안축장 등), captured at the moment the
-  // hospital record becomes visible to the parent.
-  // NOTE: kept optional for now so existing iOS clients aren't broken. Once the
-  // iOS app ships the consent checkbox and always sends `guardianConsent: true`,
-  // change this to `zod.literal(true)` to make consent mandatory at the API.
-  guardianConsent: zod.boolean().optional(),
+  // 법정대리인 동의 - 아이의 민감정보(등록번호·생년월일·안축장 등)가 보호자에게
+  // 열리는 바로 그 순간에 받는다. 앱의 연동·자녀 추가·초대 수락 화면이 모두
+  // 동의를 받고 true 를 보낸다. 없으면 연동하지 않는다.
+  guardianConsent: zod.literal(true),
 });
 
 router.post(
   "/children/:childId/hospital-links",
   requireMobileAuth,
+  linkAttemptLimiter,
   validateRequestBody(hospitalLinkSchema),
   async (req, res) => {
     const user = requireAppUser(req);
@@ -2538,19 +2538,15 @@ router.post(
           create: { user_id: user.sub, patient_id: patient.id },
           update: {},
         });
-        // 3) patient_consent — record the parent's legal-guardian consent to
-        //    process the child's sensitive data. Recorded only when the client
-        //    sends guardianConsent (see schema note about making it mandatory).
-        if (body.guardianConsent) {
-          await tx.patient_consent.create({
-            data: {
-              patient_id: patient.id,
-              given_by: user.sub,
-              role: "legal_guardian",
-              version: CONSENT_VERSION,
-            },
-          });
-        }
+        // 3) patient_consent — 법정대리인 동의 기록. 동의는 스키마가 필수로 받는다.
+        await tx.patient_consent.create({
+          data: {
+            patient_id: patient.id,
+            given_by: user.sub,
+            role: "legal_guardian",
+            version: CONSENT_VERSION,
+          },
+        });
         // 4) 연동 전에 부모가 적어 둔 것을 이 병원 쪽으로 옮긴다.
         //
         //    연동 없이도 기록할 수 있게 되면서, 가입해서 몇 달 적다가
@@ -2617,7 +2613,7 @@ router.get("/link-invites/:token", requireMobileAuth, async (req, res) => {
 
 const acceptInviteSchema = zod.object({
   token: zod.string().min(10).max(200),
-  guardianConsent: zod.boolean().optional(),
+  guardianConsent: zod.literal(true), // hospitalLinkSchema 와 같은 이유
 });
 
 /** POST /api/mobile/children/:childId/hospital-links/by-invite */
@@ -2686,16 +2682,14 @@ router.post(
           create: { user_id: user.sub, patient_id: invite.patient_id },
           update: {},
         });
-        if (body.guardianConsent) {
-          await tx.patient_consent.create({
-            data: {
-              patient_id: invite.patient_id,
-              given_by: user.sub,
-              role: "legal_guardian",
-              version: CONSENT_VERSION,
-            },
-          });
-        }
+        await tx.patient_consent.create({
+          data: {
+            patient_id: invite.patient_id,
+            given_by: user.sub,
+            role: "legal_guardian",
+            version: CONSENT_VERSION,
+          },
+        });
         await backfillToPatient(tx, child.id, invite.patient_id);
       });
     } catch (e) {
@@ -4855,6 +4849,20 @@ function checkAndCountUsage(
   }
 }
 
+let chatPrunedOn = "";
+/** 하루 한 번, 1년 지난 상담 기록을 지운다(lib/chatRetention). 실패해도 기록은 남긴다. */
+function pruneChatFiles(today: string): void {
+  if (chatPrunedOn === today) return;
+  chatPrunedOn = today;
+  try {
+    for (const n of expiredChatFiles(fs.readdirSync(CHAT_CONFIG.dataDir), today)) {
+      fs.unlinkSync(path.join(CHAT_CONFIG.dataDir, n));
+    }
+  } catch (e) {
+    console.error("[chat] 1년 지난 상담 기록을 지우지 못했다:", e);
+  }
+}
+
 /** Append a jsonl conversation log line (best-effort). */
 function chatLogLine(entry: Record<string, unknown>): void {
   try {
@@ -4862,6 +4870,7 @@ function chatLogLine(entry: Record<string, unknown>): void {
       fs.mkdirSync(CHAT_CONFIG.dataDir, { recursive: true });
     }
     const today = kstToday();
+    pruneChatFiles(today);
     const file = path.join(CHAT_CONFIG.dataDir, `chat-${today}.jsonl`);
     fs.appendFileSync(file, JSON.stringify(entry) + "\n");
   } catch {

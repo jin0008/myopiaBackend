@@ -2,6 +2,8 @@ import express from "express";
 import prisma from "../lib/prisma";
 import zod from "zod";
 import { loginRequired, validateRequestBody } from "../lib/middlewares";
+import { linkAttemptLimiter } from "../lib/security";
+import { CONSENT_VERSION } from "../lib/consent";
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { hashRegistrationNumber } from "../lib/hash";
 import { decryptSymmetric } from "../services/encrpytion";
@@ -42,9 +44,13 @@ const postPatientSchema = zod.object({
   hospital_id: zod.string().uuid(),
   registration_number: zod.string(),
   date_of_birth: zod.string().date(),
+  // 법정대리인 동의. 앱 연동(mobile.ts hospitalLinkSchema)과 같은 동의를 웹에서도
+  // 받는다 - 연결되면 아이 차트 전체가 이 계정에 열린다.
+  guardian_consent: zod.literal(true),
 });
 router.post(
   "/patient",
+  linkAttemptLimiter,
   validateRequestBody(postPatientSchema),
   async (req, res) => {
     const data = req.body;
@@ -71,13 +77,23 @@ router.post(
       return;
     }
 
-    await prisma.user_patient
-      .create({
-        data: {
-          user_id: req.authSession!.user_id,
-          patient_id: patient.id,
-        },
-      })
+    await prisma
+      .$transaction([
+        prisma.user_patient.create({
+          data: {
+            user_id: req.authSession!.user_id,
+            patient_id: patient.id,
+          },
+        }),
+        prisma.patient_consent.create({
+          data: {
+            patient_id: patient.id,
+            given_by: req.authSession!.user_id,
+            role: "legal_guardian",
+            version: CONSENT_VERSION,
+          },
+        }),
+      ])
       .catch((err) => {
         if (
           err instanceof PrismaClientKnownRequestError &&
@@ -88,7 +104,7 @@ router.post(
           res.sendStatus(500);
         }
       });
-    res.sendStatus(201);
+    if (!res.headersSent) res.sendStatus(201);
   },
 );
 

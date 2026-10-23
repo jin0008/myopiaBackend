@@ -1,6 +1,7 @@
 import express from "express";
 import prisma from "../lib/prisma";
 import { normalizeNameKo } from "../lib/hospitalName";
+import { ADMIN_URL, alertAdmin, escapeHtml } from "../services/email";
 import zod from "zod";
 
 import { WrongArgumentsMessage } from "../lib/session";
@@ -62,7 +63,10 @@ router.post("/", loginRequired, async (req, res) => {
     return;
   }
 
-  //User that creates the hospital is the admin of the hospital
+  // 병원을 새로 만든 사람이 그 병원의 관리자가 된다. 다만 사이트 관리자가
+  // 승인하기 전에는 아무것도 못 한다 - 승인 없이 열면 누구나 실제 안과 이름으로
+  // 병원을 만들어 환자를 등록하고 보호자에게 그 병원 이름으로 연동 초대를
+  // 보낼 수 있다. 승인은 어드민 마이오피아 화면의 병원 직원 목록에서 한다.
   const newHospital = newHospitalType.safeParse(data.hospital);
   if (newHospital.success) {
     await prisma.healthcare_professional.create({
@@ -89,7 +93,7 @@ router.post("/", loginRequired, async (req, res) => {
             code: newHospital.data.code,
           },
         },
-        approved: true,
+        approved: false,
         is_admin: true,
         role: data.role,
         default_ethnicity:
@@ -111,6 +115,8 @@ router.post("/", loginRequired, async (req, res) => {
       },
     });
     res.sendStatus(201);
+
+    alertNewHospital(req.authSession!.user_id, newHospital.data, data.name, data.role);
   }
 });
 
@@ -189,11 +195,14 @@ router.patch("/hospital", approvedProfessionalRequired, async (req, res) => {
             code: newHospital.data.code,
           },
         },
-        approved: true,
+        // 소속을 새 병원으로 옮겨도 승인부터 다시 받는다. 여기서 바로 승인하면
+        // 어느 병원에서든 한 번 승인받은 계정이 가짜 병원을 만들 수 있다.
+        approved: false,
         is_admin: true,
       },
     });
     res.sendStatus(200);
+    alertNewHospital(req.authSession!.user_id, newHospital.data, req.healthcare_professional!.name, req.healthcare_professional!.role);
   }
 });
 
@@ -240,5 +249,31 @@ router.delete(
       .then(() => res.sendStatus(200));
   },
 );
+
+/**
+ * 새 병원 승인 요청을 운영자에게 알린다. 응답과 따로 간다 - 메일이나 조회가
+ * 실패해도 병원 등록은 이미 끝났고, 관리자 페이지에서 보인다.
+ */
+function alertNewHospital(
+  userId: string,
+  hospital: { name: string; name_ko?: string | null; code: string },
+  staffName: string,
+  role: string,
+): void {
+  prisma.user
+    .findUnique({ where: { id: userId }, select: { email: true } })
+    .then((who) =>
+      alertAdmin(
+        `[마이오피아] 새 병원 승인 요청: ${hospital.name}`,
+        `<p>새 병원이 등록되어 승인을 기다립니다.</p>
+<ul>
+<li>병원: ${escapeHtml(hospital.name)}${hospital.name_ko ? ` (${escapeHtml(hospital.name_ko)})` : ""}, 코드 ${escapeHtml(hospital.code)}</li>
+<li>신청자: ${escapeHtml(staffName)} (${escapeHtml(role)}), ${escapeHtml(who?.email ?? "이메일 없음")}</li>
+</ul>
+<p>실제 병원과 신청자를 확인한 뒤 <a href="${ADMIN_URL}/myopia">관리자 페이지</a>에서 그 병원의 직원 목록을 열어 승인하거나 거절해 주세요.</p>`,
+      ),
+    )
+    .catch((err) => console.error("[알림] 새 병원 알림을 보내지 못했다", err));
+}
 
 export default router;

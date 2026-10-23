@@ -56,6 +56,8 @@ async function getHospitalAlertRecipients(
     where: {
       hospital_id: hospitalId,
       is_admin: true,
+      // 승인이 풀린(Kick) 관리자는 그 병원 환자 알림을 더 받지 않는다.
+      approved: true,
       user: { receive_email_updates: true },
     },
     select: { user: { select: { email: true } } },

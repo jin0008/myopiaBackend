@@ -9,12 +9,31 @@ import zod from "zod";
 import { decryptSymmetric } from "../services/encrpytion";
 import { compareHospitalNames, normalizeNameKo } from "../lib/hospitalName";
 import { auditContextFromRequest, writeAuditLog } from "../services/audit";
+import { getAuthSession } from "../lib/session";
 
 const router = express.Router();
 
 router.get("/", async (req, res) => {
+  // 공개 목록(참여병원 페이지·가입 때 병원 고르기)에는 승인된 의료진이나
+  // 환자가 있는 병원만. 승인을 기다리는 새 병원이 실제 참여 병원처럼
+  // 보이면 안 된다. 사이트 관리자는 그 병원을 승인해야 하니 전부 본다.
+  const session = await getAuthSession(req);
+  const siteAdmin =
+    session != null &&
+    (await prisma.user.findUnique({
+      where: { id: session.user_id },
+      select: { is_site_admin: true },
+    }))?.is_site_admin === true;
   const [hospitals, patientCounts] = await Promise.all([
     prisma.hospital.findMany({
+      where: siteAdmin
+        ? undefined
+        : {
+            OR: [
+              { healthcare_professional: { some: { approved: true } } },
+              { patient: { some: {} } },
+            ],
+          },
       select: {
         id: true,
         name: true,
@@ -36,15 +55,27 @@ router.get("/", async (req, res) => {
       },
     }),
   ]);
+  // 관리자 화면이 승인 기다리는 병원을 찾게. 공개 목록에는 싣지 않는다.
+  const pendingCounts = siteAdmin
+    ? await prisma.healthcare_professional.groupBy({
+        by: ["hospital_id"],
+        where: { approved: false },
+        _count: { _all: true },
+      })
+    : [];
 
   const patientCountMap = new Map(
     patientCounts.map((entry) => [entry.hospital_id, entry._count._all]),
+  );
+  const pendingCountMap = new Map(
+    pendingCounts.map((entry) => [entry.hospital_id, entry._count._all]),
   );
 
   hospitals.sort(compareHospitalNames);
   const payload = hospitals.map((hospital) => ({
     ...hospital,
     patientCount: patientCountMap.get(hospital.id) ?? 0,
+    ...(siteAdmin ? { pendingCount: pendingCountMap.get(hospital.id) ?? 0 } : {}),
   }));
 
   res.json(payload);
