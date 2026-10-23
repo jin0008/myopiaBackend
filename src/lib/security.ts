@@ -71,6 +71,21 @@ export const billingLimiter = rateLimit({
 });
 
 /**
+ * 문자 인증번호 발송용.
+ *
+ * 문자는 건마다 돈이 나간다. authLimiter 는 실패만 세서 발송 성공은 그대로
+ * 통과한다 - 번호를 바꿔 가며 보내면 요금이 쌓이고 남의 폰에 문자 폭탄이 간다.
+ * 한 사람이 번호를 잘못 넣고 다시 받는 정도는 남긴다.
+ */
+export const smsLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "인증번호 요청이 너무 잦습니다. 한 시간 뒤에 다시 시도해 주세요." },
+});
+
+/**
  * 병원 환자 기록에 연결하는 자리용 - 웹 보호자 연결(/user/patient)과 앱 병원
  * 연동(/children/:childId/hospital-links).
  *

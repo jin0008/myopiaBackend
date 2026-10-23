@@ -31,6 +31,7 @@ import {
 import {
   assertTicket,
   issueCode,
+  smsDelivery,
   verifyCode,
   VerificationError,
 } from "../services/emailVerification";
@@ -97,6 +98,12 @@ type UserDTO = {
  * a@b.com 이 서로 다른 계정이 된다. 그러면 비밀번호 재설정이 계정을
  * 찾지 못하고, 중복을 막으려고 건 제약도 그냥 비켜간다.
  */
+/** 휴대폰 번호. 숫자만 남겨 비교·저장한다 ("010-1234-5678" → "01012345678"). */
+const MOBILE_RE = /^01[016789][0-9]{7,8}$/;
+function digitsOnly(s: string): string {
+  return s.replace(/\D/g, "");
+}
+
 function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
 }
@@ -292,7 +299,8 @@ const signupSchema = zod.object({
   username: zod.string().trim().regex(/^[a-zA-Z0-9]+$/).optional(),
   password: zod.string().min(8),
   email: zod.string().email(),
-  /** /auth/email/verify-code 가 준 티켓. 이게 없으면 가입이 끝나지 않는다. */
+  phone: zod.string().transform(digitsOnly).pipe(zod.string().regex(MOBILE_RE)),
+  /** /auth/phone/verify-code 가 준 티켓. 이게 없으면 가입이 끝나지 않는다. */
   verificationTicket: zod.string().nonempty(),
   receive_email_updates: zod.boolean().optional(),
 });
@@ -364,6 +372,59 @@ const verifyCodeSchema = zod.object({
   code: zod.string().regex(/^[0-9]{6}$/),
 });
 
+const phoneSchema = zod.string().transform(digitsOnly).pipe(zod.string().regex(MOBILE_RE));
+const sendPhoneCodeSchema = zod.object({ phone: phoneSchema });
+const verifyPhoneCodeSchema = zod.object({
+  phone: phoneSchema,
+  code: zod.string().regex(/^[0-9]{6}$/),
+});
+
+/**
+ * POST /api/mobile/auth/phone/send-code — 가입용 문자 인증번호.
+ *
+ * 앱 가입은 휴대폰으로 본인 확인을 한다. 이메일은 로그인·비밀번호 찾기에
+ * 그대로 쓴다. 코드·티켓은 이메일과 같은 저장소를 쓰고 받는 곳만 번호다.
+ */
+router.post(
+  "/auth/phone/send-code",
+  validateRequestBody(sendPhoneCodeSchema),
+  async (req, res) => {
+    const { phone } = req.body as zod.infer<typeof sendPhoneCodeSchema>;
+    if ((await prisma.user.findUnique({ where: { phone } })) != null) {
+      res.status(409).json({ error: "이미 가입된 휴대폰 번호입니다.", code: "conflict" });
+      return;
+    }
+    try {
+      await issueCode(phone, "signup", smsDelivery);
+      res.status(202).json({ ok: true });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(429).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
+
+/** POST /api/mobile/auth/phone/verify-code — 확인 후 가입용 티켓 발급. */
+router.post(
+  "/auth/phone/verify-code",
+  validateRequestBody(verifyPhoneCodeSchema),
+  async (req, res) => {
+    const { phone, code } = req.body as zod.infer<typeof verifyPhoneCodeSchema>;
+    try {
+      res.json({ verificationTicket: await verifyCode(phone, code, "signup") });
+    } catch (e) {
+      if (e instanceof VerificationError) {
+        res.status(400).json({ error: e.message, code: e.code });
+        return;
+      }
+      throw e;
+    }
+  },
+);
+
 /** POST /api/mobile/auth/email/verify-code — 확인 후 가입용 티켓 발급. */
 router.post(
   "/auth/email/verify-code",
@@ -389,7 +450,7 @@ router.post(
   async (req, res) => {
     const data = req.body as zod.infer<typeof signupSchema>;
     try {
-      assertTicket(data.verificationTicket, data.email, "signup");
+      assertTicket(data.verificationTicket, data.phone, "signup");
     } catch (e) {
       if (e instanceof VerificationError) {
         res.status(400).json({ error: e.message, code: "validation_error" });
@@ -409,8 +470,9 @@ router.post(
       const user = await prisma.user.create({
         data: {
           email,
+          phone: data.phone,
           nickname,
-          // 가입 화면에서 닉네임과 이메일(인증)을 직접 정했다. 확인 창을 띄울 필요가 없다.
+          // 가입 화면에서 닉네임과 이메일을 직접 정했다. 확인 창을 띄울 필요가 없다.
           profile_confirmed_at: new Date(),
           receive_email_updates: data.receive_email_updates ?? false,
           // 로그인은 이메일로 한다. password_auth.username 은 비울 수 없고 겹치면
@@ -428,15 +490,16 @@ router.post(
       res.status(201).json(body);
     } catch (e) {
       if (e instanceof PrismaClientKnownRequestError && e.code === "P2002") {
-        // 닉네임과 이메일 둘 다 유니크다. 어느 쪽이 걸렸는지 알려주지 않으면
+        // 닉네임·이메일·휴대폰 모두 유니크다. 어느 쪽이 걸렸는지 알려주지 않으면
         // 사용자는 멀쩡한 값을 계속 고쳐 보게 된다.
-        const onNickname = (e.meta?.target as string[] | undefined)?.some((t) =>
-          t.includes("nickname"),
-        );
+        const on = (field: string) =>
+          (e.meta?.target as string[] | undefined)?.some((t) => t.includes(field));
         res.status(400).json({
-          error: onNickname
+          error: on("nickname")
             ? "이미 사용 중인 닉네임입니다."
-            : "이미 가입된 이메일입니다.",
+            : on("phone")
+              ? "이미 가입된 휴대폰 번호입니다."
+              : "이미 가입된 이메일입니다.",
           code: "validation_error",
         });
         return;
