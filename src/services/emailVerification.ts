@@ -17,6 +17,8 @@ import { isSmsConfigured, sendSms } from "./sms";
  */
 
 const CODE_TTL_MS = 5 * 60 * 1000;
+/** 문자는 바로 오므로 짧게 둔다. 메일은 늦게 닿는 경우가 있어 위의 5분 그대로. */
+export const SMS_CODE_TTL_MS = 2 * 60 * 1000;
 /** 재발송 간격. 이보다 촘촘히 누르면 이전 코드를 그대로 두고 거절한다. */
 const RESEND_COOLDOWN_MS = 60 * 1000;
 /** 6자리는 100만 분의 1이라, 끝까지 넣어보면 뚫린다. 시도를 막아야 의미가 있다. */
@@ -75,6 +77,7 @@ export async function issueCode(
   purpose: VerificationPurpose,
   /** 기본은 메일. 휴대폰 가입은 smsDelivery 를 넘긴다. 받는 곳은 emailRaw 자리에 번호를 준다. */
   deliver: (to: string, code: string, purpose: VerificationPurpose) => Promise<void> = emailDelivery,
+  ttlMs: number = CODE_TTL_MS,
 ): Promise<void> {
   const email = emailRaw.toLowerCase();
   const recent = await prisma.email_verification.findFirst({
@@ -104,7 +107,7 @@ export async function issueCode(
       target: email,
       purpose,
       code_hash: hashCode(email, code),
-      expires_at: new Date(Date.now() + CODE_TTL_MS),
+      expires_at: new Date(Date.now() + ttlMs),
     },
   });
 }
