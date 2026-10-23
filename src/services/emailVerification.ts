@@ -132,7 +132,7 @@ async function emailDelivery(
 export async function smsDelivery(phone: string, code: string): Promise<void> {
   if (!isSmsConfigured()) throw unavailable();
   // 90바이트(한글 45자) 안이면 단문(SMS)으로 나간다. 넘기면 장문 요금이다.
-  await sendSms(phone, `[마이오닥] 인증번호 ${code} (5분 안에 입력)`);
+  await sendSms(phone, `[마이오닥 본인확인] 인증번호 [${code}]를 입력해 주세요.`);
 }
 
 /**
