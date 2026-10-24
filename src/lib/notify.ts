@@ -6,6 +6,8 @@ export type NotificationType =
    *  측정값이 사라지므로 반드시 알려야 한다. */
   | "hospital_unlinked"
   | "post_comment"
+  /** 시술/수술 질문에 프리미엄 안과가 답변을 달았다(actor 는 병원이라 actorUserId 없음). */
+  | "hospital_answer"
   | "post_reply"
   | "post_like"
   | "comment_like"
@@ -109,6 +111,8 @@ function pushTitle(type: NotificationType, title: string | null | undefined): st
     case "post_comment":
     case "poll_comment":
       return "내 글에 댓글이 달렸습니다";
+    case "hospital_answer":
+      return "내 질문에 병원 답변이 달렸습니다";
     case "post_reply":
     case "poll_reply":
       return "내 댓글에 답글이 달렸습니다";
