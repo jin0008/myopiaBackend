@@ -84,7 +84,7 @@ router.get("/:id", async (req, res) => {
     },
   });
   if (post == null) {
-    res.status(404).json({ error: "질문을 찾을 수 없습니다." });
+    res.status(404).json({ message: "질문을 찾을 수 없습니다." });
     return;
   }
   res.json({
@@ -117,7 +117,7 @@ router.put("/:id/answer", validateRequestBody(answerSchema), async (req, res) =>
   const me = req.partner!.sub;
   const eligible = await answerEligibility(me);
   if (!eligible.ok) {
-    res.status(403).json({ error: NOT_ELIGIBLE[eligible.reason], code: eligible.reason });
+    res.status(403).json({ message: NOT_ELIGIBLE[eligible.reason], code: eligible.reason });
     return;
   }
   const post = await prisma.community_post.findFirst({
@@ -125,7 +125,7 @@ router.put("/:id/answer", validateRequestBody(answerSchema), async (req, res) =>
     select: { id: true, user_id: true, title: true },
   });
   if (post == null) {
-    res.status(404).json({ error: "질문을 찾을 수 없습니다." });
+    res.status(404).json({ message: "질문을 찾을 수 없습니다." });
     return;
   }
   const { body } = req.body as zod.infer<typeof answerSchema>;
@@ -134,7 +134,7 @@ router.put("/:id/answer", validateRequestBody(answerSchema), async (req, res) =>
   });
   // 운영자가 숨긴 답변을 병원이 고쳐 되살리지 못하게 한다.
   if (existing?.deleted_at != null) {
-    res.status(403).json({ error: "운영 정책에 따라 숨겨진 답변이 있어 새로 쓸 수 없습니다." });
+    res.status(403).json({ message: "운영 정책에 따라 숨겨진 답변이 있어 새로 쓸 수 없습니다." });
     return;
   }
   const saved = existing
