@@ -11,7 +11,7 @@ const router = express.Router();
  *  doctor-platform session, so it can't share the mobile-auth prefix. */
 export const moderationAdminRouter = express.Router();
 
-const TARGET_TYPES = ["post", "comment", "poll", "poll_comment", "review"] as const;
+const TARGET_TYPES = ["post", "comment", "poll", "poll_comment", "review", "answer"] as const;
 type TargetType = (typeof TARGET_TYPES)[number];
 
 const REASONS = [
@@ -81,6 +81,16 @@ async function targetContext(type: TargetType, id: string): Promise<TargetContex
         gone: r.deleted_at != null,
       };
     }
+    case "answer": {
+      // 시술/수술 질문에 병원이 단 답변(community_answer).
+      const r = await prisma.community_answer.findUnique({ where: { id } });
+      if (r == null) return { preview: null, url: null, gone: true };
+      return {
+        preview: snippet(r.body),
+        url: `${APP_WEB_ORIGIN}/community/${r.post_id}`,
+        gone: r.deleted_at != null,
+      };
+    }
     case "review": {
       const r = await prisma.hospital_review.findUnique({ where: { id } });
       if (r == null) return { preview: null, url: null, gone: true };
@@ -129,6 +139,9 @@ async function targetAuthorId(type: TargetType, id: string): Promise<string | nu
       });
       return r?.user_id ?? null;
     }
+    case "answer":
+      // 작성자가 앱 회원이 아니라 병원 계정이다. 회원 단위 반복 신고 집계에는 넣지 않는다.
+      return null;
   }
 }
 
@@ -296,6 +309,9 @@ moderationAdminRouter.patch("/reports/:id", siteAdminRequired, async (req, res) 
         break;
       case "poll_comment":
         await prisma.poll_comment.updateMany({ where: { id }, data: { deleted_at: now } });
+        break;
+      case "answer":
+        await prisma.community_answer.updateMany({ where: { id }, data: { deleted_at: now } });
         break;
       case "review":
         await prisma.hospital_review.updateMany({ where: { id }, data: { status: "hidden" } });

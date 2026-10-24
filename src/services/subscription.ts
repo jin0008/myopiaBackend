@@ -168,3 +168,28 @@ async function startPromotion(accountId: string, months: number): Promise<void> 
     throw e;
   }
 }
+
+/**
+ * 시술/수술 질문에 답할 수 있는 병원인지. 안과(안경원 아님)로 승인됐고, 구독이
+ * 지금 살아 있어야 한다. "살아 있다"는 낸 기간이 아직 안 끝났다는 뜻이다 - 자동
+ * 연장을 해지(canceled)했거나 이번 달 결제가 실패(past_due)했어도, 이미 낸 날까지는
+ * 답할 수 있다.
+ */
+export async function answerEligibility(
+  accountId: string,
+): Promise<{ ok: true; hospitalName: string } | { ok: false; reason: "not_eye_hospital" | "not_approved" | "no_subscription" }> {
+  const account = await prisma.hospital_account.findUnique({
+    where: { id: accountId },
+    select: {
+      business_kind: true,
+      status: true,
+      hospital_name: true,
+      subscription: { select: { current_period_end: true } },
+    },
+  });
+  if (account == null || account.business_kind === "optical") return { ok: false, reason: "not_eye_hospital" };
+  if (account.status !== "approved") return { ok: false, reason: "not_approved" };
+  const end = account.subscription?.current_period_end;
+  if (end == null || end <= new Date()) return { ok: false, reason: "no_subscription" };
+  return { ok: true, hospitalName: account.hospital_name };
+}

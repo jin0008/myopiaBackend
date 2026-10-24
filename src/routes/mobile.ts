@@ -3692,7 +3692,7 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
     orderBy: [{ created_at: "desc" }, { id: "desc" }],
     take: pageSize + 1, // fetch one extra to know if there's more
     include: {
-      _count: { select: { comments: true, likes: true } },
+      _count: { select: { comments: true, likes: true, answers: { where: { deleted_at: null } } } },
       likes: { where: { user_id: viewerId }, take: 1 },
       user: true,
     },
@@ -3717,7 +3717,7 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
       },
       createdAt: p.created_at.toISOString(),
       updatedAt: p.updated_at.toISOString(),
-      commentCount: p._count.comments,
+      commentCount: p._count.comments + p._count.answers,
       likeCount: p._count.likes,
       likedByMe: p.likes.length > 0,
     })),
@@ -3839,7 +3839,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
   const rows = await prisma.community_post.findMany({
     where: { deleted_at: null, created_at: { gte: since }, ...notBlocked },
     include: {
-      _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
+      _count: { select: { comments: { where: { deleted_at: null } }, likes: true, answers: { where: { deleted_at: null } } } },
       user: true,
     },
     // Bounded so the scoring below stays cheap; a week of posts is small today.
@@ -3879,7 +3879,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
       createdAt: p.created_at.toISOString(),
       viewCount: p.view_count,
       likeCount: p._count.likes,
-      commentCount: p._count.comments,
+      commentCount: p._count.comments + p._count.answers,
     },
   });
 
@@ -3919,7 +3919,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
     const older = await prisma.community_post.findMany({
       where: { deleted_at: null, created_at: { lt: since }, ...notBlocked },
       include: {
-        _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
+        _count: { select: { comments: { where: { deleted_at: null } }, likes: true, answers: { where: { deleted_at: null } } } },
         user: true,
       },
       orderBy: { created_at: "desc" },
@@ -3941,7 +3941,7 @@ router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
   const post = await prisma.community_post.findUnique({
     where: { id: String(req.params.id) },
     include: {
-      _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
+      _count: { select: { comments: { where: { deleted_at: null } }, likes: true, answers: { where: { deleted_at: null } } } },
       likes: { where: { user_id: viewerId }, take: 1 },
       user: true,
     },
@@ -3974,7 +3974,7 @@ router.get("/community/posts/:id", optionalMobileAuth, async (req, res) => {
     },
     createdAt: post.created_at.toISOString(),
     updatedAt: post.updated_at.toISOString(),
-    commentCount: post._count.comments,
+    commentCount: post._count.comments + post._count.answers,
     likeCount: post._count.likes,
     likedByMe: post.likes.length > 0,
   });
@@ -4077,6 +4077,20 @@ router.get(
     });
     if (postExists == null) return res.status(404).json({ error: "post not found" });
 
+    // 시술/수술 질문에 프리미엄 안과가 단 답변(partnerQuestions.ts). 회원 댓글과
+    // 따로 싣는다 - 차단은 회원끼리의 일이라 병원 답변에는 걸지 않는다.
+    const answers = await prisma.community_answer.findMany({
+      where: { post_id: postExists.id, deleted_at: null },
+      orderBy: { created_at: "asc" },
+      select: {
+        id: true,
+        body: true,
+        created_at: true,
+        updated_at: true,
+        account: { select: { hospital_name: true } },
+      },
+    });
+
     const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
     const rows = await prisma.community_comment.findMany({
       where: { post_id: String(req.params.id), ...notBlocked },
@@ -4106,6 +4120,13 @@ router.get(
         likeCount: c._count.likes,
         likedByMe: c.likes.length > 0,
       })),
+      answers: answers.map((a) => ({
+        id: a.id,
+        hospitalName: a.account.hospital_name,
+        body: a.body,
+        createdAt: a.created_at.toISOString(),
+        updatedAt: a.updated_at.toISOString(),
+      })),
     });
   },
 );
@@ -4131,9 +4152,16 @@ router.post(
     const postId = String(req.params.id);
     const post = await prisma.community_post.findFirst({
       where: { id: postId, deleted_at: null },
-      select: { id: true },
+      select: { id: true, category: true },
     });
     if (post == null) return res.status(404).json({ error: "post not found" });
+    // 시술/수술 질문은 프리미엄 안과만 답한다(파트너 웹). 회원 댓글은 받지 않는다.
+    if (post.category === "general") {
+      return res.status(403).json({
+        error: "이 게시판의 질문에는 인증 안과만 답변할 수 있어요.",
+        code: "hospital_only",
+      });
+    }
 
     const { body, parentCommentId } = req.body as zod.infer<
       typeof createCommentSchema

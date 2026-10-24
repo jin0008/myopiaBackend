@@ -670,6 +670,7 @@ model hospital_account {
   facility_verification facility_verification[]
   subscription          subscription?
   payment               payment[]
+  community_answer      community_answer[]
 }
 
 model hospital_profile {
@@ -800,6 +801,7 @@ model community_post {
   user               user                  @relation(fields: [user_id], references: [id], onDelete: Cascade, map: "community_post_user_fk")
   comments           community_comment[]
   likes              community_post_like[]
+  answers            community_answer[]
 
   @@index([created_at(sort: Desc)], map: "idx_community_post_created_at")
   @@index([user_id], map: "idx_community_post_user")
@@ -1395,16 +1397,16 @@ model payment {
 }
 
 model facility_promotion {
-  id         String   @id(map: "facility_promotion_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  id          String   @id(map: "facility_promotion_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   /// "eye" | "optical"
-  kind       String
+  kind        String
   /// 안과면 요양기호(ykiho), 안경점이면 인허가번호(license_no).
-  key        String
+  key         String
   /// 지금은 premium 하나뿐이다. 상품이 하나라 쓰는 곳이 없고, 등급이
   /// 생기면 여기에 붙인다.
-  tier       String   @default("premium")
-  starts_at  DateTime @db.Timestamptz(6)
-  ends_at    DateTime @db.Timestamptz(6)
+  tier        String   @default("premium")
+  starts_at   DateTime @db.Timestamptz(6)
+  ends_at     DateTime @db.Timestamptz(6)
   /// 행정동 코드와 이름("신월2동"). 독점은 동 하나에 하나씩 팔므로 이것이
   /// 곧 독점 구역이다. 주소에서 뽑지 않는다 - 도로명 주소에는 동이 없고,
   /// 지번의 "신월동"은 법정동이라 행정동 둘을 한 덩어리로 묶는다.
@@ -1412,18 +1414,18 @@ model facility_promotion {
   region_code String?
   region_name String?
   /// 어느 파트너 계정의 광고인지. 계정이 지워져도 이력은 남긴다.
-  account_id String?  @db.Uuid
-  note       String?
-  created_at DateTime @default(now()) @db.Timestamptz(6)
-  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  account_id  String?  @db.Uuid
+  note        String?
+  created_at  DateTime @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime @default(now()) @db.Timestamptz(6)
 
   account hospital_account? @relation(fields: [account_id], references: [id], onDelete: SetNull, map: "facility_promotion_account_fk")
 
   @@unique([kind, key], map: "facility_promotion_unique")
-  @@index([kind, ends_at], map: "idx_facility_promotion_active")
   /// 같은 업종, 같은 동에 둘은 걸리지 않는다. 코드로만 막으면 동시에 결제한
   /// 둘이 함께 지나간다. 기간이 끝나면 region_code 를 비워 자리를 내놓는다.
   @@unique([kind, region_code], map: "facility_promotion_region_unique")
+  @@index([kind, ends_at], map: "idx_facility_promotion_active")
 }
 
 model optical_shop {
@@ -1641,4 +1643,24 @@ model ad_inquiry {
   updated_at   DateTime @default(now()) @db.Timestamptz(6)
 
   @@index([status, created_at(sort: Desc)], map: "idx_ad_inquiry_status")
+}
+
+/// 시술/수술 질문(community_post.category = "general")에 프리미엄 구독 안과가 다는 답변.
+/// community_comment 와 따로 둔다. 댓글은 앱 회원(user)이 쓰는 것을 전제로 차단·알림·
+/// 좋아요·신고가 엮여 있어, 병원 계정(hospital_account)을 섞으면 그 길들이 다 흔들린다.
+/// 병원 하나에 질문 하나당 답변 하나 - 고쳐 쓰게 한다.
+model community_answer {
+  id                  String           @id(map: "community_answer_pk") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  post_id             String           @db.Uuid
+  hospital_account_id String           @db.Uuid
+  body                String
+  created_at          DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime         @default(now()) @updatedAt @db.Timestamptz(6)
+  /// 운영자가 숨긴 때. 병원이 직접 지우면 줄을 지운다.
+  deleted_at          DateTime?        @db.Timestamptz(6)
+  post                community_post   @relation(fields: [post_id], references: [id], onDelete: Cascade, map: "community_answer_post_fk")
+  account             hospital_account @relation(fields: [hospital_account_id], references: [id], onDelete: Cascade, map: "community_answer_account_fk")
+
+  @@unique([post_id, hospital_account_id], map: "community_answer_post_account_unique")
+  @@index([post_id, created_at], map: "idx_community_answer_post")
 }
