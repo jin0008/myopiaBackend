@@ -4087,9 +4087,23 @@ router.get(
         body: true,
         created_at: true,
         updated_at: true,
+        hospital_account_id: true,
         account: { select: { hospital_name: true } },
       },
     });
+    // 답변에 병원 프로필(앱 치료 탭의 병원 페이지)을 붙인다 - 이름·대표 사진을 거기서
+    // 쓰고, 누르면 그 페이지로 간다. 병원은 사진을 파트너 웹 프로필에서 바꾼다.
+    // 프로필이 없거나 공개 전이면 가입 때 적은 병원 이름만 쓴다.
+    const answerProfiles = answers.length
+      ? await prisma.hospital_profile.findMany({
+          where: {
+            owner_account_id: { in: [...new Set(answers.map((a) => a.hospital_account_id))] },
+            status: "published",
+          },
+          select: { owner_account_id: true, name: true, thumbnail_url: true, kakao_place_id: true },
+        })
+      : [];
+    const profileOf = new Map(answerProfiles.map((p) => [p.owner_account_id, p]));
 
     const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
     const rows = await prisma.community_comment.findMany({
@@ -4120,13 +4134,18 @@ router.get(
         likeCount: c._count.likes,
         likedByMe: c.likes.length > 0,
       })),
-      answers: answers.map((a) => ({
+      answers: answers.map((a) => {
+        const prof = profileOf.get(a.hospital_account_id);
+        return {
         id: a.id,
-        hospitalName: a.account.hospital_name,
+        hospitalName: prof?.name ?? a.account.hospital_name,
+        thumbnailUrl: prof?.thumbnail_url ?? null,
+        kakaoPlaceId: prof?.kakao_place_id ?? null,
         body: a.body,
         createdAt: a.created_at.toISOString(),
         updatedAt: a.updated_at.toISOString(),
-      })),
+        };
+      }),
     });
   },
 );
