@@ -7,9 +7,10 @@ import { notify } from "../lib/notify";
 import { answerEligibility } from "../services/subscription";
 
 /**
- * 파트너 웹의 '질문 답변'. 앱 커뮤니티 '시술/수술 질문'(category = "general")에
- * 프리미엄 구독 안과가 병원 이름으로 답한다. 앱 회원은 이 게시판에 댓글을 달 수
- * 없다(mobile.ts) - 질문은 보호자가, 답은 병원이 한다.
+ * 파트너 웹의 '질문 답변'. 앱 '전문가 상담'(category = "expert")에 프리미엄 구독
+ * 안과가 병원 이름으로 답한다. 앱 회원은 이 게시판에 댓글을 달 수 없다(mobile.ts) -
+ * 질문은 보호자가, 답은 병원이 한다. 커뮤니티 '시술/수술 질문'(general)과는 다른
+ * 게시판이다.
  *
  * 보기는 승인된 파트너 누구나, 쓰기는 answerEligibility 를 통과한 병원만.
  * 구독이 끝나도 이미 단 답변은 남는다(지우면 질문한 사람이 받은 답이 사라진다).
@@ -17,7 +18,7 @@ import { answerEligibility } from "../services/subscription";
 const router = express.Router();
 router.use(partnerRequired);
 
-const QUESTION = "general";
+const QUESTION = "expert";
 const PAGE = 20;
 
 const NOT_ELIGIBLE: Record<string, string> = {

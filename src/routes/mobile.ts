@@ -3682,7 +3682,8 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
     where: {
       deleted_at: null,
       ...notBlocked,
-      ...(category != null && { category }),
+      // 커뮤니티 '전체'에는 전문가 상담 질문을 섞지 않는다. 그 화면에서 따로 본다.
+      ...(category != null ? { category } : { category: { not: "expert" } }),
       ...(treatment != null && { treatment_category: treatment }),
       ...(answered === true && { answers: { some: { deleted_at: null } } }),
       ...(answered === false && { answers: { none: { deleted_at: null } } }),
@@ -3743,7 +3744,7 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
 router.get("/community/expert-hospitals", async (_req, res) => {
   const counts = await prisma.community_answer.groupBy({
     by: ["hospital_account_id"],
-    where: { deleted_at: null, post: { deleted_at: null } },
+    where: { deleted_at: null, post: { deleted_at: null, category: "expert" } },
     _count: { _all: true },
     orderBy: { _count: { hospital_account_id: "desc" } },
     take: 20,
@@ -3772,7 +3773,9 @@ router.get("/community/expert-hospitals", async (_req, res) => {
 });
 
 // "general" is 시술/수술 질문; "chat" is 자유수다 (free talk).
-const POST_CATEGORIES = ["review", "general", "chat"] as const;
+// "expert" 는 전문가 상담 - 회원은 질문만, 프리미엄 구독 안과만 답한다(partnerQuestions.ts).
+// 커뮤니티 목록·인기글에는 섞지 않고 전문가 상담 화면에서만 보인다.
+const POST_CATEGORIES = ["review", "general", "chat", "expert"] as const;
 type PostCategory = (typeof POST_CATEGORIES)[number];
 
 /** 치료탭의 다섯 항목. myodoc TreatmentCategoryScreen, myopia
@@ -3883,7 +3886,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
   const notBlocked = await authorBlockFilter(req.mobileUser?.sub);
 
   const rows = await prisma.community_post.findMany({
-    where: { deleted_at: null, created_at: { gte: since }, ...notBlocked },
+    where: { deleted_at: null, category: { not: "expert" }, created_at: { gte: since }, ...notBlocked },
     include: {
       _count: { select: { comments: { where: { deleted_at: null } }, likes: true, answers: { where: { deleted_at: null } } } },
       user: true,
@@ -3963,7 +3966,7 @@ router.get("/community/posts/popular", optionalMobileAuth, async (req, res) => {
   // 바꿔 달게 한다 - 오래된 글을 인기글이라 부르지 않는 것이 핵심이다.
   if (chosen.length < limit) {
     const older = await prisma.community_post.findMany({
-      where: { deleted_at: null, created_at: { lt: since }, ...notBlocked },
+      where: { deleted_at: null, category: { not: "expert" }, created_at: { lt: since }, ...notBlocked },
       include: {
         _count: { select: { comments: { where: { deleted_at: null } }, likes: true, answers: { where: { deleted_at: null } } } },
         user: true,
@@ -4123,7 +4126,7 @@ router.get(
     });
     if (postExists == null) return res.status(404).json({ error: "post not found" });
 
-    // 시술/수술 질문에 프리미엄 안과가 단 답변(partnerQuestions.ts). 회원 댓글과
+    // 전문가 상담 질문에 프리미엄 안과가 단 답변(partnerQuestions.ts). 회원 댓글과
     // 따로 싣는다 - 차단은 회원끼리의 일이라 병원 답변에는 걸지 않는다.
     const answers = await prisma.community_answer.findMany({
       where: { post_id: postExists.id, deleted_at: null },
@@ -4220,8 +4223,8 @@ router.post(
       select: { id: true, category: true },
     });
     if (post == null) return res.status(404).json({ error: "post not found" });
-    // 시술/수술 질문은 프리미엄 안과만 답한다(파트너 웹). 회원 댓글은 받지 않는다.
-    if (post.category === "general") {
+    // 전문가 상담은 프리미엄 안과만 답한다(파트너 웹). 회원 댓글은 받지 않는다.
+    if (post.category === "expert") {
       return res.status(403).json({
         error: "이 게시판의 질문에는 인증 안과만 답변할 수 있어요.",
         code: "hospital_only",
