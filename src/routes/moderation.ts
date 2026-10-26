@@ -334,13 +334,18 @@ moderationAdminRouter.patch("/reports/:id", siteAdminRequired, async (req, res) 
 
 const ADMIN_PAGE_SIZE = 50;
 
-/** GET /moderation/posts?q=&show=live|deleted|all&cursor= */
+/**
+ * GET /moderation/posts?q=&show=live|deleted|all&board=community|expert&cursor=
+ * 전문가 상담(expert)은 어드민에서도 따로 본다 - 커뮤니티 글 사이에 섞이면 찾기 어렵다.
+ */
 moderationAdminRouter.get("/posts", siteAdminRequired, async (req, res) => {
+  const expert = req.query.board === "expert";
   const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
   const show = req.query.show === "deleted" || req.query.show === "all" ? req.query.show : "live";
   const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
   const rows = await prisma.community_post.findMany({
     where: {
+      category: expert ? "expert" : { not: "expert" },
       ...(show === "live" ? { deleted_at: null } : show === "deleted" ? { deleted_at: { not: null } } : {}),
       ...(q !== ""
         ? {
