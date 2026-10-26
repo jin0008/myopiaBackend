@@ -358,7 +358,13 @@ moderationAdminRouter.get("/posts", siteAdminRequired, async (req, res) => {
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     include: {
       user: { select: { nickname: true, email: true } },
-      _count: { select: { comments: { where: { deleted_at: null } }, likes: true } },
+      _count: {
+        select: {
+          comments: { where: { deleted_at: null } },
+          answers: { where: { deleted_at: null } },
+          likes: true,
+        },
+      },
     },
   });
   const page = rows.slice(0, ADMIN_PAGE_SIZE);
@@ -375,6 +381,7 @@ moderationAdminRouter.get("/posts", siteAdminRequired, async (req, res) => {
       createdAt: p.created_at.toISOString(),
       deleted: p.deleted_at != null,
       commentCount: p._count.comments,
+      answerCount: p._count.answers,
       likeCount: p._count.likes,
       viewCount: p.view_count,
       url: `${APP_WEB_ORIGIN}/community/${p.id}`,
@@ -402,9 +409,30 @@ moderationAdminRouter.get("/posts/:id/comments", siteAdminRequired, async (req, 
   );
 });
 
-/** 숨기거나(deleted=true) 되살린다. 없는 id 면 404. */
+/** GET /moderation/posts/:id/answers — 전문가 상담 글의 병원 답변, 숨긴 것까지. */
+moderationAdminRouter.get("/posts/:id/answers", siteAdminRequired, async (req, res) => {
+  const rows = await prisma.community_answer.findMany({
+    where: { post_id: String(req.params.id) },
+    orderBy: { created_at: "asc" },
+    include: { account: { select: { hospital_name: true } } },
+  });
+  res.json(
+    rows.map((a) => ({
+      id: a.id,
+      body: a.body,
+      hospitalName: a.account.hospital_name,
+      createdAt: a.created_at.toISOString(),
+      deleted: a.deleted_at != null,
+    })),
+  );
+});
+
+/**
+ * 숨기거나(deleted=true) 되살린다. 없는 id 면 404. 병원 답변은 숨긴 동안 병원이
+ * 고쳐 쓸 수 없다(partnerQuestions.ts) - 운영자가 되살려야 다시 보인다.
+ */
 async function setDeleted(
-  model: "post" | "comment",
+  model: "post" | "comment" | "answer",
   id: string,
   deleted: boolean,
 ): Promise<boolean> {
@@ -412,12 +440,14 @@ async function setDeleted(
   const r =
     model === "post"
       ? await prisma.community_post.updateMany({ where: { id }, data })
-      : await prisma.community_comment.updateMany({ where: { id }, data });
+      : model === "comment"
+        ? await prisma.community_comment.updateMany({ where: { id }, data })
+        : await prisma.community_answer.updateMany({ where: { id }, data });
   return r.count > 0;
 }
 
-for (const model of ["post", "comment"] as const) {
-  const base = model === "post" ? "/posts/:id" : "/comments/:id";
+for (const model of ["post", "comment", "answer"] as const) {
+  const base = `/${model}s/:id`;
   moderationAdminRouter.delete(base, siteAdminRequired, async (req, res) => {
     res.sendStatus((await setDeleted(model, String(req.params.id), true)) ? 204 : 404);
   });
