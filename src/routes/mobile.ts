@@ -3667,6 +3667,11 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
     ? treatmentParam
     : null;
 
+  // 전문가 상담 화면의 '답변 완료 / 답변 대기'. 병원 답변(community_answer) 기준.
+  const answeredParam = String(req.query.answered ?? "");
+  const answered =
+    answeredParam === "true" ? true : answeredParam === "false" ? false : null;
+
   const cursorRow = cursor
     ? await prisma.community_post.findUnique({ where: { id: cursor } })
     : null;
@@ -3679,6 +3684,8 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
       ...notBlocked,
       ...(category != null && { category }),
       ...(treatment != null && { treatment_category: treatment }),
+      ...(answered === true && { answers: { some: { deleted_at: null } } }),
+      ...(answered === false && { answers: { none: { deleted_at: null } } }),
       ...(cursorRow != null && {
         OR: [
           { created_at: { lt: cursorRow.created_at } },
@@ -3718,10 +3725,49 @@ router.get("/community/posts", optionalMobileAuth, async (req, res) => {
       createdAt: p.created_at.toISOString(),
       updatedAt: p.updated_at.toISOString(),
       commentCount: p._count.comments + p._count.answers,
+      answerCount: p._count.answers,
       likeCount: p._count.likes,
       likedByMe: p.likes.length > 0,
     })),
     nextCursor,
+  });
+});
+
+/**
+ * GET /api/mobile/community/expert-hospitals — 전문가 상담 화면의 '답변한 병원'.
+ *
+ * 시술/수술 질문에 답한 병원을 답변 많은 순으로. 공개된 병원 프로필의 이름·대표
+ * 사진을 쓰고, 프로필이 있으면 누를 때 갈 병원 페이지(kakaoPlaceId)를 준다.
+ * 지금 구독 중인지는 보지 않는다 - 예전에 답한 병원도 그 답은 남아 있다.
+ */
+router.get("/community/expert-hospitals", async (_req, res) => {
+  const counts = await prisma.community_answer.groupBy({
+    by: ["hospital_account_id"],
+    where: { deleted_at: null, post: { deleted_at: null } },
+    _count: { _all: true },
+    orderBy: { _count: { hospital_account_id: "desc" } },
+    take: 20,
+  });
+  const ids = counts.map((c) => c.hospital_account_id);
+  const [accounts, profiles] = await Promise.all([
+    prisma.hospital_account.findMany({ where: { id: { in: ids } }, select: { id: true, hospital_name: true } }),
+    prisma.hospital_profile.findMany({
+      where: { owner_account_id: { in: ids }, status: "published" },
+      select: { owner_account_id: true, name: true, thumbnail_url: true, kakao_place_id: true },
+    }),
+  ]);
+  const nameOf = new Map(accounts.map((a) => [a.id, a.hospital_name]));
+  const profileOf = new Map(profiles.map((p) => [p.owner_account_id, p]));
+  res.json({
+    hospitals: counts.map((c) => {
+      const prof = profileOf.get(c.hospital_account_id);
+      return {
+        hospitalName: prof?.name ?? nameOf.get(c.hospital_account_id) ?? "",
+        thumbnailUrl: prof?.thumbnail_url ?? null,
+        kakaoPlaceId: prof?.kakao_place_id ?? null,
+        answerCount: c._count._all,
+      };
+    }),
   });
 });
 
