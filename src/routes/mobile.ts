@@ -5533,7 +5533,8 @@ function withReferences(body: string, category: string): string {
   return (
     clean +
     "\n\n### 참고 자료\n\n같은 주제의 의료진 감수 자료에서 모은 참고 문헌입니다.\n\n" +
-    refs.map((c) => `- ${c.title} ${c.url}`).join("\n")
+    // [제목](주소) 로 적는다. 그냥 적은 주소는 앱이 한글 앞에서 끊는다(msdmanuals 의 한글 경로).
+    refs.map((c) => `- [${c.title}](${c.url})`).join("\n")
   );
 }
 
