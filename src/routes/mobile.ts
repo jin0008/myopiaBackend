@@ -14,6 +14,7 @@ import { axialPercentile } from "../services/percentile";
 import { validateRequestBody } from "../lib/middlewares";
 import { linkAttemptLimiter } from "../lib/security";
 import { expiredChatFiles } from "../lib/chatRetention";
+import { citationsOf, stripReviewNotes } from "../lib/citations";
 import {
   issueRefreshToken,
   rotateRefreshToken,
@@ -5233,6 +5234,16 @@ router.post(
       sources = [];
     }
 
+    // 검색을 거치지 않은 답은 출처가 비어 온다. 답의 근거인 감수 문항의 출처를
+    // 단다 - 모델이 가리킨 문항(refs), 없으면 찾아 넣은 상위 문항.
+    // 건강 정보에 출처가 안 보이면 Apple 이 반려한다(1.4.1).
+    if (sources.length === 0 && mode !== "emergency") {
+      const cited = index.items.filter((it) => refs.includes(it.id));
+      const basis = cited.length > 0 ? cited : rag.fallback ? [] : rag.items;
+      sources = citationsOf(basis.map((it) => it.text).join("\n")).slice(0, 3);
+    }
+    answer = stripReviewNotes(answer);
+
     chatLogLine({
       ts: new Date().toISOString(),
       user: userId ?? quotaKey,
@@ -5496,6 +5507,37 @@ router.get("/columns", async (req, res) => {
   res.json({ items, nextCursor });
 });
 
+/**
+ * 출처 줄이 없는 칼럼(카페에서 옮긴 글)에는 같은 분야 감수 원고의 출처를 단다.
+ * 건강 정보에 출처가 안 보이면 Apple 이 반려한다(1.4.1).
+ * ponytail: 글마다가 아니라 분야 단위 출처다. 의료진이 글에 *참고:* 줄을
+ * 달면 그 글은 자기 출처만 보인다.
+ */
+function withReferences(body: string, category: string): string {
+  const clean = stripReviewNotes(body);
+  if (citationsOf(clean).length > 0) return clean;
+  const seeds = loadSeedColumns();
+  const seed =
+    seeds.find((s) => s.category === category) ??
+    seeds.find((s) => s.category === "basics");
+  // 논문·학회·공공기관을 앞에 둔다. 원고 순서대로면 병원 블로그가 먼저 나오는 분야가 있다.
+  const scholarly = (url: string) =>
+    /pubmed|ncbi|doi\.org|aao|kdca|nhis|snu|amc|journal|jamanetwork|bmj|nature|iovs/.test(url) ? 0 : 1;
+  const refs = seed
+    ? citationsOf(seed.body)
+        .filter((c) => c.url !== "")
+        .sort((a, b) => scholarly(a.url) - scholarly(b.url))
+        .slice(0, 5)
+    : [];
+  if (refs.length === 0) return clean;
+  return (
+    clean +
+    "\n\n### 참고 자료\n\n같은 주제의 의료진 감수 자료에서 모은 참고 문헌입니다.\n\n" +
+    // [제목](주소) 로 적는다. 그냥 적은 주소는 앱이 한글 앞에서 끊는다(msdmanuals 의 한글 경로).
+    refs.map((c) => `- [${c.title}](${c.url})`).join("\n")
+  );
+}
+
 /** GET /api/mobile/columns/:id — public. */
 router.get("/columns/:id", async (req, res) => {
   await ensureSeedColumns();
@@ -5509,7 +5551,7 @@ router.get("/columns/:id", async (req, res) => {
   const detail: ColumnDetail = {
     id: col.slug,
     title: col.title,
-    body: col.body,
+    body: withReferences(col.body, col.category),
     category: col.category,
     author: col.author,
     authorRole: col.author_role,
