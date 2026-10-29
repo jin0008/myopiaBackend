@@ -120,6 +120,8 @@ model patient {
   encrypted_registration_number  Bytes
   registration_number_hash       String
   encrypted_date_of_birth        Bytes
+  /// 병원 내부 메모(특이 환자 등). 암호화해 저장하고, 없으면 비어 있다.
+  encrypted_memo                 Bytes?
   measurement                    measurement[]
   ethnicity                      ethnicity                        @relation(fields: [ethnicity_id], references: [id], map: "patient_ethnicity_fk")
   hospital                       hospital                         @relation(fields: [hospital_id], references: [id], onDelete: Cascade, map: "patient_hospital_fk")
