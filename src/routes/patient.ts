@@ -62,6 +62,9 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
           registration_number: await decryptSymmetric(
             patient.encrypted_registration_number,
           ),
+          memo: patient.encrypted_memo
+            ? await decryptSymmetric(patient.encrypted_memo)
+            : null,
           appLinkCount: _count.child_hospital_link,
         })),
       );
@@ -660,6 +663,8 @@ router.post(
 const patchPatientSchema = zod.object({
   date_of_birth: zod.string().date().optional(),
   sex: zod.nativeEnum(sex).optional(),
+  /** 빈 문자열이면 메모를 지운다. */
+  memo: zod.string().max(1000).optional(),
 });
 
 router.patch(
@@ -689,6 +694,14 @@ router.patch(
               )
             : undefined,
           sex: data.sex,
+          encrypted_memo:
+            data.memo === undefined
+              ? undefined
+              : data.memo.trim()
+                ? await encryptSymmetric(data.memo.trim()).then((encrypted) =>
+                    Uint8Array.from(encrypted),
+                  )
+                : null,
         },
       })
       .then((updated) => {
