@@ -605,6 +605,9 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         registration_number: await decryptSymmetric(
           data.encrypted_registration_number,
         ),
+        memo: data.encrypted_memo
+          ? await decryptSymmetric(data.encrypted_memo)
+          : null,
       });
     });
 });
