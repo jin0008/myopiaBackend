@@ -570,8 +570,21 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         patientId: data.id,
       }).catch(console.error);
 
+      // 메모는 병원 내부용이다. 이 경로는 웹에서 아이와 연결된 보호자도
+      // 부르므로, 그 병원의 승인된 의료진에게만 내준다.
+      const isHospitalStaff =
+        (await prisma.healthcare_professional.findFirst({
+          where: {
+            user_id: req.authSession!.user_id,
+            hospital_id: data.hospital_id,
+            approved: true,
+          },
+          select: { user_id: true },
+        })) != null;
+      const { encrypted_memo, ...rest } = data;
+
       res.json({
-        ...data,
+        ...rest,
         // measurement 와 같은 모양으로 낸다. 화면이 한 그래프에 두 종류를
         // 얹을 때 형태가 다르면 그 자리에서 변환하게 되고, 변환하는 곳이
         // 늘어나면 어긋난다.
@@ -605,6 +618,10 @@ router.get("/:patientId", loginRequired, async (req, res) => {
         registration_number: await decryptSymmetric(
           data.encrypted_registration_number,
         ),
+        memo:
+          isHospitalStaff && encrypted_memo
+            ? await decryptSymmetric(encrypted_memo)
+            : null,
       });
     });
 });
