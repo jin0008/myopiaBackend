@@ -987,6 +987,15 @@ model alert_setting {
   updated_at                 DateTime @updatedAt @db.Timestamptz(6)
 }
 
+/// 사이트 전역 보안 설정. 한 줄짜리(항상 id=1). 사이트 관리자가
+/// PUT /security_setting 으로 바꾼다. web_2fa_enabled 가 false 면 웹 로그인에서
+/// 2단계 인증을 묻지 않는다.
+model security_setting {
+  id              Int      @id(map: "security_setting_pk") @default(1)
+  web_2fa_enabled Boolean  @default(true)
+  updated_at      DateTime @updatedAt @db.Timestamptz(6)
+}
+
 // Community polls (똑닥-style 설문). user_id columns are plain (no Prisma
 // relation to `user`) to avoid touching the large user model — author
 // usernames are resolved separately, mirroring authorDTO() in mobile.ts.

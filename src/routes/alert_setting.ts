@@ -32,7 +32,7 @@ const DEFAULTS = {
  * req.healthcare_professional, so resolve the actor from the DB (falling back to
  * the user's email) so the log carries the same actor detail as the rest.
  */
-async function adminAuditContext(req: express.Request) {
+export async function adminAuditContext(req: express.Request) {
   const base = auditContextFromRequest(req);
   const userId = req.authSession?.user_id;
   if (!userId) return base;
