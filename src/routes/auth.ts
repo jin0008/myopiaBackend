@@ -22,6 +22,7 @@ import {
 import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { loginRequired, validateRequestBody } from "../lib/middlewares";
 import { CONSENT_VERSION, consentRows } from "../lib/consent";
+import { web2faEnabled } from "./security_setting";
 
 import { OAuth2Client } from "google-auth-library";
 
@@ -184,6 +185,11 @@ function trustedDevice(tokens: unknown, userId: string, enabledAt: Date): boolea
 }
 
 async function nextLoginStep(userId: string, pwWeak: boolean, deviceTokens?: unknown) {
+  // 관리자가 2단계 인증을 꺼 두었으면 비밀번호 규칙만 보고 들어오게 한다.
+  if (!(await web2faEnabled())) {
+    if (pwWeak) return { next: "change_password" as const, ticket: signLoginTicket(userId, pwWeak) };
+    return { next: "signed_in" as const, ...(await generateSession(userId)) };
+  }
   const user = await prisma.user.findUniqueOrThrow({
     where: { id: userId },
     select: { totp_enabled_at: true },
