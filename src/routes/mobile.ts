@@ -1990,13 +1990,28 @@ router.delete(
  */
 router.get("/children/:childId/progress", requireMobileAuth, async (req, res) => {
   const user = requireAppUser(req);
-  const child = await loadOwnedChild(user.sub, String(req.params.childId));
-  if (child == null) {
+  // myopiamanage 에서 등록한 아이(web)도 받는다. 예전에는 앱에서 만든
+  // 아이만 찾아서, 웹으로 등록한 아이는 404 가 나고 진행·백분위 카드가
+  // 통째로 빠졌다.
+  const owned = await findOwnedChild(String(req.params.childId), user.sub);
+  if (owned == null) {
     res.status(404).json({ error: "child not found", code: "not_found" });
     return;
   }
+  let child: { id: string | null; date_of_birth: Date; sex: SexEnum };
+  if (owned.source === "app") {
+    child = { id: owned.appLink.id, date_of_birth: owned.appLink.date_of_birth, sex: owned.appLink.sex };
+  } else {
+    const p = await prisma.patient.findUnique({ where: { id: owned.patientId } });
+    if (p == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const dob = dateOnly(await decryptSymmetric(p.encrypted_date_of_birth));
+    child = { id: null, date_of_birth: new Date(dob), sex: p.sex };
+  }
 
-  const patientIds = (await linkedPatientIds(child.id)).map((p) => p.patientId);
+  const patientIds = (await linkedPatientIds(owned)).map((p) => p.patientId);
   const [hospital, own] = await Promise.all([
     patientIds.length > 0
       ? prisma.measurement.findMany({
@@ -2005,11 +2020,13 @@ router.get("/children/:childId/progress", requireMobileAuth, async (req, res) =>
           take: 20,
         })
       : Promise.resolve([]),
-    prisma.child_record.findMany({
-      where: { parent_child_link_id: child.id },
-      orderBy: { recorded_on: "desc" },
-      take: 20,
-    }),
+    child.id != null
+      ? prisma.child_record.findMany({
+          where: { parent_child_link_id: child.id },
+          orderBy: { recorded_on: "desc" },
+          take: 20,
+        })
+      : Promise.resolve([]),
   ]);
 
   // 두 출처를 한 줄로 세운다. 같은 날 둘 다 있으면 병원 값을 쓴다 -
@@ -2033,9 +2050,42 @@ router.get("/children/:childId/progress", requireMobileAuth, async (req, res) =>
     .sort((a, b) => b.date.getTime() - a.date.getTime());
 
   if (points.length === 0) {
-    res.json({ status: "no_data", latest: null, perYear: null, threshold: null });
+    res.json({
+      status: "no_data",
+      latest: null,
+      perYear: null,
+      threshold: null,
+      percentileByEye: null,
+    });
     return;
   }
+
+  // 눈마다 따로, 그 눈의 마지막 측정값으로 또래 백분위를 낸다.
+  // myopiamanage 의사 화면("우리 아이 안축장 백분위")과 같은 방식이다 -
+  // 한 눈만 잰 날이 끼어 있어도 각 눈은 자기 마지막 값으로 비교한다.
+  // 같은 날 병원 값과 직접 적은 값이 있으면 병원 값이 앞에 온다(위 정렬은
+  // 안정 정렬이고 병원 값을 먼저 넣었다).
+  const yearsAt = (d: Date) =>
+    (d.getTime() - child.date_of_birth.getTime()) / (365.25 * 24 * 3600 * 1000);
+  const eyePercentile = async (eye: "od" | "os") => {
+    const p = points.find((x) => x[eye] != null);
+    if (p == null) return null;
+    const ageYears = yearsAt(p.date);
+    if (!(ageYears > 0)) return null;
+    const value = p[eye] as number;
+    const r = await axialPercentile({ ageYears, sex: child.sex, axial: value });
+    if (r == null) return null;
+    return {
+      ...r,
+      value,
+      date: serializeDateOnly(p.date),
+      ageYears: Number(ageYears.toFixed(2)),
+      fromHospital: p.fromHospital,
+    };
+  };
+  const [pctOd, pctOs] = await Promise.all([eyePercentile("od"), eyePercentile("os")]);
+  const percentileByEye =
+    pctOd || pctOs ? { reference: "Asian", od: pctOd, os: pctOs } : null;
 
   const latest = points[0];
   const worse = (p: Point) => Math.max(p.od ?? 0, p.os ?? 0);
@@ -2108,7 +2158,10 @@ router.get("/children/:childId/progress", requireMobileAuth, async (req, res) =>
     perYear,
     threshold: threshold?.warn_max ?? null,
     /// 또래 분포. 기준 자료를 못 찾으면 null - 모르는 것을 아는 척하지 않는다.
+    /// (두 눈 중 긴 쪽 하나. 옛 앱이 읽는다.)
     percentile,
+    /// 좌우안 각각의 마지막 측정값 기준 백분위.
+    percentileByEye,
   });
 });
 
