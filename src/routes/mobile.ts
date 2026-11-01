@@ -3312,10 +3312,18 @@ const lifestyleEntrySchema = zod.object({
  *  중복을 걷어낸 뒤에도 화면에 쓸 만큼 남도록 넉넉히 가져온다. */
 const ACTIVITY_HISTORY_LIMIT = 60;
 
+type ActivityEntryDTO = {
+  id: string;
+  hours: number | null;
+  recordedAt: string;
+  /** 보호자가 직접 적은 줄이면 true - 앱이 삭제 단추를 이 값으로 보인다. */
+  editable: boolean;
+};
+
 async function listActivity(
   kind: ActivityKind,
   patientIds: string[],
-): Promise<{ id: string; hours: number | null; recordedAt: string }[]> {
+): Promise<ActivityEntryDTO[]> {
   const where = { patient_id: { in: patientIds } };
   const take = ACTIVITY_HISTORY_LIMIT * Math.max(patientIds.length, 1);
   const rows =
@@ -3333,7 +3341,7 @@ async function listActivity(
   // collapse duplicates from fan-out: same (timestamp, hours) across
   // hospitals counts as a single entry.
   const seen = new Set<string>();
-  const out: { id: string; hours: number | null; recordedAt: string }[] = [];
+  const out: ActivityEntryDTO[] = [];
   for (const r of rows) {
     const key = `${r.timestamp.toISOString()}|${r.hours ?? ""}`;
     if (seen.has(key)) continue;
@@ -3342,6 +3350,9 @@ async function listActivity(
       id: r.id,
       hours: r.hours,
       recordedAt: r.timestamp.toISOString(),
+      // 보호자가 앱에서 적은 줄만 지울 수 있다. 진료에서 넣은 값은 병원
+      // 기록이 원본이다.
+      editable: r.source === "parent",
     });
   }
   return out;
@@ -3394,12 +3405,13 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
           : [];
 
       const seen = new Set<string>();
-      const entries: { id: string; hours: number | null; recordedAt: string }[] = [];
+      const entries: ActivityEntryDTO[] = [];
       for (const r of [
         ...own.map((r) => ({
           id: r.id,
           hours: r.hours,
           recordedAt: r.recorded_at.toISOString(),
+          editable: true,
         })),
         ...fromHospital,
       ]) {
@@ -3452,6 +3464,88 @@ function makeActivityRoutes(kind: ActivityKind, urlSegment: string) {
         recordedAt: recordedAt.toISOString(),
         hospitalsWritten: links.length,
       });
+    },
+  );
+
+  /**
+   * DELETE /api/mobile/children/:childId/<segment>/:entryId
+   *
+   * 잘못 적은 한 줄을 지운다. 적을 때 아이 쪽 기록과 연동 병원마다 같은
+   * 값을 한 벌씩 남기므로(fan-out), 한 벌만 지우면 다른 벌이 목록에 다시
+   * 나타난다. 같은 시각·같은 값의 보호자 기록을 모두 지운다. 병원이 진료에서
+   * 넣은 줄(source 가 parent 가 아닌 것)은 지우지 않는다.
+   */
+  router.delete(
+    `/children/:childId/${urlSegment}/:entryId`,
+    requireMobileAuth,
+    async (req, res) => {
+      const userId = req.mobileUser!.sub;
+      const child = await findOwnedChild(String(req.params.childId), userId);
+      if (child == null) return res.status(404).json({ error: "child not found", code: "not_found" });
+
+      const entryId = String(req.params.entryId);
+      if (!/^[0-9a-f-]{36}$/i.test(entryId)) {
+        return res.status(404).json({ error: "entry not found", code: "not_found" });
+      }
+      const patientIds = (await linkedPatientIds(child)).map((l) => l.patientId);
+
+      // 1) 아이 쪽 기록에서 찾는다.
+      let target: { recordedAt: Date; hours: number | null } | null = null;
+      if (child.source === "app") {
+        const own = await prisma.child_activity_log.findFirst({
+          where: { id: entryId, parent_child_link_id: child.childId, kind },
+        });
+        if (own) target = { recordedAt: own.recorded_at, hours: own.hours };
+      }
+      // 2) 없으면 연동 병원 쪽에서 찾는다. 아이의 환자 id 로 좁혀야 남의
+      //    기록을 지울 수 없다.
+      if (target == null && patientIds.length > 0) {
+        const where = { id: entryId, patient_id: { in: patientIds } };
+        const row =
+          kind === "nearwork"
+            ? await prisma.patient_nearwork_activity.findFirst({ where })
+            : await prisma.patient_outdoor_activity.findFirst({ where });
+        if (row) {
+          if (row.source !== "parent") {
+            return res
+              .status(403)
+              .json({ error: "병원에서 입력한 기록은 지울 수 없습니다.", code: "not_editable" });
+          }
+          target = { recordedAt: row.timestamp, hours: row.hours };
+        }
+      }
+      if (target == null) {
+        return res.status(404).json({ error: "entry not found", code: "not_found" });
+      }
+
+      const copies = {
+        patient_id: { in: patientIds },
+        timestamp: target.recordedAt,
+        hours: target.hours,
+        source: "parent",
+      };
+      await prisma.$transaction([
+        ...(child.source === "app"
+          ? [
+              prisma.child_activity_log.deleteMany({
+                where: {
+                  parent_child_link_id: child.childId,
+                  kind,
+                  recorded_at: target.recordedAt,
+                  hours: target.hours,
+                },
+              }),
+            ]
+          : []),
+        ...(patientIds.length > 0
+          ? [
+              kind === "nearwork"
+                ? prisma.patient_nearwork_activity.deleteMany({ where: copies })
+                : prisma.patient_outdoor_activity.deleteMany({ where: copies }),
+            ]
+          : []),
+      ]);
+      res.json({ ok: true });
     },
   );
 }
