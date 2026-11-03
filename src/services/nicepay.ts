@@ -231,6 +231,9 @@ export async function chargeBilling(args: {
       orderId: args.orderId,
       amount: args.amount,
       goodsName: args.goodsName,
+      // 둘 다 필수다. 빠지면 "cardQuota 필수입력항목이 누락" 으로 거절된다.
+      cardQuota: 0, // 일시불
+      useShopInterest: false, // 상점 무이자 안 씀
     }),
   );
 }
