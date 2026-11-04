@@ -64,6 +64,26 @@ router.get("/", async (req, res) => {
       })
     : [];
 
+  // 관리자 화면 병원 카드에 그 병원 admin 의 연락 이메일을 보여 준다.
+  // 공개 목록에는 싣지 않는다.
+  const adminRows = siteAdmin
+    ? await prisma.healthcare_professional.findMany({
+        where: { is_admin: true, approved: true },
+        select: {
+          hospital_id: true,
+          name: true,
+          user: { select: contactEmailSelect },
+        },
+        orderBy: { name: "asc" },
+      })
+    : [];
+  const adminMap = new Map<string, { name: string; email: string | null }[]>();
+  for (const row of adminRows) {
+    const list = adminMap.get(row.hospital_id) ?? [];
+    list.push({ name: row.name, email: contactEmail(row.user) });
+    adminMap.set(row.hospital_id, list);
+  }
+
   const patientCountMap = new Map(
     patientCounts.map((entry) => [entry.hospital_id, entry._count._all]),
   );
@@ -75,7 +95,12 @@ router.get("/", async (req, res) => {
   const payload = hospitals.map((hospital) => ({
     ...hospital,
     patientCount: patientCountMap.get(hospital.id) ?? 0,
-    ...(siteAdmin ? { pendingCount: pendingCountMap.get(hospital.id) ?? 0 } : {}),
+    ...(siteAdmin
+      ? {
+          pendingCount: pendingCountMap.get(hospital.id) ?? 0,
+          admins: adminMap.get(hospital.id) ?? [],
+        }
+      : {}),
   }));
 
   res.json(payload);
@@ -147,8 +172,26 @@ router.patch("/:hospital_id/name_ko", siteAdminRequired, async (req, res) => {
   await updateHospitalNameKo(req, res, id.data);
 });
 
-function getHospitalMembers(hospitalId: string) {
-  return prisma.healthcare_professional.findMany({
+// 연락용 이메일. user.email 이 비어 있는 예전·소셜 가입 계정은 로그인 ID 가
+// 이메일이면 그것을 쓴다.
+const contactEmailSelect = {
+  email: true,
+  password_auth: { select: { username: true } },
+} as const;
+
+function contactEmail(user: {
+  email: string | null;
+  password_auth: { username: string } | null;
+}): string | null {
+  if (user.email) return user.email;
+  const username = user.password_auth?.username;
+  return username && username.includes("@") ? username : null;
+}
+
+/** includeEmail 은 사이트 관리자 화면에서만 켠다. 병원 admin 이 자기 병원
+ * 의료진 목록을 볼 때는 동료의 이메일을 내보내지 않는다. */
+async function getHospitalMembers(hospitalId: string, includeEmail = false) {
+  const members = await prisma.healthcare_professional.findMany({
     where: {
       hospital_id: hospitalId,
     },
@@ -157,6 +200,7 @@ function getHospitalMembers(hospitalId: string) {
       name: true,
       approved: true,
       is_admin: true,
+      user: { select: contactEmailSelect },
     },
     orderBy: [
       {
@@ -170,13 +214,16 @@ function getHospitalMembers(hospitalId: string) {
       },
     ],
   });
+  return members.map(({ user, ...member }) =>
+    includeEmail ? { ...member, email: contactEmail(user) } : member,
+  );
 }
 
 router.get(
   "/:hostpital_id/healthcare_professional",
   siteAdminRequired,
   async (req, res) => {
-    await getHospitalMembers(req.params.hostpital_id as string).then((result) =>
+    await getHospitalMembers(req.params.hostpital_id as string, true).then((result) =>
       res.json(result),
     );
   },
