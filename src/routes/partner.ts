@@ -21,7 +21,7 @@ import {
   linkedFacility,
   regionOf,
 } from "../services/promotionSlots";
-import { MONTHLY_AMOUNT } from "../lib/pricing";
+import { monthlyAmount } from "../lib/pricing";
 import { endOfTerm, extendTerm, kstDateString, kstDayStart } from "../lib/promotionTerm";
 import {
   assertTicket,
@@ -1874,12 +1874,12 @@ router.get("/promotions/mine", partnerRequired, async (req, res) => {
 router.get("/promotions/availability", partnerRequired, async (req, res) => {
   // 값도 함께 보낸다. 화면이 숫자를 들고 있으면 가격을 올린 날 결제창과
   // 안내가 어긋난다.
-  const monthly = MONTHLY_AMOUNT;
   const me = await linkedFacility(req.partner!.sub);
   if (me == null) {
-    res.json({ monthly, regionName: null, nearby: 0, full: false, nextFreeOn: null });
+    res.json({ monthly: 0, regionName: null, nearby: 0, full: false, nextFreeOn: null });
     return;
   }
+  const monthly = monthlyAmount(me.kind);
 
   let region: { code: string; name: string };
   let taken: { endsAt: Date }[];

@@ -4,7 +4,7 @@ import zod from "zod";
 import prisma from "../lib/prisma";
 import { partnerRequired } from "../lib/partnerAuth";
 import { extendSubscription } from "../services/subscription";
-import { GOODS_NAME, MONTHLY_AMOUNT, isPriced } from "../lib/pricing";
+import { GOODS_NAME, accountMonthly, isPriced } from "../lib/pricing";
 import { siteAdminRequired } from "../lib/middlewares";
 import {
   NiceError,
@@ -75,7 +75,7 @@ router.post("/checkout", partnerRequired, async (req, res) => {
     return;
   }
 
-  const amount = MONTHLY_AMOUNT * months;
+  const amount = (await accountMonthly(accountId)) * months;
   const orderId = newOrderId("sub");
 
   await prisma.payment.create({
@@ -442,7 +442,7 @@ async function registerAndCharge(
     return;
   }
 
-  const amount = MONTHLY_AMOUNT;
+  const amount = await accountMonthly(accountId);
 
   // 빌키는 받자마자 구독에 적는다(자동결제는 끈 채로). 결과를 모르는 채
   // 끝나도 빌키를 잃지 않게 - 잃으면 나이스에 아무도 못 지우는 카드 연결이
