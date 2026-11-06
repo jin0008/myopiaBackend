@@ -46,7 +46,8 @@ const router = express.Router();
  */
 
 const checkoutSchema = zod.object({
-  months: zod.number().int().min(1).max(12),
+  // 나이스 입점 기준: 3개월 넘는 상품은 못 판다(2026-11-05 심사 안내).
+  months: zod.number().int().min(1).max(3),
 });
 
 /**
