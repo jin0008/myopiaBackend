@@ -84,13 +84,15 @@ function assertColumns(rows: Row[], required: string[], where: string) {
  * 한 번 끊겼다고 갱신 전체를 버리면 매주 실패한다. 끝내 안 되면 던진다 -
  * 빠진 페이지를 두고 넘어가면 그 100곳이 폐업으로 잡힌다.
  */
-async function fetchJsonRetry(url: string, what: string): Promise<any> {
+async function fetchJsonRetry(url: string, what: string, check?: (body: any) => void): Promise<any> {
   let last: unknown;
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     try {
       const resp = await fetch(url, { signal: AbortSignal.timeout(60_000) });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-      return await resp.json();
+      const body = await resp.json();
+      check?.(body);
+      return body;
     } catch (e) {
       last = e;
       await new Promise((r) => setTimeout(r, attempt * 2000));
@@ -108,9 +110,21 @@ async function fetchAllPages(
   // 안경업(행안부)은 한 번에 100건까지만 준다. 더 달라고 해도 100건이 온다.
   pageSize = 1000,
 ): Promise<Row[]> {
-  const get = async (page: number) => {
+  // 열 장씩 함께 부르면 포털 게이트웨이가 가끔 200 에 목록 대신 오류를 준다
+  // ({"OpenAPI_ServiceResponse": ... "HTTP_ERROR"}, 2026-11-09 에 189장 중 3~5장).
+  // HTTP 오류가 아니라 0건으로 들어가 버리므로, 그 장에 와야 할 건수를 세어 보고
+  // 모자라면 다시 받는다. 다시 받으면 온다.
+  const get = async (page: number, knownTotal?: number) => {
     const qs = new URLSearchParams({ ...params, pageNo: String(page), numOfRows: String(pageSize) });
-    return pick(await fetchJsonRetry(`${url}?serviceKey=${KEY_Q}&${qs}`, `${url} page ${page}`));
+    return pick(
+      await fetchJsonRetry(`${url}?serviceKey=${KEY_Q}&${qs}`, `${url} page ${page}`, (body) => {
+        const { items, total } = pick(body);
+        const want = Math.min(pageSize, (knownTotal ?? total) - (page - 1) * pageSize);
+        if (!(total > 0) || items.length !== want) {
+          throw new Error(`${items.length}건이 왔다(와야 할 건수 ${want})`);
+        }
+      }),
+    );
   };
   // 첫 장에서 전체 건수를 알고, 나머지는 열 장씩 함께 받는다. 한 장씩 차례로
   // 받으면 안경업 190장에 15분 넘게 걸린다(장마다 몇 초).
@@ -120,7 +134,7 @@ async function fetchAllPages(
   const rows: Row[] = [...first.items];
   for (let p = 2; p <= pages; p += 10) {
     const batch = await Promise.all(
-      Array.from({ length: Math.min(10, pages - p + 1) }, (_, i) => get(p + i)),
+      Array.from({ length: Math.min(10, pages - p + 1) }, (_, i) => get(p + i, total)),
     );
     for (const b of batch) rows.push(...b.items);
     console.log(`  ${url.split("/").pop()} ${Math.min(p + 9, pages)}/${pages}장`);
