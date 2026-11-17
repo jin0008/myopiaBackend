@@ -1979,6 +1979,145 @@ router.delete(
   },
 );
 
+/* ------------------------------------------------------------------ *
+ * 키·몸무게 (child_growth). 보호자가 적고, 앱이 2017 성장도표 위에 그린다.
+ * 치료 기록(treatment-records)과 같은 모양이다.
+ * ------------------------------------------------------------------ */
+/** 오늘(한국 날짜). 앱 사용자는 한국에 있어 서버 시간대와 무관하게 KST 로 자른다. */
+const todayKst = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+
+const childGrowthSchema = zod
+  .object({
+    // .date() 는 2026-02-30 같은 없는 날을 거른다. 정규식만 보면 new Date() 에서 500 이 난다.
+    measuredOn: zod
+      .string()
+      .date("날짜를 확인해 주세요.")
+      .refine((d) => d <= todayKst(), { message: "앞으로의 날짜는 적을 수 없어요." }),
+    // 3~18세 범위에서 나올 수 있는 값보다 넉넉하게. 단위 실수(m, g)를 막는 정도.
+    heightCm: zod.number().min(40).max(230).nullable().optional(),
+    weightKg: zod.number().min(2).max(250).nullable().optional(),
+  })
+  .refine((d) => d.heightCm != null || d.weightKg != null, {
+    message: "키나 몸무게 중 하나는 적어 주세요.",
+    path: ["heightCm"],
+  });
+const validateChildGrowth = validateWith(childGrowthSchema);
+type ChildGrowthBody = zod.infer<typeof childGrowthSchema>;
+
+const childGrowthData = (d: ChildGrowthBody) => ({
+  measured_on: new Date(d.measuredOn),
+  height_cm: d.heightCm ?? null,
+  weight_kg: d.weightKg ?? null,
+});
+
+/** 생일 이전 기록은 성장곡선에 찍을 수 없어 조용히 사라진다. 저장 전에 막는다. */
+const growthBeforeBirth = (d: ChildGrowthBody, birth: Date) =>
+  d.measuredOn < serializeDateOnly(birth);
+
+const childGrowthDTO = (r: {
+  id: string;
+  measured_on: Date;
+  height_cm: number | null;
+  weight_kg: number | null;
+}) => ({
+  id: r.id,
+  measuredOn: serializeDateOnly(r.measured_on),
+  heightCm: r.height_cm,
+  weightKg: r.weight_kg,
+});
+
+/** GET /api/mobile/children/:childId/growth-records — 오래된 것부터(그래프 순서). */
+router.get("/children/:childId/growth-records", requireMobileAuth, async (req, res) => {
+  const user = requireAppUser(req);
+  const child = await loadOwnedChild(user.sub, String(req.params.childId));
+  if (child == null) {
+    res.status(404).json({ error: "child not found", code: "not_found" });
+    return;
+  }
+  const rows = await prisma.child_growth.findMany({
+    where: { parent_child_link_id: child.id },
+    orderBy: { measured_on: "asc" },
+  });
+  res.json({ records: rows.map(childGrowthDTO) });
+});
+
+/** POST /api/mobile/children/:childId/growth-records */
+router.post(
+  "/children/:childId/growth-records",
+  requireMobileAuth,
+  validateChildGrowth,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    if (growthBeforeBirth(req.body as ChildGrowthBody, child.date_of_birth)) {
+      res.status(400).json({ error: "태어난 날보다 앞선 날짜예요.", code: "validation_error" });
+      return;
+    }
+    const row = await prisma.child_growth.create({
+      data: { parent_child_link_id: child.id, ...childGrowthData(req.body as ChildGrowthBody) },
+    });
+    res.status(201).json(childGrowthDTO(row));
+  },
+);
+
+/** PUT /api/mobile/children/:childId/growth-records/:growthRecordId */
+router.put(
+  "/children/:childId/growth-records/:growthRecordId",
+  requireMobileAuth,
+  validateChildGrowth,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    if (growthBeforeBirth(req.body as ChildGrowthBody, child.date_of_birth)) {
+      res.status(400).json({ error: "태어난 날보다 앞선 날짜예요.", code: "validation_error" });
+      return;
+    }
+    // 아이까지 조건에 넣는다. id 만으로 고치면 남의 기록을 고칠 수 있다.
+    const { count } = await prisma.child_growth.updateMany({
+      where: { id: String(req.params.growthRecordId), parent_child_link_id: child.id },
+      data: childGrowthData(req.body as ChildGrowthBody),
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "growth record not found", code: "not_found" });
+      return;
+    }
+    const row = await prisma.child_growth.findUniqueOrThrow({
+      where: { id: String(req.params.growthRecordId) },
+    });
+    res.json(childGrowthDTO(row));
+  },
+);
+
+/** DELETE /api/mobile/children/:childId/growth-records/:growthRecordId */
+router.delete(
+  "/children/:childId/growth-records/:growthRecordId",
+  requireMobileAuth,
+  async (req, res) => {
+    const user = requireAppUser(req);
+    const child = await loadOwnedChild(user.sub, String(req.params.childId));
+    if (child == null) {
+      res.status(404).json({ error: "child not found", code: "not_found" });
+      return;
+    }
+    const { count } = await prisma.child_growth.deleteMany({
+      where: { id: String(req.params.growthRecordId), parent_child_link_id: child.id },
+    });
+    if (count === 0) {
+      res.status(404).json({ error: "growth record not found", code: "not_found" });
+      return;
+    }
+    res.json({ ok: true });
+  },
+);
+
 /**
  * GET /api/mobile/children/:childId/progress
  *
