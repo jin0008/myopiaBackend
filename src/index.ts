@@ -37,6 +37,7 @@ import paymentRoutes from "./routes/payment";
 import hospitalProfileRoutes from "./routes/hospital_profile";
 import partnerRoutes from "./routes/partner";
 import partnerQuestionRoutes from "./routes/partnerQuestions";
+import appDownloadRoutes from "./routes/appDownload";
 import { runPushReminders } from "./jobs/pushReminders";
 
 import { authLimiter, inquiryLimiter, lookupLimiter, smsLimiter } from "./lib/security";
@@ -140,6 +141,7 @@ app.use("/partner", partnerRoutes);
 app.use("/payment", paymentRoutes);
 app.use("/ad-inquiry", adInquiryRoutes);
 app.use("/app-stats", appStatsRoutes);
+app.use("/app", appDownloadRoutes);
 app.use("/moderation", moderationAdminRouter);
 app.use("/api/mobile", moderationRoutes);
 app.use("/api/mobile", notificationRoutes);
