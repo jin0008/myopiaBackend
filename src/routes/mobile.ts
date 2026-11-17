@@ -1097,6 +1097,9 @@ router.get("/children", requireMobileAuth, async (req, res) => {
       childId: c.id,
       source: "app" as const,
       nickname: c.nickname,
+      // 1.0.x 앱 호환: 그 앱은 name 이 비면 '실제 이름 등록' 버튼을 띄우고 수정 저장을 막는다.
+      // 실명은 더 이상 저장하지 않으므로 호칭을 대신 내려 준다. 스토어 앱이 모두 바뀌면 지운다.
+      name: c.nickname,
       dateOfBirth: serializeDateOnly(c.date_of_birth),
       sex: c.sex,
       glassesColor: c.glasses_color,
@@ -1183,6 +1186,9 @@ router.post(
     res.status(201).json({
       childId: created.id,
       nickname: created.nickname,
+      // 1.0.x 앱 호환: 그 앱은 name 이 비면 '실제 이름 등록' 버튼을 띄우고 수정 저장을 막는다.
+      // 실명은 더 이상 저장하지 않으므로 호칭을 대신 내려 준다. 스토어 앱이 모두 바뀌면 지운다.
+      name: created.nickname,
       dateOfBirth: serializeDateOnly(created.date_of_birth),
       sex: created.sex,
       glassesColor: created.glasses_color,
@@ -1240,6 +1246,9 @@ router.patch(
     res.json({
       childId: updated.id,
       nickname: updated.nickname,
+      // 1.0.x 앱 호환: 그 앱은 name 이 비면 '실제 이름 등록' 버튼을 띄우고 수정 저장을 막는다.
+      // 실명은 더 이상 저장하지 않으므로 호칭을 대신 내려 준다. 스토어 앱이 모두 바뀌면 지운다.
+      name: updated.nickname,
       dateOfBirth: serializeDateOnly(updated.date_of_birth),
       sex: updated.sex,
       glassesColor: updated.glasses_color,
