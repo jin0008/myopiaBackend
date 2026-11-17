@@ -192,7 +192,7 @@ function requireAppUser(req: express.Request): MobileJWTPayload {
  * UUIDs are globally unique so no namespace collision is possible.
  */
 type OwnedChild =
-  | { source: "app"; childId: string; userId: string; appLink: { id: string; user_id: string; nickname: string; name: string | null; date_of_birth: Date; sex: SexEnum } }
+  | { source: "app"; childId: string; userId: string; appLink: { id: string; user_id: string; nickname: string; date_of_birth: Date; sex: SexEnum } }
   | { source: "web"; childId: string; userId: string; patientId: string };
 
 /**
@@ -1097,7 +1097,9 @@ router.get("/children", requireMobileAuth, async (req, res) => {
       childId: c.id,
       source: "app" as const,
       nickname: c.nickname,
-      name: c.name,
+      // 1.0.x 앱 호환: 그 앱은 name 이 비면 '실제 이름 등록' 버튼을 띄우고 수정 저장을 막는다.
+      // 실명은 더 이상 저장하지 않으므로 호칭을 대신 내려 준다. 스토어 앱이 모두 바뀌면 지운다.
+      name: c.nickname,
       dateOfBirth: serializeDateOnly(c.date_of_birth),
       sex: c.sex,
       glassesColor: c.glasses_color,
@@ -1155,10 +1157,9 @@ router.get("/children", requireMobileAuth, async (req, res) => {
 const GLASSES_COLOR = zod.enum(["blue", "pink", "green", "orange", "purple", "red"]);
 const AVATAR_BG = zod.enum(["sky", "pink", "mint", "peach", "lavender", "lemon"]);
 
+// 실명(name)은 받지 않는다. 옛 앱이 보내도 zod 가 모르는 키를 버린다.
 const childCreateSchema = zod.object({
   nickname: zod.string().nonempty().max(80),
-  // 실명. 이 칸이 생기기 전 앱에서는 보내지 않으므로 선택으로 받는다.
-  name: zod.string().trim().min(1).max(80).optional(),
   dateOfBirth: zod.string().date(),
   sex: zod.nativeEnum(SexEnum),
   glassesColor: GLASSES_COLOR.optional(),
@@ -1176,7 +1177,6 @@ router.post(
       data: {
         user_id: user.sub,
         nickname: data.nickname,
-        name: data.name ?? null,
         date_of_birth: new Date(data.dateOfBirth),
         sex: data.sex,
         glasses_color: data.glassesColor ?? null,
@@ -1186,7 +1186,9 @@ router.post(
     res.status(201).json({
       childId: created.id,
       nickname: created.nickname,
-      name: created.name,
+      // 1.0.x 앱 호환: 그 앱은 name 이 비면 '실제 이름 등록' 버튼을 띄우고 수정 저장을 막는다.
+      // 실명은 더 이상 저장하지 않으므로 호칭을 대신 내려 준다. 스토어 앱이 모두 바뀌면 지운다.
+      name: created.nickname,
       dateOfBirth: serializeDateOnly(created.date_of_birth),
       sex: created.sex,
       glassesColor: created.glasses_color,
@@ -1199,7 +1201,6 @@ router.post(
 const childPatchSchema = zod
   .object({
     nickname: zod.string().nonempty().max(80).optional(),
-    name: zod.string().trim().min(1).max(80).optional(),
     dateOfBirth: zod.string().date().optional(),
     sex: zod.nativeEnum(SexEnum).optional(),
     glassesColor: GLASSES_COLOR.optional(),
@@ -1236,7 +1237,6 @@ router.patch(
       where: { id: child.id },
       data: {
         nickname: data.nickname,
-        name: data.name,
         date_of_birth: data.dateOfBirth ? new Date(data.dateOfBirth) : undefined,
         sex: data.sex,
         glasses_color: data.glassesColor,
@@ -1246,7 +1246,9 @@ router.patch(
     res.json({
       childId: updated.id,
       nickname: updated.nickname,
-      name: updated.name,
+      // 1.0.x 앱 호환: 그 앱은 name 이 비면 '실제 이름 등록' 버튼을 띄우고 수정 저장을 막는다.
+      // 실명은 더 이상 저장하지 않으므로 호칭을 대신 내려 준다. 스토어 앱이 모두 바뀌면 지운다.
+      name: updated.nickname,
       dateOfBirth: serializeDateOnly(updated.date_of_birth),
       sex: updated.sex,
       glassesColor: updated.glasses_color,
