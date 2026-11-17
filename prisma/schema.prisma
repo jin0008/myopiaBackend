@@ -520,6 +520,7 @@ model parent_child_link {
   child_record          child_record[]
   child_prescription    child_prescription[]
   child_treatment       child_treatment[]
+  child_growth          child_growth[]
   child_care_log        child_care_log[]
   child_reminder        child_reminder[]
 
@@ -1561,6 +1562,21 @@ model child_treatment {
   treatment         treatment         @relation(fields: [treatment_id], references: [id], onDelete: Cascade)
 
   @@index([parent_child_link_id, start_date])
+}
+
+/// 보호자가 앱에 적은 키·몸무게. 둘 중 하나는 있어야 한다(API 가 확인).
+model child_growth {
+  id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parent_child_link_id String   @db.Uuid
+  /// 잰 날. 앱에 적은 날이 아니다.
+  measured_on          DateTime @db.Date
+  height_cm            Float?   @db.Real
+  weight_kg            Float?   @db.Real
+  created_at           DateTime @default(now()) @db.Timestamptz(6)
+
+  parent_child_link parent_child_link @relation(fields: [parent_child_link_id], references: [id], onDelete: Cascade)
+
+  @@index([parent_child_link_id, measured_on])
 }
 
 model child_record {
