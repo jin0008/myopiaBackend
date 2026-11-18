@@ -2317,12 +2317,18 @@ const careSchema = zod.object({
   doneOn: zod.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   done: zod.boolean(),
 });
+// 달력 한 장(최대 6주)보다 넓게 열어 두되, 한 번에 몇 년치를 긁지는 못하게.
+const careRangeSchema = zod
+  .object({ from: zod.string().date(), to: zod.string().date() })
+  .refine((r) => r.from <= r.to, "from 이 to 보다 늦습니다.")
+  .refine((r) => Date.parse(r.to) - Date.parse(r.from) <= 92 * 86400_000, "기간은 92일까지입니다.");
 
 /**
  * GET /api/mobile/children/:childId/care?days=30
+ * GET /api/mobile/children/:childId/care?from=2026-10-01&to=2026-10-31
  *
- * 최근 며칠치를 한 번에 준다. 날짜마다 물어보면 달력 한 장에 서른 번을
- * 부르게 된다.
+ * 최근 며칠치, 또는 from~to(달력 한 달)를 한 번에 준다. 날짜마다 물어보면
+ * 달력 한 장에 서른 번을 부르게 된다.
  */
 router.get("/children/:childId/care", requireMobileAuth, async (req, res) => {
   const user = requireAppUser(req);
@@ -2331,13 +2337,22 @@ router.get("/children/:childId/care", requireMobileAuth, async (req, res) => {
     res.status(404).json({ error: "child not found", code: "not_found" });
     return;
   }
-  const days = Math.min(Math.max(Number(req.query.days ?? 30) || 30, 1), 180);
-  const from = new Date();
-  from.setUTCHours(0, 0, 0, 0);
-  from.setUTCDate(from.getUTCDate() - days + 1);
+  const range = careRangeSchema.safeParse(req.query);
+  let doneOn: { gte: Date; lte?: Date };
+  if (range.success) {
+    doneOn = { gte: new Date(range.data.from), lte: new Date(range.data.to) };
+  } else if (req.query.from != null || req.query.to != null) {
+    res.status(400).json({ error: "기간이 올바르지 않습니다.", code: "validation_error" });
+    return;
+  } else {
+    const days = Math.min(Math.max(Number(req.query.days ?? 30) || 30, 1), 180);
+    const from = new Date(todayKst());
+    from.setUTCDate(from.getUTCDate() - days + 1);
+    doneOn = { gte: from };
+  }
 
   const rows = await prisma.child_care_log.findMany({
-    where: { parent_child_link_id: child.id, done_on: { gte: from } },
+    where: { parent_child_link_id: child.id, done_on: doneOn },
     orderBy: { done_on: "desc" },
   });
   res.json({
@@ -2365,10 +2380,9 @@ router.put(
     const d = req.body as zod.infer<typeof careSchema>;
     const doneOn = new Date(d.doneOn);
     // 오지 않은 날은 체크할 수 없다. 달력을 넘기다 미래를 누르면 기록이
-    // 실제와 어긋난다.
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    if (doneOn.getTime() > today.getTime()) {
+    // 실제와 어긋난다. 오늘은 한국 날짜로 - UTC 로 자르면 한국 아침 9시
+    // 전에는 오늘 체크가 "아직 오지 않은 날"로 막힌다.
+    if (d.doneOn > todayKst()) {
       res
         .status(400)
         .json({ error: "아직 오지 않은 날짜입니다.", code: "validation_error" });
