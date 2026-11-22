@@ -13,6 +13,7 @@ import healthcareProfessionalRoutes from "./routes/healthcare_professional";
 import measurementRoutes from "./routes/measurement";
 import refractiveErrorRoutes from "./routes/refractive_error";
 import patientRoutes from "./routes/patient";
+import patientPrescriptionRoutes from "./routes/patientPrescription";
 import userRoutes from "./routes/user";
 import hospitalRoutes from "./routes/hospital";
 import patientTreatmentRoutes from "./routes/patient_treatment";
@@ -121,6 +122,8 @@ app.use("/healthcare_professional", healthcareProfessionalRoutes);
 app.use("/measurement", measurementRoutes);
 app.use("/refractive_error", refractiveErrorRoutes);
 app.use("/patient_k", patientKRoutes);
+// /patient 보다 먼저 - 거기의 GET /:patientId 가 "prescriptions" 를 잡는다.
+app.use("/patient/prescriptions", patientPrescriptionRoutes);
 app.use("/patient", patientRoutes);
 app.use("/user", userRoutes);
 app.use("/hospital", hospitalRoutes);

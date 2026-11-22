@@ -58,6 +58,7 @@ model hospital {
   healthcare_professional healthcare_professional[]
   country                 country                   @relation(fields: [country_id], references: [id], map: "hospital_country_fk")
   patient                 patient[]
+  patient_prescription    patient_prescription[]
   child_hospital_link     child_hospital_link[]
   alert_recipient         alert_recipient[]
   study_hospital          study_hospital[]
@@ -138,6 +139,7 @@ model patient {
   child_hospital_link            child_hospital_link[]
   patient_consent                patient_consent[]
   child_link_invite              child_link_invite[]
+  patient_prescription           patient_prescription[]
 
   @@unique([registration_number_hash, hospital_id], map: "patient_registration_number_hash_unique")
 }
@@ -274,6 +276,7 @@ model user {
   study_enrollment        study_enrollment[]
   study_visit             study_visit[]
   invites_created         child_link_invite[]      @relation("invite_creator")
+  prescriptions_issued    patient_prescription[]   @relation("prescription_prescriber")
   invites_used            child_link_invite[]      @relation("invite_user")
   push_token              push_token[]
   notification_pref       notification_pref?
@@ -1689,4 +1692,59 @@ model community_answer {
 
   @@unique([post_id, hospital_account_id], map: "community_answer_post_account_unique")
   @@index([post_id, created_at], map: "idx_community_answer_post")
+}
+
+/// 병원(myopiamanage.org 의료인)이 발행한 안경 처방전. 보호자가 적는
+/// child_prescription 과 따로 둔다 - 출처가 다르고, 이쪽은 인쇄물로 나가는
+/// 공식 기록이라 보호자가 고칠 수 없어야 한다.
+/// 원용(far)·근용(near) 각각 양안 SPH·CYL·AXIS·PRISM·BASE.
+model patient_prescription {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  patient_id      String   @db.Uuid
+  hospital_id     String   @db.Uuid
+  /// 발행 의료인. 계정이 지워져도 처방은 남아야 해서 이름을 따로 적어 둔다.
+  prescriber_id   String?  @db.Uuid
+  prescriber_name String
+  prescribed_on   DateTime @db.Date
+
+  far_sph_od   Float?  @db.Real
+  far_sph_os   Float?  @db.Real
+  far_cyl_od   Float?  @db.Real
+  far_cyl_os   Float?  @db.Real
+  far_axis_od  Int?    @db.SmallInt
+  far_axis_os  Int?    @db.SmallInt
+  far_prism_od Float?  @db.Real
+  far_prism_os Float?  @db.Real
+  /// BI | BO | BU | BD
+  far_base_od  String? @db.VarChar(2)
+  far_base_os  String? @db.VarChar(2)
+
+  near_sph_od   Float?  @db.Real
+  near_sph_os   Float?  @db.Real
+  near_cyl_od   Float?  @db.Real
+  near_cyl_os   Float?  @db.Real
+  near_axis_od  Int?    @db.SmallInt
+  near_axis_os  Int?    @db.SmallInt
+  near_prism_od Float?  @db.Real
+  near_prism_os Float?  @db.Real
+  near_base_od  String? @db.VarChar(2)
+  near_base_os  String? @db.VarChar(2)
+
+  /// 동공간 거리(mm). 원용·근용이 다르다.
+  pd_far  Float? @db.Real
+  pd_near Float? @db.Real
+  /// 가입도. 근용 SPH - 원용 SPH 로 화면이 채워 주지만 의료인이 고칠 수 있다.
+  add_od  Float? @db.Real
+  add_os  Float? @db.Real
+
+  /// 처방전에 찍히고 보호자 앱에도 보이는 안내. 병원 내부 메모가 아니다.
+  note       String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  patient    patient  @relation(fields: [patient_id], references: [id], onDelete: Cascade)
+  hospital   hospital @relation(fields: [hospital_id], references: [id], onDelete: Cascade)
+  prescriber user?    @relation("prescription_prescriber", fields: [prescriber_id], references: [id], onDelete: SetNull)
+
+  @@index([patient_id, prescribed_on(sort: Desc)])
+  @@index([hospital_id, created_at(sort: Desc)])
 }
