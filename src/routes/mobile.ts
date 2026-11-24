@@ -2816,7 +2816,11 @@ class InviteAlreadyUsed extends Error {}
 router.get("/link-invites/:token", requireMobileAuth, async (req, res) => {
   const r = await resolveInvite(String(req.params.token));
   if ("problem" in r) {
-    return res.status(410).json({ error: "invite unusable", code: r.problem });
+    return res.status(410).json({
+      error: "invite unusable",
+      code: r.problem,
+      ...("hospital" in r && r.hospital && { hospitalName: r.hospital.name, hospitalPhone: r.hospital.phone }),
+    });
   }
   // 아이를 특정할 만큼만 보여준다. 부모는 이미 아는 정보이고, 링크를
   // 주운 사람에게는 이것만으로 누구인지 알 수 없어야 한다.

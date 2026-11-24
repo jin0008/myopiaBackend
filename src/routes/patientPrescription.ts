@@ -6,6 +6,7 @@ import prisma from "../lib/prisma";
 import { hospitalDisplayName } from "../lib/hospitalName";
 import { approvedProfessionalRequired, validateRequestBody } from "../lib/middlewares";
 import { hashRegistrationNumber } from "../lib/hash";
+import { validationBody } from "../lib/validationError";
 import { decryptSymmetric, encryptSymmetric } from "../services/encrpytion";
 import { auditContextFromRequest, writeAuditLog } from "../services/audit";
 import { createLinkInvite } from "../services/linkInvite";
@@ -184,9 +185,16 @@ class PatientMismatch extends Error {
  * POST /patient/prescriptions — 환자 확인(없으면 생성)과 처방 저장을 한 트랜잭션으로.
  * 앱과 이어지지 않은 환자면 연동 초대 링크를 만들어 같이 준다(처방전에 QR 로 찍는다).
  */
-router.post("/", approvedProfessionalRequired, validateRequestBody(postSchema), async (req, res) => {
+router.post("/", approvedProfessionalRequired, async (req, res) => {
   const hp = req.healthcare_professional!;
-  const d = req.body as PostBody;
+  // 어느 칸이 왜 틀렸는지 화면에 짚어 줘야 한다. 칸이 마흔 개 가까이라
+  // "invalid body" 만으로는 고칠 곳을 못 찾는다.
+  const parsed = postSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(validationBody(parsed.error));
+    return;
+  }
+  const d: PostBody = parsed.data;
   const hash = hashRegistrationNumber(d.registration_number);
   // 암호화(KMS)는 트랜잭션 밖에서 미리 한다. 안에서 부르면 왕복이 쌓여
   // 트랜잭션 제한시간(기본 5초)에 걸릴 수 있다. 기존 환자면 안 쓰고 버린다.
@@ -277,9 +285,9 @@ router.post("/", approvedProfessionalRequired, validateRequestBody(postSchema), 
     if (e instanceof PatientMismatch) {
       const ethnicity = e.fields.includes("ethnicity_id");
       res.status(ethnicity ? 400 : 409).json({
-        error: ethnicity ? "인종 기본값이 없습니다. 환자 인종을 골라 주세요." : "등록번호의 환자 정보와 생년월일·성별이 다릅니다.",
+        message: ethnicity ? "인종 기본값이 없습니다. 환자 인종을 골라 주세요." : "등록번호의 환자 정보와 생년월일·성별이 다릅니다.",
         code: ethnicity ? "ethnicity_required" : "patient_mismatch",
-        fields: e.fields,
+        fields: e.fields.map((path) => ({ path, message: "" })),
       });
       return;
     }
