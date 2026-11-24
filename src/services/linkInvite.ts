@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import prisma from "../lib/prisma";
+import { hospitalDisplayName } from "../lib/hospitalName";
 import { escapeHtml, sendEmail } from "./email";
 
 /**
@@ -77,7 +78,7 @@ export async function resolveInvite(token: string) {
   // 만료·폐기면 어느 병원에 새 QR 을 달라고 할지 알려 준다. 인쇄한 처방전의
   // QR 은 14일보다 오래 남는다. 토큰을 가진 사람은 이미 처방전에서 병원을
   // 봤으니 병원 이름·전화가 새로 드러나는 것은 없다.
-  const reissue = { name: invite.hospital.name_ko ?? invite.hospital.name, phone: invite.hospital.phone };
+  const reissue = { name: hospitalDisplayName(invite.hospital), phone: invite.hospital.phone };
   if (invite.revoked_at != null) return { problem: "revoked" as const, hospital: reissue };
   if (invite.used_at != null) return { problem: "used" as const };
   if (invite.expires_at.getTime() < Date.now()) {

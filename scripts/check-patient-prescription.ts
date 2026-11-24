@@ -37,4 +37,10 @@ assert.ok(ok({ remark_tags: ["호야 마이오스마트", "상시 착용"], pres
 assert.ok(!ok({ remark_tags: Array(21).fill("x") }), "칩은 20개까지");
 assert.ok(!ok({ prescriber_name: "" }), "빈 처방의 이름");
 
+// 어느 칸이 문제인지 path 로 짚는다.
+const p1 = postSchema.safeParse({ ...base, far: { cyl_os: -1 } });
+assert.ok(!p1.success && p1.error.issues.some((i) => i.path.join(".") === "far.axis_os"), "AXIS 칸을 짚는다");
+const p2 = postSchema.safeParse({ ...base, near: { prism_od: 1 } });
+assert.ok(!p2.success && p2.error.issues.some((i) => i.path.join(".") === "near.base_od"), "BASE 칸을 짚는다");
+
 console.log("ok");
