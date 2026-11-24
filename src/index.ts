@@ -63,6 +63,9 @@ declare global {
 }
 
 app.use(cookieParser());
+// 처방전 양식 설정에는 로고·도장 이미지(data URL)가 들어 있어 기본 한도(100kb)를 넘는다.
+// 전역 파서보다 먼저 이 경로만 넓혀 둔다 - 먼저 읽힌 본문은 전역 파서가 건너뛴다.
+app.use("/patient/prescriptions/settings", bodyParser.json({ limit: "2mb" }));
 app.use(bodyParser.json());
 app.use(cors());
 app.use(

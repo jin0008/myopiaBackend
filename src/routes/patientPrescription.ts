@@ -72,6 +72,11 @@ export const postSchema = zod.object({
   add_od: quarter(0, 4, "ADD"),
   add_os: quarter(0, 4, "ADD"),
   note: zod.string().trim().max(500).nullable().optional(),
+  /** REMARKS 칩으로 고른 것(렌즈 제품·용도). */
+  remark_tags: zod.array(zod.string().trim().min(1).max(40)).max(20).optional(),
+  /** 병원 설정의 처방의 목록에서 고른 의사. 없으면 발행한 로그인 의료인 이름. */
+  prescriber_name: zod.string().trim().min(1).max(50).optional(),
+  prescriber_license: zod.string().trim().max(30).nullable().optional(),
 });
 type PostBody = zod.infer<typeof postSchema>;
 
@@ -116,6 +121,8 @@ export const prescriptionDTO = (r: Row) => ({
   add_od: r.add_od,
   add_os: r.add_os,
   note: r.note,
+  remark_tags: r.remark_tags,
+  prescriber_license: r.prescriber_license,
   created_at: r.created_at.toISOString(),
 });
 
@@ -248,7 +255,8 @@ router.post("/", approvedProfessionalRequired, async (req, res) => {
           patient_id: patient.id,
           hospital_id: hp.hospital_id,
           prescriber_id: hp.user_id,
-          prescriber_name: hp.name,
+          prescriber_name: d.prescriber_name ?? hp.name,
+          prescriber_license: d.prescriber_name ? (d.prescriber_license ?? null) : null,
           prescribed_on: new Date(d.prescribed_on),
           ...eyeColumns("far", d.far),
           ...eyeColumns("near", d.near),
@@ -257,6 +265,7 @@ router.post("/", approvedProfessionalRequired, async (req, res) => {
           add_od: d.add_od ?? null,
           add_os: d.add_os ?? null,
           note: d.note || null,
+          remark_tags: [...new Set(d.remark_tags ?? [])],
         },
       });
       await writeAuditLog({
@@ -357,6 +366,45 @@ router.get("/", approvedProfessionalRequired, async (req, res) => {
   }).catch(console.error);
   res.json(out);
 });
+
+/* 병원별 처방전 양식. 모양(키)은 화면이 정하고, 서버는 크기만 막는다.
+ * 로고·도장 이미지가 data URL 로 들어 있어 index.ts 에서 이 경로만 JSON 한도를 올린다. */
+const SETTINGS_MAX_BYTES = 1_500_000;
+
+/** GET /patient/prescriptions/settings — 없으면 null(화면이 기본값을 쓴다). */
+router.get("/settings", approvedProfessionalRequired, async (req, res) => {
+  const row = await prisma.hospital_rx_setting.findUnique({
+    where: { hospital_id: req.healthcare_professional!.hospital_id },
+  });
+  res.json({ settings: row?.settings ?? null, updated_at: row?.updated_at ?? null });
+});
+
+/** PUT /patient/prescriptions/settings {settings} — 그 병원 의료인 누구나. */
+router.put("/settings", approvedProfessionalRequired, async (req, res) => {
+  const settings = req.body?.settings;
+  if (settings == null || typeof settings !== "object" || Array.isArray(settings)) {
+    res.status(400).json({ message: "settings 가 필요합니다." });
+    return;
+  }
+  if (JSON.stringify(settings).length > SETTINGS_MAX_BYTES) {
+    res.status(413).json({ message: "로고·도장 이미지가 너무 큽니다. 더 작은 이미지를 써 주세요." });
+    return;
+  }
+  const hospitalId = req.healthcare_professional!.hospital_id;
+  await prisma.hospital_rx_setting.upsert({
+    where: { hospital_id: hospitalId },
+    create: { hospital_id: hospitalId, settings, updated_by: hp(req) },
+    update: { settings, updated_by: hp(req) },
+  });
+  writeAuditLog({
+    ...auditContextFromRequest(req),
+    tableName: "hospital_rx_setting",
+    action: audit_action.UPDATE,
+    hospitalId,
+  }).catch(console.error);
+  res.sendStatus(204);
+});
+const hp = (req: express.Request) => req.healthcare_professional!.user_id;
 
 /** GET /patient/prescriptions/:id — 인쇄용. 환자·병원 정보와 연동 여부를 같이 준다. */
 router.get("/:id", approvedProfessionalRequired, async (req, res) => {

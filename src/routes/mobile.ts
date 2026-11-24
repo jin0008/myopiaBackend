@@ -3292,6 +3292,8 @@ router.get(
           addOd: d.add_od,
           addOs: d.add_os,
           note: d.note,
+          remarkTags: d.remark_tags,
+          prescriberLicense: d.prescriber_license,
           hospitalId: meta.hospitalId,
           hospitalName: meta.hospitalName,
         };

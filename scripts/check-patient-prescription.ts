@@ -33,4 +33,8 @@ assert.ok(!ok({ add_od: 4.25 }), "ADD 범위");
 assert.ok(!ok({ prescribed_on: "2999-01-01" }), "미래 발행일 거절");
 assert.ok(!ok({ date_of_birth: "2015-13-01" }), "없는 날짜");
 
+assert.ok(ok({ remark_tags: ["호야 마이오스마트", "상시 착용"], prescriber_name: "김의사", prescriber_license: "12345" }));
+assert.ok(!ok({ remark_tags: Array(21).fill("x") }), "칩은 20개까지");
+assert.ok(!ok({ prescriber_name: "" }), "빈 처방의 이름");
+
 console.log("ok");

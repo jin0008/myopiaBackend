@@ -38,6 +38,10 @@ CREATE TABLE "patient_prescription" (
   "add_os"  REAL,
 
   "note"       TEXT,
+  -- REMARKS 칩으로 고른 것(렌즈 제품·용도). 자유 문구와 따로 남겨야 어떤 렌즈가
+  -- 얼마나 처방되는지 셀 수 있다.
+  "remark_tags" TEXT[] NOT NULL DEFAULT '{}',
+  "prescriber_license" TEXT,
   "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
 
   CONSTRAINT "patient_prescription_pkey" PRIMARY KEY ("id"),
@@ -51,3 +55,15 @@ CREATE TABLE "patient_prescription" (
 
 CREATE INDEX "patient_prescription_patient_id_prescribed_on_idx" ON "patient_prescription"("patient_id", "prescribed_on" DESC);
 CREATE INDEX "patient_prescription_hospital_id_created_at_idx" ON "patient_prescription"("hospital_id", "created_at" DESC);
+
+-- 병원별 처방전 양식(병원명·주소·로고·처방의 목록·면허번호·도장·안내 문구 등).
+-- 진료실 PC 마다 따로 두면 의사마다 양식이 달라져 병원 단위로 둔다.
+CREATE TABLE "hospital_rx_setting" (
+  "hospital_id" UUID NOT NULL,
+  "settings"    JSONB NOT NULL,
+  "updated_at"  TIMESTAMPTZ(6) NOT NULL DEFAULT now(),
+  "updated_by"  UUID,
+  CONSTRAINT "hospital_rx_setting_pkey" PRIMARY KEY ("hospital_id"),
+  CONSTRAINT "hospital_rx_setting_hospital_id_fkey" FOREIGN KEY ("hospital_id")
+    REFERENCES "hospital"("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
