@@ -10,6 +10,7 @@ import { validationBody } from "../lib/validationError";
 import { decryptSymmetric, encryptSymmetric } from "../services/encrpytion";
 import { auditContextFromRequest, writeAuditLog } from "../services/audit";
 import { createLinkInvite } from "../services/linkInvite";
+import { rxPilotRequired } from "../lib/rxPilot";
 
 /**
  * 병원이 발행하는 안경 처방전. /patient 보다 먼저 붙인다 - 거기의
@@ -19,6 +20,7 @@ import { createLinkInvite } from "../services/linkInvite";
  * 등록번호로 찾고, 없으면 그 자리에서 환자를 만든다.
  */
 const router = express.Router();
+router.use(rxPilotRequired);
 
 const todayKst = () => new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
 
