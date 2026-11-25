@@ -1,4 +1,5 @@
 import express from "express";
+import { isRxPilot } from "../lib/rxPilot";
 import bcrypt from "bcrypt";
 import prisma from "../lib/prisma";
 
@@ -565,7 +566,7 @@ router.get("/user", loginRequired, async (req, res) => {
   );
   const needs_consent = requiredTypes.some((t) => !agreedSet.has(t));
 
-  res.json({ ...data, needs_consent });
+  res.json({ ...data, needs_consent, rx_pilot: isRxPilot(data) });
 });
 
 // Existing-user (re)consent. The signup flow already records consent, but

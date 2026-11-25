@@ -13,6 +13,7 @@ import healthcareProfessionalRoutes from "./routes/healthcare_professional";
 import measurementRoutes from "./routes/measurement";
 import refractiveErrorRoutes from "./routes/refractive_error";
 import patientRoutes from "./routes/patient";
+import patientPrescriptionRoutes from "./routes/patientPrescription";
 import userRoutes from "./routes/user";
 import hospitalRoutes from "./routes/hospital";
 import patientTreatmentRoutes from "./routes/patient_treatment";
@@ -62,6 +63,10 @@ declare global {
 }
 
 app.use(cookieParser());
+// 처방전 양식 설정에는 로고·도장 이미지(data URL)가 들어 있어 기본 한도(100kb)를 넘는다.
+// nginx 기본 한도(1m)와 맞춘다.
+// 전역 파서보다 먼저 이 경로만 넓혀 둔다 - 먼저 읽힌 본문은 전역 파서가 건너뛴다.
+app.use("/patient/prescriptions/settings", bodyParser.json({ limit: "1mb" }));
 app.use(bodyParser.json());
 app.use(cors());
 app.use(
@@ -121,6 +126,8 @@ app.use("/healthcare_professional", healthcareProfessionalRoutes);
 app.use("/measurement", measurementRoutes);
 app.use("/refractive_error", refractiveErrorRoutes);
 app.use("/patient_k", patientKRoutes);
+// /patient 보다 먼저 - 거기의 GET /:patientId 가 "prescriptions" 를 잡는다.
+app.use("/patient/prescriptions", patientPrescriptionRoutes);
 app.use("/patient", patientRoutes);
 app.use("/user", userRoutes);
 app.use("/hospital", hospitalRoutes);

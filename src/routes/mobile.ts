@@ -1,4 +1,5 @@
 import express from "express";
+import { prescriptionDTO as hospitalPrescriptionDTO } from "./patientPrescription";
 import { AD_RADIUS_KM, AD_SLOTS } from "../lib/adSlots";
 import fs from "fs";
 import multer from "multer";
@@ -2815,7 +2816,11 @@ class InviteAlreadyUsed extends Error {}
 router.get("/link-invites/:token", requireMobileAuth, async (req, res) => {
   const r = await resolveInvite(String(req.params.token));
   if ("problem" in r) {
-    return res.status(410).json({ error: "invite unusable", code: r.problem });
+    return res.status(410).json({
+      error: "invite unusable",
+      code: r.problem,
+      ...("hospital" in r && r.hospital && { hospitalName: r.hospital.name, hospitalPhone: r.hospital.phone }),
+    });
   }
   // 아이를 특정할 만큼만 보여준다. 부모는 이미 아는 정보이고, 링크를
   // 주운 사람에게는 이것만으로 누구인지 알 수 없어야 한다.
@@ -3240,6 +3245,60 @@ router.get(
         };
       }),
     );
+  },
+);
+
+/**
+ * GET /api/mobile/children/:childId/hospital-prescriptions
+ *
+ * 연동된 병원이 발행한 안경 처방전. 보호자가 적은 처방(/prescriptions)과
+ * 길을 나눈다 - 1.0.x 앱은 그쪽 응답에 lensType 이 꼭 있다고 보고 그리는데
+ * 병원 처방에는 안경 종류가 없다.
+ */
+router.get(
+  "/children/:childId/hospital-prescriptions",
+  requireMobileAuth,
+  async (req, res) => {
+    const loaded = await guardChild(req, res);
+    if (!loaded) return;
+    const { patients } = loaded;
+    if (patients.length === 0) {
+      res.json({ prescriptions: [] });
+      return;
+    }
+    const rows = await prisma.patient_prescription.findMany({
+      where: { patient_id: { in: patients.map((p) => p.patientId) } },
+      orderBy: [{ prescribed_on: "desc" }, { created_at: "desc" }],
+      take: 200,
+    });
+    const byPatient = new Map(patients.map((p) => [p.patientId, p]));
+    res.json({
+      prescriptions: rows.map((r) => {
+        const d = hospitalPrescriptionDTO(r);
+        const eye = (e: typeof d.far) => ({
+          sphOd: e.sph_od, sphOs: e.sph_os, cylOd: e.cyl_od, cylOs: e.cyl_os,
+          axisOd: e.axis_od, axisOs: e.axis_os, prismOd: e.prism_od, prismOs: e.prism_os,
+          baseOd: e.base_od, baseOs: e.base_os,
+        });
+        const meta = byPatient.get(r.patient_id)!;
+        return {
+          id: d.id,
+          prescribedOn: d.prescribed_on,
+          prescriberName: d.prescriber_name,
+          far: eye(d.far),
+          near: eye(d.near),
+          pdFar: d.pd_far,
+          pdNear: d.pd_near,
+          addOd: d.add_od,
+          addOs: d.add_os,
+          note: d.note,
+          remarkTags: d.remark_tags,
+          prescriberLicense: d.prescriber_license,
+          hospitalId: meta.hospitalId,
+          hospitalName: meta.hospitalName,
+        };
+      }),
+    });
   },
 );
 
