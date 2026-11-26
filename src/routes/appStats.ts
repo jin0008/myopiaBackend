@@ -74,7 +74,7 @@ router.get("/", siteAdminRequired, async (_req, res) => {
     prisma.$queryRaw<{ children: bigint; linked: bigint }[]>`
       ${GUARDIANS}
       SELECT
-        (SELECT count(*) FROM parent_child_link pc JOIN g ON g.id = pc.user_id) AS children,
+        (SELECT count(*) FROM parent_child_link pc JOIN g ON g.id = pc.user_id WHERE NOT pc.is_self) AS children,
         (SELECT count(DISTINCT chl.parent_child_link_id)
            FROM child_hospital_link chl
            JOIN parent_child_link pc ON pc.id = chl.parent_child_link_id
@@ -155,7 +155,7 @@ router.get("/guardians", siteAdminRequired, async (req, res) => {
       p.username,
       (SELECT array_agg(DISTINCT o.provider ORDER BY o.provider)
          FROM oauth_identity o WHERE o.user_id = g.id) AS providers,
-      (SELECT count(*) FROM parent_child_link pc WHERE pc.user_id = g.id) AS children,
+      (SELECT count(*) FROM parent_child_link pc WHERE pc.user_id = g.id AND NOT pc.is_self) AS children,
       (SELECT count(DISTINCT chl.parent_child_link_id)
          FROM child_hospital_link chl
          JOIN parent_child_link pc ON pc.id = chl.parent_child_link_id
