@@ -87,6 +87,24 @@ export async function resolveInvite(token: string) {
   return { invite };
 }
 
+/* 생년월일을 틀린 횟수. 연동 화면은 생년월일을 보여 주지 않고 묻는다 - 처방전
+ * 종이(QR)를 주운 사람이 그 아이로 잇지 못하게. 그러면 날짜를 대입해 볼 수 있으니
+ * 몇 번 틀리면 초대를 폐기한다(진짜 보호자는 병원에 새 QR 을 받는다).
+ * ponytail: 프로세스 메모리라 서버를 다시 띄우면 0 부터. 서버가 하나라 충분하다.
+ * 여러 대가 되면 child_link_invite 에 칸을 둔다. */
+export const MAX_DOB_TRIES = 5;
+const wrongDob = new Map<string, number>();
+
+/** 틀린 한 번을 센다. 남은 횟수를 돌려주고, 다 쓰면 초대를 폐기하고 0. */
+export async function noteWrongDob(inviteId: string): Promise<number> {
+  const n = (wrongDob.get(inviteId) ?? 0) + 1;
+  wrongDob.set(inviteId, n);
+  if (n < MAX_DOB_TRIES) return MAX_DOB_TRIES - n;
+  wrongDob.delete(inviteId);
+  await prisma.child_link_invite.updateMany({ where: { id: inviteId, revoked_at: null }, data: { revoked_at: new Date() } });
+  return 0;
+}
+
 /** 초대 메일.
  *
  *  받는 사람은 병원에서 방금 안내를 들은 부모다. 무엇을 눌러야 하는지가
