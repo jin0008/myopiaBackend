@@ -10,7 +10,7 @@ import { PrismaClientKnownRequestError } from "@prisma/client/runtime/library";
 import { Prisma, sex as SexEnum, myopia_status as MyopiaStatusEnum } from "@prisma/client";
 
 import prisma from "../lib/prisma";
-import { resolveInvite } from "../services/linkInvite";
+import { noteWrongDob, resolveInvite } from "../services/linkInvite";
 import { axialPercentile } from "../services/percentile";
 import { validateRequestBody } from "../lib/middlewares";
 import { linkAttemptLimiter } from "../lib/security";
@@ -2885,17 +2885,51 @@ router.get("/link-invites/:token", requireMobileAuth, async (req, res) => {
       ...("hospital" in r && r.hospital && { hospitalName: r.hospital.name, hospitalPhone: r.hospital.phone }),
     });
   }
-  // 아이를 특정할 만큼만 보여준다. 부모는 이미 아는 정보이고, 링크를
-  // 주운 사람에게는 이것만으로 누구인지 알 수 없어야 한다.
-  const dob = await decryptSymmetric(r.invite.patient.encrypted_date_of_birth);
+  // 생년월일·성별은 내주지 않는다. 처방전 종이를 주운 사람이 그 값으로 아이를
+  // 만들어 이을 수 있다. 보호자가 생년월일을 넣으면 verify 가 맞춰 보고 내준다.
   res.json({
     hospitalName: hospitalDisplayName(r.invite.hospital),
-    // 날짜만. 앱이 이 값으로 아이를 만들기도 하므로 시각이 섞이면 안 된다.
-    dateOfBirth: dateOnly(dob),
-    sex: r.invite.patient.sex,
     expiresAt: r.invite.expires_at.toISOString(),
   });
 });
+
+/** 틀린 생년월일. 남은 횟수가 0 이면 초대가 폐기된 것이라 새 QR 을 안내한다. */
+async function dobMismatch(res: express.Response, invite: { id: string; hospital: Parameters<typeof hospitalDisplayName>[0] & { phone: string | null } }) {
+  const left = await noteWrongDob(invite.id);
+  if (left === 0) {
+    return res.status(410).json({
+      error: "invite unusable",
+      code: "revoked",
+      hospitalName: hospitalDisplayName(invite.hospital),
+      hospitalPhone: invite.hospital.phone,
+    });
+  }
+  return res.status(409).json({ error: "date of birth does not match", code: "dob_mismatch", left });
+}
+
+/**
+ * POST /api/mobile/link-invites/:token/verify — 보호자가 넣은 생년월일을 맞춰 본다.
+ * 맞으면 생년월일·성별을 내준다(아이를 고르거나 새로 만들 때 쓴다).
+ * 주소에 생년월일을 남기지 않으려고 POST 다.
+ */
+router.post(
+  "/link-invites/:token/verify",
+  requireMobileAuth,
+  validateRequestBody(zod.object({ dateOfBirth: zod.string().date() })),
+  async (req, res) => {
+    const r = await resolveInvite(String(req.params.token));
+    if ("problem" in r) {
+      return res.status(410).json({
+        error: "invite unusable",
+        code: r.problem,
+        ...("hospital" in r && r.hospital && { hospitalName: r.hospital.name, hospitalPhone: r.hospital.phone }),
+      });
+    }
+    const dob = dateOnly(await decryptSymmetric(r.invite.patient.encrypted_date_of_birth));
+    if (dob !== (req.body as { dateOfBirth: string }).dateOfBirth) return dobMismatch(res, r.invite);
+    res.json({ dateOfBirth: dob, sex: r.invite.patient.sex });
+  },
+);
 
 const acceptInviteSchema = zod.object({
   token: zod.string().min(10).max(200),
@@ -2929,10 +2963,12 @@ router.post(
     const patientDOB = await decryptSymmetric(
       invite.patient.encrypted_date_of_birth,
     );
-    if (
-      dateOnly(patientDOB) !== serializeDateOnly(child.date_of_birth) ||
-      invite.patient.sex !== child.sex
-    ) {
+    // 생년월일이 다르면 verify 와 같이 센다 - 아이를 날짜만 바꿔 여러 번 만들어
+    // 대입하는 길을 막는다. 성별만 다른 것은 잘못 고른 것이라 세지 않는다.
+    if (dateOnly(patientDOB) !== serializeDateOnly(child.date_of_birth)) {
+      return dobMismatch(res, invite);
+    }
+    if (invite.patient.sex !== child.sex) {
       return res.status(409).json({
         error: "child does not match the invited record",
         code: "mismatch",
