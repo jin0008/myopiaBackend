@@ -82,7 +82,11 @@ export const postSchema = zod.object({
   /** 병원 설정의 처방의 목록에서 고른 의사. 없으면 발행한 로그인 의료인 이름. */
   prescriber_name: zod.string().trim().min(1).max(50).optional(),
   prescriber_license: zod.string().trim().max(30).nullable().optional(),
-});
+}).refine(
+  // REMARKS 만 있는 처방은 실수다 - 앱에 빈 처방으로 뜬다. 0.00 은 값으로 친다.
+  (b) => [b.far, b.near].some((e) => e != null && [e.sph_od, e.sph_os, e.cyl_od, e.cyl_os].some((v) => v != null)) || b.add_od != null || b.add_os != null,
+  { message: "도수(SPH·CYL·ADD)를 하나 이상 입력해 주세요.", path: ["far", "sph_od"] },
+);
 type PostBody = zod.infer<typeof postSchema>;
 
 const eyeColumns = (prefix: "far" | "near", e: Eye | undefined) => ({

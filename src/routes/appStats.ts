@@ -74,12 +74,12 @@ router.get("/", siteAdminRequired, async (_req, res) => {
     prisma.$queryRaw<{ children: bigint; linked: bigint }[]>`
       ${GUARDIANS}
       SELECT
-        (SELECT count(*) FROM parent_child_link pc JOIN g ON g.id = pc.user_id) AS children,
+        (SELECT count(*) FROM parent_child_link pc JOIN g ON g.id = pc.user_id WHERE NOT pc.is_self) AS children,
         (SELECT count(DISTINCT chl.parent_child_link_id)
            FROM child_hospital_link chl
            JOIN parent_child_link pc ON pc.id = chl.parent_child_link_id
            JOIN g ON g.id = pc.user_id
-          WHERE chl.status = 'active') AS linked`,
+          WHERE chl.status = 'active' AND NOT pc.is_self) AS linked`,
     // 접속은 따로 적지 않는다. 앱은 로그인·토큰 갱신 때마다 새 리프레시 토큰을
     // 받으므로 그것으로 '최근에 앱을 연 사람'을 어림한다.
     prisma.$queryRaw<{ active7: bigint; active30: bigint }[]>`
@@ -155,11 +155,11 @@ router.get("/guardians", siteAdminRequired, async (req, res) => {
       p.username,
       (SELECT array_agg(DISTINCT o.provider ORDER BY o.provider)
          FROM oauth_identity o WHERE o.user_id = g.id) AS providers,
-      (SELECT count(*) FROM parent_child_link pc WHERE pc.user_id = g.id) AS children,
+      (SELECT count(*) FROM parent_child_link pc WHERE pc.user_id = g.id AND NOT pc.is_self) AS children,
       (SELECT count(DISTINCT chl.parent_child_link_id)
          FROM child_hospital_link chl
          JOIN parent_child_link pc ON pc.id = chl.parent_child_link_id
-        WHERE pc.user_id = g.id AND chl.status = 'active') AS linked,
+        WHERE pc.user_id = g.id AND chl.status = 'active' AND NOT pc.is_self) AS linked,
       (SELECT to_char(max(t.created_at) AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD')
          FROM mobile_refresh_token t WHERE t.user_id = g.id) AS last_seen,
       to_char(u.suspended_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD') AS suspended_on,

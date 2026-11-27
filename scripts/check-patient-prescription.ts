@@ -14,10 +14,16 @@ const base = {
   date_of_birth: "2015-03-02",
   sex: "male",
   prescribed_on: "2026-11-20",
+  far: { sph_od: -1 },
 };
 const ok = (x: object) => postSchema.safeParse({ ...base, ...x }).success;
 
-assert.ok(ok({}), "도수 없이도 발행(비워 두기)");
+assert.ok(ok({}));
+assert.ok(!ok({ far: undefined, note: "상시 착용" }), "도수 없이 REMARKS 만이면 거절");
+assert.ok(!ok({ far: {}, near: {} }), "빈 원용·근용도 거절");
+assert.ok(ok({ far: { sph_os: 0 } }), "0.00 은 도수로 친다");
+assert.ok(ok({ far: undefined, near: { sph_od: 2 } }), "근용만");
+assert.ok(ok({ far: undefined, add_od: 1 }), "ADD 만");
 assert.equal(postSchema.parse(base).registration_number, "12345", "등록번호 앞뒤 공백 제거");
 assert.ok(ok({ far: { sph_od: -2.75, cyl_od: -0.5, axis_od: 180 } }));
 assert.ok(!ok({ far: { sph_od: -2.3 } }), "0.25 단위가 아니면 거절");

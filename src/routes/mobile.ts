@@ -193,7 +193,7 @@ function requireAppUser(req: express.Request): MobileJWTPayload {
  * UUIDs are globally unique so no namespace collision is possible.
  */
 type OwnedChild =
-  | { source: "app"; childId: string; userId: string; appLink: { id: string; user_id: string; nickname: string; date_of_birth: Date; sex: SexEnum } }
+  | { source: "app"; childId: string; userId: string; appLink: { id: string; user_id: string; nickname: string; date_of_birth: Date; sex: SexEnum; is_self: boolean } }
   | { source: "web"; childId: string; userId: string; patientId: string };
 
 /**
@@ -1093,8 +1093,10 @@ router.get("/children", requireMobileAuth, async (req, res) => {
     appChildren.flatMap((c) => c.child_hospital_link.map((l) => l.patient_id)),
   );
 
+  // 본인 프로필은 아이 목록에 내지 않는다(처방전 화면이 /me/self 로 따로 읽는다).
+  // 위의 중복 제거에는 넣어 둔다 - 빼면 본인 환자 기록이 "웹 아이"로 새어 나온다.
   const appResults = await Promise.all(
-    appChildren.map(async (c) => ({
+    appChildren.filter((c) => !c.is_self).map(async (c) => ({
       childId: c.id,
       source: "app" as const,
       nickname: c.nickname,
@@ -1198,6 +1200,67 @@ router.post(
     });
   },
 );
+
+/* ---- 보호자 본인 --------------------------------------------------- *
+ * 본인 안경처방전을 아이와 같은 길(병원 연동 QR, 직접 입력)로 담으려고  *
+ * 숨은 프로필 하나를 둔다. 아이 목록에는 나오지 않는다.                 *
+ * --------------------------------------------------------------------- */
+
+const selfDTO = (s: { id: string; date_of_birth: Date; sex: string }) => ({
+  childId: s.id,
+  dateOfBirth: serializeDateOnly(s.date_of_birth),
+  sex: s.sex,
+});
+
+/** GET /api/mobile/me/self — 본인 프로필. 없으면 null. */
+router.get("/me/self", requireMobileAuth, async (req, res) => {
+  const user = requireAppUser(req);
+  const s = await prisma.parent_child_link.findFirst({ where: { user_id: user.sub, is_self: true } });
+  res.json({ self: s ? selfDTO(s) : null });
+});
+
+const selfSchema = zod.object({
+  dateOfBirth: zod.string().date(),
+  sex: zod.nativeEnum(SexEnum),
+});
+
+/**
+ * PUT /api/mobile/me/self — 본인 프로필을 만들거나 생년월일·성별을 고친다.
+ * 병원에 이어진 뒤에는 고치지 않는다(409 mismatch) - 병원 기록과 어긋난다.
+ */
+router.put("/me/self", requireMobileAuth, validateRequestBody(selfSchema), async (req, res) => {
+  const user = requireAppUser(req);
+  const d = req.body as zod.infer<typeof selfSchema>;
+  const find = () =>
+    prisma.parent_child_link.findFirst({
+      where: { user_id: user.sub, is_self: true },
+      include: { _count: { select: { child_hospital_link: true } } },
+    });
+  let existing = await find();
+  if (existing == null) {
+    try {
+      const created = await prisma.parent_child_link.create({
+        data: { user_id: user.sub, nickname: "본인", is_self: true, date_of_birth: new Date(d.dateOfBirth), sex: d.sex },
+      });
+      return res.status(201).json(selfDTO(created));
+    } catch (e) {
+      // 두 번 눌러 동시에 만들면 하나만 남는다(부분 유니크). 남은 것으로 이어 간다.
+      if (!(e instanceof PrismaClientKnownRequestError && e.code === "P2002")) throw e;
+      existing = await find();
+      if (existing == null) throw e;
+    }
+  }
+  const same = serializeDateOnly(existing.date_of_birth) === d.dateOfBirth && existing.sex === d.sex;
+  if (same) return res.json(selfDTO(existing));
+  if (existing._count.child_hospital_link > 0) {
+    return res.status(409).json({ error: "self is linked to a hospital", code: "mismatch" });
+  }
+  const updated = await prisma.parent_child_link.update({
+    where: { id: existing.id },
+    data: { date_of_birth: new Date(d.dateOfBirth), sex: d.sex },
+  });
+  res.json(selfDTO(updated));
+});
 
 const childPatchSchema = zod
   .object({
@@ -2895,21 +2958,24 @@ router.post(
             status: "active",
           },
         });
-        await tx.user_patient.upsert({
-          where: {
-            user_id_patient_id: {
-              user_id: user.sub,
-              patient_id: invite.patient_id,
+        // 본인 기록은 웹(myopiamanage)의 "내 아이" 목록에 넣지 않는다.
+        if (!child.is_self) {
+          await tx.user_patient.upsert({
+            where: {
+              user_id_patient_id: {
+                user_id: user.sub,
+                patient_id: invite.patient_id,
+              },
             },
-          },
-          create: { user_id: user.sub, patient_id: invite.patient_id },
-          update: {},
-        });
+            create: { user_id: user.sub, patient_id: invite.patient_id },
+            update: {},
+          });
+        }
         await tx.patient_consent.create({
           data: {
             patient_id: invite.patient_id,
             given_by: user.sub,
-            role: "legal_guardian",
+            role: child.is_self ? "patient" : "legal_guardian",
             version: CONSENT_VERSION,
           },
         });
